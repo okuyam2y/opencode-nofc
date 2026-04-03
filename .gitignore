@@ -1,0 +1,54 @@
+.DS_Store
+node_modules
+.worktrees
+.sst
+.env
+.env.*
+!.env.example
+.idea
+.vscode
+.codex
+.claude/*
+!.claude/skills/
+!.claude/hooks/
+!.claude/settings.json
+!.claude/CLAUDE.md
+*~
+playground
+tmp
+dist
+ts-dist
+.turbo
+**/.serena
+.serena/
+/result
+refs
+Session.vim
+/opencode.json
+a.out
+target
+.scripts
+.direnv/
+
+# Local dev files
+opencode-dev
+docs/guides/gateway-file-handling.md
+docs/model-evaluation.md
+UPCOMING_CHANGELOG.md
+logs/
+*.bun-build
+
+# Python
+.venv/
+venv/
+.pdfvenv/
+__pycache__/
+.pytest_cache/
+
+# Test coverage
+coverage/
+
+# Generated files
+packages/opencode/src/provider/models-snapshot.d.ts
+packages/opencode/src/provider/models-snapshot.js
+tsconfig.tsbuildinfo

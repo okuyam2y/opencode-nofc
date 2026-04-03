@@ -660,6 +660,186 @@ it.live("session.processor effect tests strip tool tags on text end", () =>
   ),
 )
 
+it.live("session.processor effect tests strip multi_tool_use.parallel tags on text end", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        yield* llm.push(
+          reply().text('before<multi_tool_use.parallel>{"tool":"bash"}</multi_tool_use.parallel>after').stop(),
+        )
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "strip multi_tool_use")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "strip multi_tool_use" }],
+          tools: {},
+        })
+
+        const parts = MessageV2.parts(msg.id)
+        const text = parts.find((part): part is MessageV2.TextPart => part.type === "text")
+
+        expect(value).toBe("continue")
+        expect(yield* llm.calls).toBe(1)
+        expect(text?.text).toBe("beforeafter")
+      }),
+    { git: true, config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests discard unclosed tag on stream interruption", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        // Simulate stream cut off mid-tag (gateway 500): open tag with no close
+        yield* llm.push(reply().text('before<tool_response>{"hallucinated":"data"}').hang())
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "unclosed tag")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const run = yield* handle
+          .process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies MessageV2.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "unclosed tag" }],
+            tools: {},
+          })
+          .pipe(Effect.forkChild)
+
+        yield* llm.wait(1)
+        yield* Effect.promise(async () => {
+          const end = Date.now() + 500
+          while (Date.now() < end) {
+            const parts = await MessageV2.parts(msg.id)
+            const t = parts.find((p): p is MessageV2.TextPart => p.type === "text")
+            if (t && t.text.includes("before")) return
+            await Bun.sleep(10)
+          }
+        })
+        yield* Fiber.interrupt(run)
+
+        const exit = yield* Fiber.await(run)
+        if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
+          yield* handle.abort()
+        }
+        const parts = MessageV2.parts(msg.id)
+        const text = parts.find((part): part is MessageV2.TextPart => part.type === "text")
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(yield* llm.calls).toBe(1)
+        // The hallucinated content inside the unclosed tag must be discarded
+        expect(text?.text).toBe("before")
+      }),
+    { git: true, config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests discard partial opening tag on stream interruption", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        // Simulate stream cut off mid-opening-tag (e.g. "<tool_respons")
+        yield* llm.push(reply().text("before<tool_respons").hang())
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "partial tag")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const run = yield* handle
+          .process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies MessageV2.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "partial tag" }],
+            tools: {},
+          })
+          .pipe(Effect.forkChild)
+
+        yield* llm.wait(1)
+        yield* Effect.promise(async () => {
+          const end = Date.now() + 500
+          while (Date.now() < end) {
+            const parts = await MessageV2.parts(msg.id)
+            const t = parts.find((p): p is MessageV2.TextPart => p.type === "text")
+            if (t && t.text.length > 0) return
+            await Bun.sleep(10)
+          }
+        })
+        yield* Fiber.interrupt(run)
+
+        const exit = yield* Fiber.await(run)
+        if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
+          yield* handle.abort()
+        }
+        const parts = MessageV2.parts(msg.id)
+        const text = parts.find((part): part is MessageV2.TextPart => part.type === "text")
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(yield* llm.calls).toBe(1)
+        // The partial opening tag must be stripped, keeping only clean text
+        expect(text?.text).toBe("before")
+      }),
+    { git: true, config: (url) => providerCfg(url) },
+  ),
+)
+
 it.live("session.processor effect tests strip tool tags on cleanup", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>

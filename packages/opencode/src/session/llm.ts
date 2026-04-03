@@ -145,11 +145,13 @@ export namespace LLM {
     // TODO: move this to a proper hook
     const isOpenaiOauth = provider.id === "openai" && auth?.type === "oauth"
 
+    const root = SystemPrompt.provider(input.model)
     const system: string[] = []
     system.push(
       [
-        // use agent prompt otherwise provider prompt
-        ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
+        // Keep provider prompt grounding even when an agent adds its own prompt.
+        ...root,
+        ...(input.agent.prompt ? [input.agent.prompt] : []),
         // any custom prompt passed into this call
         ...input.system,
         // any custom prompt from last user message

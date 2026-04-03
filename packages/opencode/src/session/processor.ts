@@ -28,8 +28,13 @@ function stripToolTags(text: string): string {
     .replace(/<tool_result>[\s\S]*?<\/tool_result>/g, "")
     .replace(/<tool_response>[\s\S]*?<\/tool_response>/g, "")
     .replace(/<commentary>[\s\S]*?<\/commentary>/g, "")
+    .replace(/<multi_tool_use\.parallel>[\s\S]*?<\/multi_tool_use\.parallel>/g, "")
     .replace(/<\/?tool_call>/g, "")
     .replace(/<\/?commentary>/g, "")
+    .replace(/<\/?multi_tool_use\.parallel>/g, "")
+    // Strip incomplete tags at end of stream (no closing tag)
+    .replace(/<(?:tool_call|tool_result|tool_response|commentary|multi_tool_use\.parallel)>[\s\S]*$/g, "")
+    .replace(trailingPartialTagRe, "")
     .trimEnd()
 }
 
@@ -37,9 +42,25 @@ function stripToolTags(text: string): string {
  * Streaming-aware filter that buffers text-delta chunks when they might be
  * inside a tag that stripToolTags would remove at text-end.
  */
-const STRIP_TAG_NAMES = ["tool_call", "tool_response", "tool_result", "commentary"]
-const STRIP_OPEN_RE = new RegExp(`<(?:${STRIP_TAG_NAMES.join("|")})>`)
-const STRIP_CLOSE_RE = new RegExp(`</(?:${STRIP_TAG_NAMES.join("|")})>`)
+const STRIP_TAG_NAMES = ["tool_call", "tool_response", "tool_result", "commentary", "multi_tool_use.parallel"]
+const escapeForRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+const STRIP_OPEN_RE = new RegExp(`<(?:${STRIP_TAG_NAMES.map(escapeForRegex).join("|")})>`)
+const STRIP_CLOSE_RE = new RegExp(`</(?:${STRIP_TAG_NAMES.map(escapeForRegex).join("|")})>`)
+
+// Builds a regex that matches a trailing partial opening tag at end of string.
+// For tag "tool_call", generates: <(?:t(?:o(?:o(?:l(?:_(?:c(?:a(?:l(?:l)?)?)?)?)?)?)?)?$
+// This catches any prefix of "<tool_call>" that got cut off mid-stream.
+function buildPartialTagRe(names: string[]): RegExp {
+  const alts = names.map((name) => {
+    let pattern = ""
+    for (let i = name.length; i >= 1; i--) {
+      pattern = escapeForRegex(name[i - 1]) + "(?:" + pattern + ")?"
+    }
+    return pattern
+  })
+  return new RegExp(`<(?:${alts.join("|")})$`)
+}
+const trailingPartialTagRe = buildPartialTagRe(STRIP_TAG_NAMES)
 
 function createStreamingTagFilter() {
   let buf = ""
@@ -79,16 +100,30 @@ function createStreamingTagFilter() {
       return out
     },
     flush(): string {
+      if (inside) {
+        // Discard buffered content inside an unclosed tag (e.g. stream cut off
+        // mid-tag due to gateway error) to prevent leaking raw tool markup.
+        buf = ""
+        inside = false
+        return ""
+      }
+      // Also strip any partial opening tag left in the buffer (e.g. stream
+      // cut off mid-tag like "<tool_respons" or "<multi_tool_use.par").
+      const partialIdx = partialOpenTagIndex(buf)
+      if (partialIdx >= 0) {
+        const rest = buf.slice(0, partialIdx)
+        buf = ""
+        return rest
+      }
       const rest = buf
       buf = ""
-      inside = false
       return rest
     },
   }
 }
 
 function partialOpenTagIndex(text: string): number {
-  const tail = text.slice(-20)
+  const tail = text.slice(-30)
   const offset = text.length - tail.length
   for (let i = tail.length - 1; i >= 0; i--) {
     if (tail[i] !== "<") continue
@@ -603,6 +638,7 @@ export namespace SessionProcessor {
 
             case "text-end":
               if (!ctx.currentText) return
+              ctx.tagFilter?.flush()
               ctx.tagFilter = undefined
               ctx.currentText.text = stripToolTags(ctx.currentText.text)
               ctx.currentText.text = (yield* plugin.trigger(
@@ -647,6 +683,7 @@ export namespace SessionProcessor {
 
           if (ctx.currentText) {
             const end = Date.now()
+            ctx.tagFilter?.flush()
             ctx.tagFilter = undefined
             ctx.currentText.text = stripToolTags(ctx.currentText.text)
             ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }

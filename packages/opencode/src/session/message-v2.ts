@@ -922,7 +922,75 @@ export namespace MessageV2 {
     return filterCompacted(stream(sessionID))
   })
 
+  /** Typed Error for retryable 5xx stream errors. Preserves statusCode through the
+   *  async-iterable error mapper in LLM.Service.stream(). */
+  export class StreamRetryableError extends Error {
+    readonly statusCode: number
+    constructor(statusCode: number, message: string, cause?: unknown) {
+      super(message, { cause })
+      this.name = "StreamRetryableError"
+      this.statusCode = statusCode
+    }
+  }
+
+  const CONTENT_FILTER_RE = /content management policy|content filtering|response was filtered|content_filter/i
+
+  /** Extract HTTP status code from heterogeneous error shapes (plain objects, Error subclasses, JSON-encoded messages). */
+  export function extractStatusCode(e: unknown): number | undefined {
+    if (typeof e !== "object" || e === null) return undefined
+    const direct = (e as any).status ?? (e as any).statusCode ?? (e as any).response?.statusCode
+    if (typeof direct === "number") return direct
+    // Try JSON-encoded message
+    const msg = (e as any).message
+    if (typeof msg === "string") {
+      try {
+        const parsed = JSON.parse(msg)
+        if (typeof parsed === "object" && parsed !== null) {
+          const code = parsed.status ?? parsed.statusCode
+          if (typeof code === "number") return code
+        }
+      } catch {}
+    }
+    return undefined
+  }
+
+  /** Check if error message indicates a content filter block (should not be retried).
+   *  Checks top-level message, nested error.message, and JSON.stringify fallback
+   *  to match the same breadth as the original inline check. */
+  export function isContentFilter(e: unknown): boolean {
+    if (typeof e === "string") return CONTENT_FILTER_RE.test(e)
+    if (typeof e !== "object" || e === null) return false
+    // Direct message property
+    if (typeof (e as any).message === "string" && CONTENT_FILTER_RE.test((e as any).message)) return true
+    // Nested error.message (e.g. { error: { message: "content filtering ..." } })
+    const nested = (e as any).error
+    if (typeof nested === "object" && nested !== null && typeof nested.message === "string" && CONTENT_FILTER_RE.test(nested.message)) return true
+    // JSON.stringify fallback for other shapes
+    try {
+      return CONTENT_FILTER_RE.test(JSON.stringify(e))
+    } catch {
+      return false
+    }
+  }
+
   export function fromError(
+    e: unknown,
+    ctx: { providerID: ProviderID; aborted?: boolean; forceNonRetryable?: boolean },
+  ): NonNullable<Assistant["error"]> {
+    const result = fromErrorInner(e, ctx)
+    // When forceNonRetryable is set (tool executed in this attempt), override
+    // isRetryable on ALL APIError results so no retryable error path can bypass
+    // the tool-execution veto.
+    if (ctx.forceNonRetryable && MessageV2.APIError.isInstance(result) && result.data.isRetryable) {
+      return new MessageV2.APIError(
+        { ...result.data, isRetryable: false },
+        { cause: e },
+      ).toObject()
+    }
+    return result
+  }
+
+  function fromErrorInner(
     e: unknown,
     ctx: { providerID: ProviderID; aborted?: boolean },
   ): NonNullable<Assistant["error"]> {
@@ -969,6 +1037,15 @@ export namespace MessageV2 {
               code: (e as FetchDecompressionError).code,
               message: e.message,
             },
+          },
+          { cause: e },
+        ).toObject()
+      case e instanceof StreamRetryableError:
+        return new MessageV2.APIError(
+          {
+            message: e.message,
+            statusCode: e.statusCode,
+            isRetryable: true,
           },
           { cause: e },
         ).toObject()
@@ -1027,20 +1104,18 @@ export namespace MessageV2 {
         } catch {}
         // Treat 5xx errors as retryable even when thrown as plain objects
         // (e.g. ai-sdk stream errors from non-standard providers).
-        const statusCode = typeof e === "object" && e !== null
-          ? (e as any).status ?? (e as any).statusCode ?? (e as any).response?.statusCode
-          : undefined
+        const statusCode = extractStatusCode(e)
         if (typeof statusCode === "number" && statusCode >= 500) {
           const errMsg = typeof (e as any).message === "string" ? (e as any).message : JSON.stringify(e)
           // Content filter 500s should not be retried
-          const isContentFilter = /content management policy|content filtering|response was filtered|content_filter/i.test(errMsg)
+          const contentFiltered = isContentFilter(e)
           return new MessageV2.APIError(
             {
-              message: isContentFilter
+              message: contentFiltered
                 ? "Request blocked by content filter. Try rephrasing your prompt."
                 : errMsg,
               statusCode,
-              isRetryable: !isContentFilter,
+              isRetryable: !contentFiltered,
             },
             { cause: e },
           ).toObject()

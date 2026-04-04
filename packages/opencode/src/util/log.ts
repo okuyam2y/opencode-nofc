@@ -65,7 +65,8 @@ export namespace Log {
       Global.Path.log,
       options.dev ? "dev.log" : new Date().toISOString().split(".")[0].replace(/:/g, "") + ".log",
     )
-    await fs.truncate(logpath).catch(() => {})
+    // Don't truncate — main process and worker both write to dev.log.
+    // Truncating causes the later process to erase the earlier one's logs.
     const stream = createWriteStream(logpath, { flags: "a" })
     write = async (msg: any) => {
       return new Promise((resolve, reject) => {

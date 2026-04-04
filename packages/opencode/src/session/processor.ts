@@ -271,11 +271,16 @@ export namespace SessionProcessor {
           reasoningMap: {},
         }
         let aborted = false
+        /** Attempt-scoped flag: set to true when any tool reaches completed or error state.
+         *  Unlike ctx.hasToolCalls (step-scoped, reset on start-step), this persists
+         *  across steps within a single attempt and prevents retry after tool execution. */
+        let hasExecutedTool = false
 
         const parse = (e: unknown) =>
           MessageV2.fromError(e, {
             providerID: input.model.providerID,
             aborted,
+            forceNonRetryable: hasExecutedTool,
           })
 
         const handleEvent = Effect.fn("SessionProcessor.handleEvent")(function* (value: StreamEvent) {
@@ -376,6 +381,8 @@ export namespace SessionProcessor {
                 state: { status: "running", input: value.input, time: { start: Date.now() } },
                 metadata: value.providerMetadata,
               } satisfies MessageV2.ToolPart)
+              // Tool is now executing and may mutate the worktree — prevent retry
+              hasExecutedTool = true
 
               const parts = MessageV2.parts(ctx.assistantMessage.id)
               const recentParts = parts.slice(-DOOM_LOOP_THRESHOLD)
@@ -427,6 +434,7 @@ export namespace SessionProcessor {
                   attachments: value.output.attachments,
                 },
               })
+              hasExecutedTool = true
               delete ctx.toolcalls[value.toolCallId]
               return
             }
@@ -450,6 +458,7 @@ export namespace SessionProcessor {
                   time: { start: match.state.time.start, end: Date.now() },
                 },
               })
+              hasExecutedTool = true
               if (value.error instanceof Permission.RejectedError || value.error instanceof Question.RejectedError) {
                 ctx.blocked = ctx.shouldBreak
               }
@@ -751,7 +760,59 @@ export namespace SessionProcessor {
           ctx.lastStreamInput = streamInput
           ctx.hasToolCalls = false
           ctx.needsCompaction = false
+          hasExecutedTool = false
           ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
+
+          // Baseline for attempt rollback — captured before stream starts
+          const baselinePartIDs = new Set(
+            MessageV2.parts(ctx.assistantMessage.id).map((p) => p.id),
+          )
+          const baselineFinish = ctx.assistantMessage.finish
+          const baselineCost = ctx.assistantMessage.cost
+          const baselineTokens = ctx.assistantMessage.tokens
+          const baselineSnapshot = ctx.snapshot
+
+          const rollbackAttempt = Effect.fn("SessionProcessor.rollbackAttempt")(function* () {
+            if (hasExecutedTool) {
+              // This should never happen: fromError() sets forceNonRetryable which
+              // makes retryable() return undefined → Cause.done before set() is called.
+              // If we get here anyway, fail hard to prevent unsafe retry.
+              throw new Error("rollbackAttempt called after tool execution — aborting retry")
+            }
+            log.info("rollback-attempt", { partsBefore: baselinePartIDs.size })
+
+            // Remove parts created during the failed attempt (DB + in-memory)
+            const currentParts = MessageV2.parts(ctx.assistantMessage.id)
+            for (const part of currentParts) {
+              if (!baselinePartIDs.has(part.id)) {
+                yield* session.removePart({
+                  sessionID: ctx.sessionID,
+                  messageID: ctx.assistantMessage.id,
+                  partID: part.id,
+                })
+              }
+            }
+
+            // Restore worktree snapshot
+            if (ctx.snapshot) {
+              yield* snapshot.restore(ctx.snapshot)
+            }
+            ctx.snapshot = baselineSnapshot
+
+            // Full ctx state reset for next attempt
+            ctx.toolcalls = {}
+            ctx.hasToolCalls = false
+            hasExecutedTool = false
+            ctx.currentText = undefined
+            ctx.tagFilter = undefined
+            ctx.reasoningMap = {}
+            ctx.maxReportedInput = 0
+            ctx.blocked = false
+            ctx.needsCompaction = false
+            ctx.assistantMessage.finish = baselineFinish
+            ctx.assistantMessage.cost = baselineCost
+            ctx.assistantMessage.tokens = baselineTokens
+          })
 
           return yield* Effect.gen(function* () {
             yield* Effect.gen(function* () {
@@ -774,12 +835,16 @@ export namespace SessionProcessor {
                 SessionRetry.policy({
                   parse,
                   set: (info) =>
-                    status.set(ctx.sessionID, {
-                      type: "retry",
-                      attempt: info.attempt,
-                      message: info.message,
-                      next: info.next,
-                    }),
+                    rollbackAttempt().pipe(
+                      Effect.andThen(
+                        status.set(ctx.sessionID, {
+                          type: "retry",
+                          attempt: info.attempt,
+                          message: info.message,
+                          next: info.next,
+                        }),
+                      ),
+                    ),
                 }),
               ),
               Effect.catch(halt),

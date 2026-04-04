@@ -13,15 +13,20 @@ import { Flag } from "@/flag/flag"
 import { setTimeout as sleep } from "node:timers/promises"
 import { writeHeapSnapshot } from "node:v8"
 import { WorkspaceID } from "@/control-plane/schema"
+import { Heap } from "@/cli/heap"
 
 await Log.init({
   print: process.argv.includes("--print-logs"),
-  dev: Installation.isLocal(),
+  // Force worker to use timestamped log file instead of dev.log
+  // to avoid truncation race with main process
+  dev: false,
   level: (() => {
     if (Installation.isLocal()) return "DEBUG"
     return "INFO"
   })(),
 })
+
+Heap.start()
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {

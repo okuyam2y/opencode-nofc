@@ -21,7 +21,7 @@ import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import { Instance } from "@/project/instance"
 import type { Agent } from "@/agent/agent"
-import type { MessageV2 } from "./message-v2"
+import { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
 import { SystemPrompt } from "./system"
 import { Flag } from "@/flag/flag"
@@ -72,6 +72,7 @@ export namespace LLM {
   export type StreamInput = {
     user: MessageV2.User
     sessionID: string
+    parentSessionID?: string
     model: Provider.Model
     agent: Agent.Info
     permission?: Permission.Ruleset
@@ -309,6 +310,18 @@ export namespace LLM {
       }
     }
 
+    // Debug: log LLM stream parameters for diagnosing tool-call instability
+    log.info("stream-debug", {
+      buildTag: "20260404-dev-1",
+      agentName: input.agent.name ?? "unknown",
+      hasAgentPrompt: !!input.agent.prompt,
+      toolParserMode: toolParserMode ?? "none",
+      systemPromptChars: system.join("\n").length,
+      toolCount: Object.keys(tools).length,
+      messageCount: messages.length,
+      modelID: input.model.api.id,
+    })
+
     return streamText({
       onError(error) {
         const err = (error as any)?.error ?? error
@@ -356,12 +369,14 @@ export namespace LLM {
               "x-opencode-client": Flag.OPENCODE_CLIENT,
             }
           : {
+              "x-session-affinity": input.sessionID,
+              ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
               "User-Agent": `opencode/${Installation.VERSION}`,
             }),
         ...input.model.headers,
         ...headers,
       },
-      maxRetries: input.retries ?? 0,
+      maxRetries: input.retries ?? 4,
       messages,
       model: wrapLanguageModel({
         model: language,
@@ -390,7 +405,50 @@ export namespace LLM {
               if (disableMaxTokens) {
                 args.params.maxOutputTokens = undefined
               }
+              // Debug: log final prompt size after all middleware transforms
+              const promptChars = args.params.prompt?.reduce((acc: number, msg: any) => {
+                if (typeof msg.content === "string") return acc + msg.content.length
+                if (Array.isArray(msg.content)) return acc + msg.content.reduce((a: number, c: any) => a + (c.text?.length ?? 0), 0)
+                return acc
+              }, 0) ?? 0
+              log.info("transform-debug", {
+                promptChars,
+                promptMsgCount: args.params.prompt?.length ?? 0,
+                activeToolCount: args.params.tools?.length ?? 0,
+                hasToolParser: !!toolParserMode,
+              })
               return args.params
+            },
+          })
+          // Stream error escalation — must be last (closest to provider).
+          // Converts retryable 5xx error stream parts into thrown StreamRetryableError
+          // so they reach processor's Effect.retry via the async-iterable error path.
+          mw.push({
+            specificationVersion: "v3" as const,
+            async wrapStream({ doStream }) {
+              const result = await doStream()
+              return {
+                ...result,
+                stream: result.stream.pipeThrough(
+                  new TransformStream({
+                    transform(part, controller) {
+                      if (part.type === "error") {
+                        const statusCode = MessageV2.extractStatusCode(part.error)
+                        if (statusCode && statusCode >= 500 && !MessageV2.isContentFilter(part.error)) {
+                          const msg =
+                            typeof part.error === "object" && part.error !== null && "message" in part.error
+                              ? String((part.error as any).message)
+                              : String(part.error)
+                          l.info("stream-5xx-escalation", { statusCode, message: msg })
+                          controller.error(new MessageV2.StreamRetryableError(statusCode, msg, part.error))
+                          return
+                        }
+                      }
+                      controller.enqueue(part)
+                    },
+                  }),
+                ),
+              }
             },
           })
           return mw

@@ -671,5 +671,5 @@ export function replace(content: string, oldString: string, newString: string, r
       "Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.",
     )
   }
-  throw new Error("Found multiple matches for oldString. Provide more surrounding context to make the match unique.")
+  throw new Error("Found multiple matches for oldString. Provide more surrounding context to make the match unique. Alternatively, use a line-based edit tool with explicit line numbers from Read output to target the exact occurrence.")
 }

@@ -1,7 +1,7 @@
 import { afterEach, describe, test, expect } from "bun:test"
 import path from "path"
 import fs from "fs/promises"
-import { EditTool } from "../../src/tool/edit"
+import { EditTool, replace } from "../../src/tool/edit"
 import { Instance } from "../../src/project/instance"
 import { tmpdir } from "../fixture/fixture"
 import { FileTime } from "../../src/file/time"
@@ -676,6 +676,13 @@ describe("tool.edit", () => {
           expect(results.some((r) => r.status === "fulfilled")).toBe(true)
         },
       })
+    })
+  })
+
+  describe("multiple match error message", () => {
+    test("suggests line-based edit tool on multiple matches", () => {
+      const content = "hello\nworld\nhello\n"
+      expect(() => replace(content, "hello", "goodbye")).toThrow("line-based edit tool")
     })
   })
 })

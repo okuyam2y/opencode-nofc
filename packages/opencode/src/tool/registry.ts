@@ -27,6 +27,7 @@ import { Log } from "@/util/log"
 import { LspTool } from "./lsp"
 import { Truncate } from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
+import { LineEditTool } from "./line_edit"
 import { Glob } from "../util/glob"
 import { pathToFileURL } from "url"
 import { Effect, Layer, ServiceMap } from "effect"
@@ -150,6 +151,7 @@ export namespace ToolRegistry {
       const code = yield* build(CodeSearchTool)
       const skill = yield* build(SkillTool)
       const patch = yield* build(ApplyPatchTool)
+      const lineEdit = yield* build(LineEditTool)
       const lsp = yield* build(LspTool)
       const batch = yield* build(BatchTool)
       const plan = yield* build(PlanExitTool)
@@ -174,6 +176,7 @@ export namespace ToolRegistry {
           code,
           skill,
           patch,
+          lineEdit,
           ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [lsp] : []),
           ...(cfg.experimental?.batch_tool === true ? [batch] : []),
           ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [plan] : []),
@@ -200,7 +203,7 @@ export namespace ToolRegistry {
           }
 
           // use apply_patch only with native function calling.
-          // When toolParser middleware is active, fall back to edit/write.
+          // When toolParser middleware is active, fall back to edit/write + line_edit.
           // E2E test environments force apply_patch regardless of toolParser.
           const isGptPatch =
             model.modelID.includes("gpt-") && !model.modelID.includes("oss") && !model.modelID.includes("gpt-4")
@@ -212,6 +215,7 @@ export namespace ToolRegistry {
           const usePatch = !!Env.get("OPENCODE_E2E_LLM_URL") || (isGptPatch && !hasToolParser)
           if (tool.id === "apply_patch") return usePatch
           if (tool.id === "edit" || tool.id === "write") return !usePatch
+          if (tool.id === "line_edit") return hasToolParser
 
           return true
         })

@@ -585,7 +585,7 @@ export namespace Config {
       for (const [tool, enabled] of Object.entries(agent.tools ?? {})) {
         const action = enabled ? "allow" : "deny"
         // write, edit, patch, multiedit all map to edit permission
-        if (tool === "write" || tool === "edit" || tool === "patch" || tool === "multiedit") {
+        if (tool === "write" || tool === "edit" || tool === "patch" || tool === "multiedit" || tool === "line_edit") {
           permission.edit = action
         } else {
           permission[tool] = action
@@ -1446,7 +1446,7 @@ export namespace Config {
             const perms: Record<string, Config.PermissionAction> = {}
             for (const [tool, enabled] of Object.entries(result.tools)) {
               const action: Config.PermissionAction = enabled ? "allow" : "deny"
-              if (tool === "write" || tool === "edit" || tool === "patch" || tool === "multiedit") {
+              if (tool === "write" || tool === "edit" || tool === "patch" || tool === "multiedit" || tool === "line_edit") {
                 perms.edit = action
                 continue
               }

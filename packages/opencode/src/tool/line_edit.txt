@@ -1,0 +1,15 @@
+Performs line-based text replacement in files using explicit line numbers. Use this tool when you know the exact line numbers from a previous Read tool call, especially when the file contains duplicate patterns that would cause the Edit tool to fail with "Found multiple matches".
+
+Usage:
+- You must use the Read tool first to see the file contents with line numbers.
+- startLine and endLine are 1-based and inclusive (matching Read tool output line numbers).
+- oldText must exactly match the content at the specified line range (whitespace-sensitive).
+- The tool will FAIL if the actual content at the line range doesn't match oldText.
+- This tool only modifies existing files. Use Write to create new files.
+- For simple replacements where the text is unique, prefer the Edit tool.
+
+When to use this tool vs Edit:
+- Use line_edit when the file contains duplicate/similar code blocks (e.g., overloaded methods, similar switch cases) where Edit would fail with "Found multiple matches"
+- Use line_edit when you already know the exact line numbers from Read
+- Use Edit for simple, unique text replacements where line numbers aren't needed
+- Use Edit with replaceAll for renaming variables across a file

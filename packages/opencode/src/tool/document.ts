@@ -36,7 +36,7 @@ export async function extractPdfText(filepath: string): Promise<string> {
         ;(globalThis as any).pdfjsWorker = w
       } catch {}
     }
-    const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs")
+    const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs" as string)
     const buf = await fs.readFile(filepath)
     const doc = await getDocument({ data: new Uint8Array(buf), verbosity: 0 }).promise
     numPages = doc.numPages

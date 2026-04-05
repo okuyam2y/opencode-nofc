@@ -139,8 +139,22 @@ function partialOpenTagIndex(text: string): number {
 }
 
 /**
+ * Estimate character count of an unknown value for token estimation.
+ * Strings are measured by length; structured data (object/array/number/boolean/null)
+ * is serialized to capture keys, delimiters, and non-string primitives.
+ */
+function estimateChars(value: unknown): number {
+  if (typeof value === "string") return value.length
+  if (value === undefined) return 0
+  return JSON.stringify(value).length
+}
+
+/**
  * Estimate token count from messages and system prompts by character count.
  * Used as fallback when gateway returns non-cumulative usage data.
+ *
+ * The returned value represents "effective input" (cached + uncached),
+ * matching the definition of reportedInput (= usage.tokens.input + cache.read).
  */
 function estimateTokensFromInput(input: { messages: unknown[]; system: string[]; tools: Record<string, unknown> }): number {
   let chars = 0
@@ -168,6 +182,12 @@ function estimateTokensFromInput(input: { messages: unknown[]; system: string[];
         const p = part as Record<string, unknown>
         if (typeof p.text === "string") chars += p.text.length
         if (typeof p.content === "string") chars += p.content.length
+        // ToolResultPart.output — tool result (text, json, content, error-text, etc.)
+        if (p.output !== undefined) chars += estimateChars(p.output)
+        // ToolCallPart.args — tool call input
+        if (p.args !== undefined) chars += estimateChars(p.args)
+        // ToolApprovalResponse.result — approval/denial reason text
+        if (typeof p.result === "string") chars += p.result.length
       }
     }
   }
@@ -529,9 +549,13 @@ export namespace SessionProcessor {
                   reportedTotal: usage.tokens.total,
                   trigger: isPerTurnMonotonic ? "monotonic" : isPerTurnMultiStep ? "multi-step" : "single-step",
                 })
+                // estimatedInput represents effective input (cached + uncached).
+                // Zero out cache.read so downstream (confirmedInput update in
+                // prompt.ts: input + cache.read) doesn't double-count the cache.
                 usage.tokens.input = estimatedInput
+                usage.tokens.cache.read = 0
                 usage.tokens.total =
-                  estimatedInput + usage.tokens.output + usage.tokens.cache.read + usage.tokens.cache.write
+                  estimatedInput + usage.tokens.output + usage.tokens.cache.write
               }
               // tool-parser middleware doesn't rewrite finishReason in streaming
               // mode, so the provider's original reason passes through.  Override
@@ -581,11 +605,19 @@ export namespace SessionProcessor {
                 sessionID: ctx.sessionID,
                 messageID: ctx.assistantMessage.parentID,
               })
-              if (
-                !ctx.assistantMessage.summary &&
-                isOverflow({ cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })
-              ) {
-                ctx.needsCompaction = true
+              if (!ctx.assistantMessage.summary) {
+                // Use max(reported, estimated) for overflow check only.
+                // This catches cases where the provider reports accurate but
+                // delayed usage while the estimate is already close to the limit.
+                // The overflow tokens are ephemeral — usage.tokens is not modified.
+                const reportedTotal = usage.tokens.total
+                  || (usage.tokens.input + usage.tokens.output + usage.tokens.cache.read + usage.tokens.cache.write)
+                const estimatedTotal = estimatedInput + usage.tokens.output
+                const overflowTotal = Math.max(reportedTotal, estimatedTotal)
+                const overflowTokens = { ...usage.tokens, total: overflowTotal }
+                if (isOverflow({ cfg: yield* config.get(), tokens: overflowTokens, model: ctx.model })) {
+                  ctx.needsCompaction = true
+                }
               }
               return
             }

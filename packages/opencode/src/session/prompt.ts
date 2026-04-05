@@ -1346,6 +1346,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           const ctx = yield* InstanceState.context
           let structured: unknown | undefined
           let step = 0
+          let lastModel: Provider.Model | undefined
           const session = yield* sessions.get(sessionID)
 
           while (true) {
@@ -1397,6 +1398,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               }).pipe(Effect.ignore, Effect.forkIn(scope))
 
             const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
+            lastModel = model
             const task = tasks.pop()
 
             if (task?.type === "subtask") {
@@ -1586,7 +1588,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             continue
           }
 
-          yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
+          yield* compaction.prune({ sessionID, model: lastModel }).pipe(Effect.ignore, Effect.forkIn(scope))
           return yield* lastAssistant(sessionID)
         },
       )

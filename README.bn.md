@@ -2,6 +2,15 @@
 >
 > **এই ফর্কের সংযোজন:** টুল পার্সার মিডলওয়্যার (Hermes / Hermes-strict / XML), স্ট্রিমিং ট্যাগ ফিল্টার, স্ট্রিম ডিডুপ্লিকেশন, PDF/DOCX/XLSX টেক্সট এক্সট্রাকশন, macOS Vision OCR, finishReason হ্যান্ডলিং এবং স্বয়ংক্রিয় টুল প্রতিস্থাপন।
 >
+> **এই ফর্ক ইনস্টল করুন:**
+> ```bash
+> git clone https://github.com/okuyam2y/opencode-nofc.git
+> cd opencode-nofc && bun install && bun turbo build
+> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
+> ```
+>
+> **[সেটআপ গাইড →](docs/guides/toolparser-setup.md)** — বিস্তারিত কনফিগারেশন, মডেল-ভিত্তিক সেটিংস এবং সমস্যা সমাধান।
+>
 > **সম্পর্কিত:** [#2917](https://github.com/anomalyco/opencode/issues/2917) · [#1122](https://github.com/anomalyco/opencode/issues/1122) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser) | upstream `dev` ব্রাঞ্চ ট্র্যাক করে।
 
 <p align="center">

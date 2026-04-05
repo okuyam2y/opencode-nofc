@@ -2,6 +2,15 @@
 >
 > **Lo que añade este fork:** middleware de tool parser (Hermes / Hermes-strict / XML), filtro de tags en streaming, deduplicación de streams, extracción de PDF/DOCX/XLSX, OCR con macOS Vision, manejo de finishReason y sustitución automática de herramientas.
 >
+> **Instalar este fork:**
+> ```bash
+> git clone https://github.com/okuyam2y/opencode-nofc.git
+> cd opencode-nofc && bun install && bun turbo build
+> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
+> ```
+>
+> **[Guía de configuración →](docs/guides/toolparser-setup.md)** — configuración detallada, ajustes por modelo y solución de problemas.
+>
 > **Relacionado:** [#2917](https://github.com/anomalyco/opencode/issues/2917) · [#1122](https://github.com/anomalyco/opencode/issues/1122) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser) | Sigue la rama upstream `dev`.
 
 <p align="center">

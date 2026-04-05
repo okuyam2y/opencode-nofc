@@ -26,6 +26,15 @@
 > }
 > ```
 >
+> **安装此分支:**
+> ```bash
+> git clone https://github.com/okuyam2y/opencode-nofc.git
+> cd opencode-nofc && bun install && bun turbo build
+> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
+> ```
+>
+> **[配置指南 →](docs/guides/toolparser-setup.md)** — 详细配置、按模型设置和故障排除。
+>
 > **相关：** [#2917](https://github.com/anomalyco/opencode/issues/2917)（自定义工具解析器请求）· [#1122](https://github.com/anomalyco/opencode/issues/1122)（vLLM + Hermes）· [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser)
 >
 > 跟踪上游 `dev` 分支。Bug 修复会适时提交 PR 到上游。

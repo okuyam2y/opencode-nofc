@@ -2,6 +2,15 @@
 >
 > **Що додає цей форк:** middleware tool parser (Hermes / Hermes-strict / XML), потоковий фільтр тегів, дедуплікація потоку, витяг PDF/DOCX/XLSX, macOS Vision OCR, обробка finishReason та автоматична заміна інструментів.
 >
+> **Встановити цей форк:**
+> ```bash
+> git clone https://github.com/okuyam2y/opencode-nofc.git
+> cd opencode-nofc && bun install && bun turbo build
+> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
+> ```
+>
+> **[Посібник з налаштування →](docs/guides/toolparser-setup.md)** — детальна конфігурація, налаштування для кожної моделі та усунення неполадок.
+>
 > **Пов'язане:** [#2917](https://github.com/anomalyco/opencode/issues/2917) · [#1122](https://github.com/anomalyco/opencode/issues/1122) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser) | Відстежує upstream гілку `dev`.
 
 <p align="center">

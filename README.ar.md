@@ -2,6 +2,15 @@
 >
 > **ما يضيفه هذا الفرع:** وسيط تحليل الأدوات (Hermes / Hermes-strict / XML)، فلتر العلامات أثناء البث، إزالة التكرار، استخراج PDF/DOCX/XLSX، OCR عبر macOS Vision، معالجة finishReason والتبديل التلقائي للأدوات.
 >
+> **تثبيت هذا الفرع:**
+> ```bash
+> git clone https://github.com/okuyam2y/opencode-nofc.git
+> cd opencode-nofc && bun install && bun turbo build
+> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
+> ```
+>
+> **[دليل الإعداد →](docs/guides/toolparser-setup.md)** — التكوين التفصيلي، الإعدادات لكل نموذج، واستكشاف الأخطاء.
+>
 > **ذو صلة:** [#2917](https://github.com/anomalyco/opencode/issues/2917) · [#1122](https://github.com/anomalyco/opencode/issues/1122) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser) | يتتبع فرع upstream `dev`.
 
 <p align="center">

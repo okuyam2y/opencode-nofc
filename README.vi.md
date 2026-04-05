@@ -2,6 +2,15 @@
 >
 > **Fork này bổ sung:** middleware tool parser (Hermes / Hermes-strict / XML), bộ lọc tag streaming, loại bỏ trùng lặp stream, trích xuất PDF/DOCX/XLSX, macOS Vision OCR, xử lý finishReason và thay thế công cụ tự động.
 >
+> **Cài đặt fork này:**
+> ```bash
+> git clone https://github.com/okuyam2y/opencode-nofc.git
+> cd opencode-nofc && bun install && bun turbo build
+> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
+> ```
+>
+> **[Hướng dẫn cài đặt →](docs/guides/toolparser-setup.md)** — cấu hình chi tiết, cài đặt theo mô hình và khắc phục sự cố.
+>
 > **Liên quan:** [#2917](https://github.com/anomalyco/opencode/issues/2917) · [#1122](https://github.com/anomalyco/opencode/issues/1122) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser) | Theo dõi nhánh upstream `dev`.
 
 <p align="center">

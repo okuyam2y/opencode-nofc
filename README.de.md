@@ -7,6 +7,15 @@
 > - Finish-Reason-Handling (`unknown` → Terminal), Loop-Schutz
 > - Automatischer Wechsel von `apply_patch` zu `edit`/`write` bei aktivem Tool-Parser
 >
+> **Diesen Fork installieren:**
+> ```bash
+> git clone https://github.com/okuyam2y/opencode-nofc.git
+> cd opencode-nofc && bun install && bun turbo build
+> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
+> ```
+>
+> **[Einrichtungsanleitung →](docs/guides/toolparser-setup.md)** — detaillierte Konfiguration, Einstellungen pro Modell und Fehlerbehebung.
+>
 > **Verwandt:** [#2917](https://github.com/anomalyco/opencode/issues/2917) · [#1122](https://github.com/anomalyco/opencode/issues/1122) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser) | Verfolgt den upstream `dev`-Branch.
 
 <p align="center">

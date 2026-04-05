@@ -2,6 +2,15 @@
 >
 > **Šta ovaj fork dodaje:** tool parser middleware (Hermes / Hermes-strict / XML), streaming tag filter, stream deduplikacija, PDF/DOCX/XLSX ekstrakcija, macOS Vision OCR, finishReason handling i automatska zamjena alata.
 >
+> **Instalirajte ovaj fork:**
+> ```bash
+> git clone https://github.com/okuyam2y/opencode-nofc.git
+> cd opencode-nofc && bun install && bun turbo build
+> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
+> ```
+>
+> **[Vodič za postavljanje →](docs/guides/toolparser-setup.md)** — detaljna konfiguracija, postavke po modelu i rješavanje problema.
+>
 > **Povezano:** [#2917](https://github.com/anomalyco/opencode/issues/2917) · [#1122](https://github.com/anomalyco/opencode/issues/1122) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser) | Prati upstream `dev` granu.
 
 <p align="center">

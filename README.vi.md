@@ -4,6 +4,11 @@
 >
 > **Cài đặt fork này:**
 > ```bash
+> # Tải xuống tệp nhị phân đã biên dịch từ GitHub Releases
+> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+> ./opencode
+>
+> # Hoặc xây dựng từ mã nguồn
 > git clone https://github.com/okuyam2y/opencode-nofc.git
 > cd opencode-nofc && bun install && bun turbo build
 > ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode

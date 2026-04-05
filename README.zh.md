@@ -28,6 +28,11 @@
 >
 > **安装此分支:**
 > ```bash
+> # 从 GitHub Releases 下载预编译二进制文件
+> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+> ./opencode
+>
+> # 或从源码构建
 > git clone https://github.com/okuyam2y/opencode-nofc.git
 > cd opencode-nofc && bun install && bun turbo build
 > ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode

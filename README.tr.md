@@ -4,6 +4,11 @@
 >
 > **Bu fork'u kurun:**
 > ```bash
+> # GitHub Releases'dan önceden derlenmiş ikili dosyayı indirin
+> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+> ./opencode
+>
+> # Veya kaynak koddan derleyin
 > git clone https://github.com/okuyam2y/opencode-nofc.git
 > cd opencode-nofc && bun install && bun turbo build
 > ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode

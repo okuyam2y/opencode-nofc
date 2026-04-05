@@ -4,6 +4,11 @@
 >
 > **এই ফর্ক ইনস্টল করুন:**
 > ```bash
+> # GitHub Releases থেকে প্রি-বিল্ট বাইনারি ডাউনলোড করুন
+> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+> ./opencode
+>
+> # অথবা সোর্স থেকে বিল্ড করুন
 > git clone https://github.com/okuyam2y/opencode-nofc.git
 > cd opencode-nofc && bun install && bun turbo build
 > ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode

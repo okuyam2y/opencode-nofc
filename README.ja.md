@@ -28,6 +28,11 @@
 >
 > **このフォークのインストール:**
 > ```bash
+> # GitHub Releases からビルド済みバイナリをダウンロード
+> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+> ./opencode
+>
+> # またはソースからビルド
 > git clone https://github.com/okuyam2y/opencode-nofc.git
 > cd opencode-nofc && bun install && bun turbo build
 > ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode

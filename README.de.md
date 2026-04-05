@@ -9,6 +9,11 @@
 >
 > **Diesen Fork installieren:**
 > ```bash
+> # Vorkompilierte Binärdatei von GitHub Releases herunterladen
+> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+> ./opencode
+>
+> # Oder aus dem Quellcode bauen
 > git clone https://github.com/okuyam2y/opencode-nofc.git
 > cd opencode-nofc && bun install && bun turbo build
 > ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode

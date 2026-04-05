@@ -48,6 +48,30 @@ Restart OpenCode after changing the config.
 
 **Start with `hermes-strict`.** Only switch if you encounter issues.
 
+## Google AI (Gemini) example
+
+You can also use toolParser with native providers like Google AI. This is useful when you want to force text-based tool calling for evaluation or compatibility testing:
+
+```jsonc
+{
+  "provider": {
+    "google": {
+      "npm": "@ai-sdk/google",
+      "options": {
+        "apiKey": "your-google-api-key",
+        "toolParser": "hermes-strict"
+      },
+      "models": {
+        "gemini-3.1-pro-preview": {
+          "name": "Gemini 3.1 Pro",
+          "limit": { "context": 1000000, "output": 65536 }
+        }
+      }
+    }
+  }
+}
+```
+
 ## Per-model configuration
 
 You can set `toolParser` at the provider level (applies to all models) or per-model:
@@ -86,6 +110,7 @@ Tested models (as of 2026-04):
 |-------|------------|-------|
 | Claude Sonnet 4.5 | Stable | Best instruction following. Recommended for complex workflows |
 | GPT-5.4 | Stable | Requires provider base prompt for grounding. Deep analysis capability |
+| Gemini 3.1 Pro Preview | Stable | Model ID: `gemini-3.1-pro-preview`. Verified with code review tasks. Long thinking, deep analysis. Cost-effective |
 | GPT-5.1 | Borderline | Works for simple tasks, degrades on multi-step workflows |
 | Mistral Medium | Not usable | Output control breaks down (infinite loops, template token leakage) |
 | GLM-5 Turbo | Not usable | Cannot generate `<tool_call>` syntax despite strong native FC support |

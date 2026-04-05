@@ -4,6 +4,11 @@
 >
 > **Εγκατάσταση αυτού του fork:**
 > ```bash
+> # Λήψη προ-μεταγλωττισμένου εκτελέσιμου από GitHub Releases
+> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+> ./opencode
+>
+> # Ή μεταγλώττιση από τον πηγαίο κώδικα
 > git clone https://github.com/okuyam2y/opencode-nofc.git
 > cd opencode-nofc && bun install && bun turbo build
 > ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode

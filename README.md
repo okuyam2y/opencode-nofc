@@ -26,6 +26,15 @@
 > }
 > ```
 >
+> **Install this fork:**
+> ```bash
+> git clone https://github.com/okuyam2y/opencode-nofc.git
+> cd opencode-nofc && bun install && bun turbo build
+> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
+> ```
+>
+> **[Setup guide →](docs/guides/toolparser-setup.md)** — detailed configuration, per-model settings, and troubleshooting.
+>
 > **Related:** [#2917](https://github.com/anomalyco/opencode/issues/2917) (custom tool parser request) · [#1122](https://github.com/anomalyco/opencode/issues/1122) (vLLM + Hermes) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser)
 >
 > **License:** [MIT](LICENSE) (same as upstream) | Tracks upstream `dev` branch. Bug fixes are submitted as PRs when applicable.

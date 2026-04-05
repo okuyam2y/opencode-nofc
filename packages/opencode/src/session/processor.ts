@@ -18,6 +18,7 @@ import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
 import { Question } from "@/question"
+import { containsSpamInValues, stripSpam } from "@/util/spam-filter"
 
 /**
  * Strip tool response/result tags that models echo from conversation history.
@@ -399,6 +400,25 @@ export namespace SessionProcessor {
                 } satisfies MessageV2.ToolPart)
                 ctx.toolcalls[value.toolCallId] = match
               }
+              // Stage 3: reject tool calls with spam-contaminated arguments
+              if (containsSpamInValues(value.input)) {
+                log.warn("tool-call blocked: spam detected in arguments", {
+                  toolCallId: value.toolCallId,
+                  toolName: value.toolName,
+                })
+                yield* session.updatePart({
+                  ...match,
+                  tool: value.toolName,
+                  state: {
+                    status: "error",
+                    input: value.input,
+                    error: "Tool call blocked: training data contamination detected in arguments",
+                    time: { start: Date.now(), end: Date.now() },
+                  },
+                } satisfies MessageV2.ToolPart)
+                delete ctx.toolcalls[value.toolCallId]
+                return
+              }
               ctx.toolcalls[value.toolCallId] = yield* session.updatePart({
                 ...match,
                 tool: value.toolName,
@@ -695,6 +715,7 @@ export namespace SessionProcessor {
               ctx.tagFilter?.flush()
               ctx.tagFilter = undefined
               ctx.currentText.text = stripToolTags(ctx.currentText.text)
+              ctx.currentText.text = stripSpam(ctx.currentText.text)
               ctx.currentText.text = (yield* plugin.trigger(
                 "experimental.text.complete",
                 {
@@ -740,6 +761,7 @@ export namespace SessionProcessor {
             ctx.tagFilter?.flush()
             ctx.tagFilter = undefined
             ctx.currentText.text = stripToolTags(ctx.currentText.text)
+            ctx.currentText.text = stripSpam(ctx.currentText.text)
             ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
             yield* session.updatePart(ctx.currentText)
             ctx.currentText = undefined

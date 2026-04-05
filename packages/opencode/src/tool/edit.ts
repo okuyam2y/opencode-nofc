@@ -18,6 +18,7 @@ import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import { Snapshot } from "@/snapshot"
 import { assertExternalDirectory } from "./external-directory"
+import { containsSpam } from "@/util/spam-filter"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
 
@@ -45,6 +46,13 @@ export const EditTool = Tool.define("edit", {
   async execute(params, ctx) {
     if (!params.filePath) {
       throw new Error("filePath is required")
+    }
+
+    // Stage 5: final defense against spam-contaminated arguments.
+    // Only check newString (content being written), not oldString (existing file content
+    // may legitimately contain spam keywords in documentation about the incident).
+    if (containsSpam(params.newString)) {
+      throw new Error("Edit blocked: training data contamination detected in arguments")
     }
 
     if (params.oldString === params.newString) {

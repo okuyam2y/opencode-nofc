@@ -115,6 +115,13 @@ export namespace SessionPrompt {
         }),
       )
 
+      /** Highest confirmed inputTokens (input + cache.read) per session.
+       *  Persists across runLoop invocations (which are recreated on each user turn)
+       *  so the monotonic-decrease detector can compare across turns.
+       *  Entries are lightweight (one number per session) and naturally bounded
+       *  by the number of active sessions in the instance. */
+      const confirmedInputs = new Map<string, number>()
+
       const getRunner = (runners: Map<string, Runner<MessageV2.WithParts>>, sessionID: SessionID) => {
         const existing = runners.get(sessionID)
         if (existing) return existing
@@ -1406,6 +1413,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 overflow: task.overflow,
               })
               if (result === "stop") break
+              // Only reset baseline when compaction actually succeeded and
+              // shrank the context.  "stop" means compaction failed/overflowed
+              // and the loop is breaking — clearing would disable monotonic
+              // detection if the session somehow continues.
+              confirmedInputs.delete(sessionID)
               continue
             }
 
@@ -1455,6 +1467,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               assistantMessage: msg,
               sessionID,
               model,
+              confirmedInput: confirmedInputs.get(sessionID) ?? 0,
             })
 
             const outcome: "break" | "continue" = yield* Effect.onExit(
@@ -1561,6 +1574,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 yield* InstanceState.withALS(() => instruction.clear(handle.message.id)).pipe(Effect.flatMap((x) => x))
               }),
             )
+            // Update confirmed input baseline for per-turn gateway detection.
+            // Only update when finish-step was reached (finish is set), ensuring
+            // error/abort/blocked paths don't corrupt the baseline.
+            if (handle.message.finish) {
+              const effectiveInput = handle.message.tokens.input + handle.message.tokens.cache.read
+              confirmedInputs.set(sessionID, Math.max(confirmedInputs.get(sessionID) ?? 0, effectiveInput))
+            }
             if (outcome === "break") break
 
             continue

@@ -193,6 +193,10 @@ export namespace SessionProcessor {
     assistantMessage: MessageV2.Assistant
     sessionID: SessionID
     model: Provider.Model
+    /** Highest confirmed inputTokens (input + cache.read) from previous turns.
+     *  Used by the monotonic-decrease detector to catch per-turn gateways that
+     *  slip through the multi-step and single-step heuristics. */
+    confirmedInput?: number
   }
 
   export interface Interface {
@@ -508,13 +512,22 @@ export namespace SessionProcessor {
               const isPerTurnSingleStep =
                 estimatedInput >= 20_000 &&
                 reportedInput <= Math.min(estimatedInput * 0.1, 2_000)
-              if ((isPerTurnMultiStep || isPerTurnSingleStep) && estimatedInput > reportedInput) {
+              // 3. Monotonic-decrease: if the reported input dropped significantly
+              //    from the confirmed baseline of previous turns, the gateway is
+              //    returning per-turn values.  The 0.8 multiplier tolerates minor
+              //    fluctuations from cache accounting or prompt shaping.
+              const prevConfirmed = input.confirmedInput ?? 0
+              const isPerTurnMonotonic =
+                prevConfirmed > 0 &&
+                reportedInput < prevConfirmed * 0.8
+              if ((isPerTurnMultiStep || isPerTurnSingleStep || isPerTurnMonotonic) && estimatedInput > reportedInput) {
                 log.debug("usage-fallback", {
                   reportedInput,
                   maxReportedInput: ctx.maxReportedInput,
+                  confirmedInput: prevConfirmed,
                   estimatedInput,
                   reportedTotal: usage.tokens.total,
-                  trigger: isPerTurnMultiStep ? "multi-step" : "single-step",
+                  trigger: isPerTurnMonotonic ? "monotonic" : isPerTurnMultiStep ? "multi-step" : "single-step",
                 })
                 usage.tokens.input = estimatedInput
                 usage.tokens.total =

@@ -4,7 +4,6 @@
   "name": "opencode",
   "type": "module",
   "license": "MIT",
-  "private": true,
   "scripts": {
     "prepare": "effect-language-service patch || true",
     "typecheck": "tsgo --noEmit",

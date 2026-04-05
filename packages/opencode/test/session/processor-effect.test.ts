@@ -660,6 +660,100 @@ it.live("session.processor effect tests strip tool tags on text end", () =>
   ),
 )
 
+it.live("session.processor effect tests monotonic fallback triggers when reported input drops below confirmed", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        // Gateway returns per-turn usage: small input despite large conversation
+        yield* llm.text("response", { usage: { input: 500, output: 100 } })
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "monotonic test")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        // Pass confirmedInput=10000 to simulate a previous turn with high usage
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+          confirmedInput: 10000,
+        })
+
+        // Build a large enough input so estimatedInput > reportedInput (500)
+        const longContent = "x".repeat(30000) // ~10000 tokens estimated
+        yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: longContent }],
+          tools: {},
+        })
+
+        // The monotonic fallback should have replaced input with the estimate.
+        // reportedInput (500) < confirmedInput (10000) * 0.8 = 8000 → triggers.
+        // After fallback, tokens.input should be the estimated value, much larger than 500.
+        expect(handle.message.tokens.input).toBeGreaterThan(500)
+      }),
+    { git: true, config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests monotonic fallback does not trigger for cumulative usage", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        // Gateway returns cumulative usage: input is higher than confirmedInput
+        yield* llm.text("response", { usage: { input: 12000, output: 100 } })
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "no false positive")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+          confirmedInput: 10000,
+        })
+
+        yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "no false positive" }],
+          tools: {},
+        })
+
+        // Reported input (12000) > confirmedInput (10000) * 0.8 → no fallback.
+        // tokens.input should remain at the reported value.
+        expect(handle.message.tokens.input).toBe(12000)
+      }),
+    { git: true, config: (url) => providerCfg(url) },
+  ),
+)
+
 it.live("session.processor effect tests strip multi_tool_use.parallel tags on text end", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>

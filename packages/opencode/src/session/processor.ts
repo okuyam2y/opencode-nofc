@@ -199,6 +199,29 @@ export namespace SessionProcessor {
   const DOOM_LOOP_THRESHOLD = 3
   const log = Log.create({ service: "session.processor" })
 
+  /**
+   * Build a dedup key from tool name and input.
+   * NUL separator prevents collisions between tool names and input JSON.
+   */
+  export function dedupKey(toolName: string, input: Record<string, unknown>): string {
+    return toolName + "\0" + JSON.stringify(input)
+  }
+
+  /**
+   * Check whether an identical tool call (same name + input) was already
+   * accepted in this step.  Uses a Set that survives tool-result deletions
+   * from ctx.toolcalls (which clears entries on completion).
+   *
+   * Exported for unit testing.
+   */
+  export function isDuplicate(
+    acceptedKeys: Set<string>,
+    toolName: string,
+    input: Record<string, unknown>,
+  ): boolean {
+    return acceptedKeys.has(dedupKey(toolName, input))
+  }
+
   export type Result = "compact" | "stop" | "continue"
 
   export type Event = LLM.Event
@@ -230,6 +253,10 @@ export namespace SessionProcessor {
      *  Unlike ctx.toolcalls (which entries are deleted on completion),
      *  this flag persists until the next step so finishReason override works. */
     hasToolCalls: boolean
+    /** Keys of accepted (non-deduped) tool calls: "toolName\0" + JSON.stringify(input).
+     *  Persists across tool-result deletions from ctx.toolcalls so that dedup
+     *  still detects duplicates even after the first call completes. */
+    acceptedToolKeys: Set<string>
     shouldBreak: boolean
     snapshot: string | undefined
     blocked: boolean
@@ -285,6 +312,7 @@ export namespace SessionProcessor {
           model: input.model,
           toolcalls: {},
           hasToolCalls: false,
+          acceptedToolKeys: new Set(),
           shouldBreak: false,
           snapshot: initialSnapshot,
           blocked: false,
@@ -419,6 +447,33 @@ export namespace SessionProcessor {
                 delete ctx.toolcalls[value.toolCallId]
                 return
               }
+              // Stage 4: deduplicate identical tool calls within the same step.
+              // GPT-5.4 can emit the same Read (same file, same offset) 10+ times
+              // in a single response.  Drop duplicates before execution to avoid
+              // wasting tokens on redundant results.
+              //
+              // Uses ctx.acceptedToolKeys (a Set that persists even after
+              // tool-result deletes entries from ctx.toolcalls) so that fast-
+              // completing tools (like Read) don't escape dedup detection.
+              if (isDuplicate(ctx.acceptedToolKeys, value.toolName, value.input)) {
+                log.warn("tool-call deduplicated", {
+                  toolCallId: value.toolCallId,
+                  toolName: value.toolName,
+                })
+                yield* session.updatePart({
+                  ...match,
+                  tool: value.toolName,
+                  state: {
+                    status: "error",
+                    input: value.input,
+                    error: "Duplicate tool call deduplicated",
+                    time: { start: Date.now(), end: Date.now() },
+                  },
+                } satisfies MessageV2.ToolPart)
+                delete ctx.toolcalls[value.toolCallId]
+                return
+              }
+              ctx.acceptedToolKeys.add(dedupKey(value.toolName, value.input))
               ctx.toolcalls[value.toolCallId] = yield* session.updatePart({
                 ...match,
                 tool: value.toolName,
@@ -869,6 +924,7 @@ export namespace SessionProcessor {
             // Full ctx state reset for next attempt
             ctx.toolcalls = {}
             ctx.hasToolCalls = false
+            ctx.acceptedToolKeys.clear()
             hasExecutedTool = false
             ctx.currentText = undefined
             ctx.tagFilter = undefined

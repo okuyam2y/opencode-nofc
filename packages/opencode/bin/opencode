@@ -50,7 +50,7 @@ let arch = archMap[os.arch()]
 if (!arch) {
   arch = os.arch()
 }
-const base = "opencode-nofc-" + platform + "-" + arch
+const base = "opencode-ai-nofc-" + platform + "-" + arch
 const binary = platform === "windows" ? "opencode.exe" : "opencode"
 
 function supportsAvx2() {

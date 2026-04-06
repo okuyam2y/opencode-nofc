@@ -13,7 +13,17 @@ import { fileURLToPath } from "url"
 const dir = fileURLToPath(new URL("..", import.meta.url))
 process.chdir(dir)
 
-const PREFIX = "opencode-nofc"
+const PREFIX = "opencode-ai-nofc"
+
+// Only publish these platform targets (skip low-demand platforms)
+const ALLOWED_TARGETS = new Set([
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-x64",
+  "linux-arm64",
+  "windows-x64",
+  "windows-arm64",
+])
 
 // Rename binary packages from opencode-* to opencode-nofc-*
 // Idempotent: skips already-renamed packages and the wrapper directory.
@@ -25,11 +35,14 @@ for (const filepath of new Bun.Glob("*/package.json").scanSync({ cwd: "./dist" }
   if (oldName === PREFIX) continue // Skip the wrapper directory itself
   if (oldName.startsWith(`${PREFIX}-`)) {
     // Already renamed from a previous run
+    const suffix = oldName.slice(`${PREFIX}-`.length)
+    if (!ALLOWED_TARGETS.has(suffix)) continue
     binaries[oldName] = distPkg.version
     continue
   }
   if (!oldName.startsWith("opencode-")) continue
   const suffix = oldName.slice("opencode-".length) // e.g. "linux-x64"
+  if (!ALLOWED_TARGETS.has(suffix)) continue
   const newName = `${PREFIX}-${suffix}`
   distPkg.name = newName
   await Bun.file(`./dist/${filepath}`).write(JSON.stringify(distPkg, null, 2))
@@ -78,6 +91,7 @@ async function publishDir(distDir: string) {
   if (process.platform !== "win32") {
     await $`chmod -R 755 .`.cwd(distDir)
   }
+  await $`rm -f *.tgz`.cwd(distDir)
   await $`bun pm pack`.cwd(distDir)
   try {
     await $`npm publish *.tgz --access public --tag latest`.cwd(distDir)

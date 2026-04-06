@@ -49,7 +49,7 @@ function detectPlatformAndArch() {
 
 function findBinary() {
   const { platform, arch } = detectPlatformAndArch()
-  const packageName = `opencode-nofc-${platform}-${arch}`
+  const packageName = `opencode-ai-nofc-${platform}-${arch}`
   const binaryName = platform === "windows" ? "opencode.exe" : "opencode"
 
   try {

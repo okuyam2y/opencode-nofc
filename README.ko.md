@@ -1,48 +1,85 @@
-> **이것은 [anomalyco/opencode](https://github.com/anomalyco/opencode)의 포크입니다.** 네이티브 function calling을 지원하지 않는 프로바이더 및 API 게이트웨이를 위해 [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) 미들웨어를 통합하여 텍스트 기반 프로토콜(Hermes, XML)로 도구 호출을 구현합니다.
->
-> **이 포크의 추가 기능:**
-> - 도구 파서 미들웨어 (Hermes / Hermes-strict / XML) — `opencode.json`에서 프로바이더/모델별 설정 가능
-> - 스트리밍 태그 필터, 스트림 중복 제거, 사용량 추정 폴백
-> - PDF / DOCX / XLSX 텍스트 추출, macOS Vision OCR
-> - 종료 사유 처리 (`unknown` → 종료), 루프 가드레일
-> - 도구 파서 활성화 시 `apply_patch` → `edit`/`write` 자동 전환
->
-> **빠른 시작:**
-> ```jsonc
-> // opencode.json — 프로바이더 옵션에 toolParser 추가
-> {
->   "provider": {
->     "my-gateway": {
->       "npm": "@ai-sdk/openai-compatible",
->       "options": {
->         "baseURL": "https://your-gateway/v1",
->         "toolParser": "hermes"  // 또는 "hermes-strict", "xml"
->       },
->       "models": {
->         "your-model": { "id": "your-model" }
->       }
->     }
->   }
-> }
-> ```
->
-> **이 포크 설치:**
-> ```bash
-> # GitHub Releases에서 빌드된 바이너리 다운로드
-> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
-> ./opencode
->
-> # 또는 소스에서 빌드
-> git clone https://github.com/okuyam2y/opencode-nofc.git
-> cd opencode-nofc && bun install && bun turbo build
-> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
-> ```
->
-> **[설정 가이드 →](docs/guides/toolparser-setup.md)** — 상세 설정, 모델별 설정, 문제 해결.
->
-> **관련:** [#2917](https://github.com/anomalyco/opencode/issues/2917) (커스텀 도구 파서 요청) · [#1122](https://github.com/anomalyco/opencode/issues/1122) (vLLM + Hermes) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser)
->
-> upstream `dev` 브랜치를 추적합니다. 버그 수정은 적절히 upstream에 PR로 제출합니다.
+# OpenCode (nofc fork)
+
+**네이티브 function calling을 지원하지 않는 프로바이더를 위한 도구 호출.**
+
+[anomalyco/opencode](https://github.com/anomalyco/opencode)의 포크 — [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) 미들웨어를 통합하여 구조화된 `tools` API 파라미터 대신 텍스트 기반 프로토콜(Hermes, XML)로 도구가 작동하도록 합니다.
+
+## 설치
+
+```bash
+npx opencode-ai-nofc
+
+# 또는 전역 설치
+npm i -g opencode-ai-nofc
+
+# 또는 사전 빌드된 바이너리 다운로드
+curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+./opencode
+
+# 또는 소스에서 빌드
+git clone https://github.com/okuyam2y/opencode-nofc.git
+cd opencode-nofc && bun install && bun turbo build
+```
+
+## 왜 이 포크인가?
+
+많은 API 게이트웨이와 셀프 호스팅 추론 서버(vLLM, LiteLLM, 커스텀 프록시)는 OpenAI 호환 요청에서 `tools` 파라미터를 제거하거나 무시합니다. 네이티브 function calling 없이는 OpenCode의 도구들 — read, write, bash 등 — 이 작동하지 않습니다.
+
+이 포크는 모델의 텍스트 출력에서 직접 도구 호출을 파싱하여 문제를 해결합니다. 모델이 일반 텍스트로 `<tool_call>` 태그를 작성하면, 파서 미들웨어가 이를 표준 AI SDK 도구 호출 이벤트로 변환합니다.
+
+## 설정
+
+`opencode.json`의 프로바이더 옵션에 `toolParser`를 추가하세요:
+
+```jsonc
+{
+  "provider": {
+    "my-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://your-gateway/v1",
+        "toolParser": "hermes-strict"
+      },
+      "models": {
+        "your-model": {
+          "name": "Your Model",
+          "limit": { "context": 200000, "output": 32768 }
+        }
+      }
+    }
+  }
+}
+```
+
+| 모드 | 설명 |
+|------|------|
+| `hermes-strict` | **권장.** 시스템 프롬프트에 명시적 규칙이 포함된 엄격한 JSON 형식. 가장 안정적. |
+| `hermes` | 표준 Hermes 프로토콜. hermes-strict에 문제가 있을 때 폴백. |
+| `xml` | XML 도구 호출로 훈련된 모델을 위한 순수 XML 형식. |
+
+## 포함된 기능
+
+도구 파서 외에 이 포크는 다음을 추가합니다:
+
+- **스트리밍 태그 필터** — 가시적 출력에 누출된 `<tool_call>` / `<tool_response>` 태그를 제거
+- **도구 호출 중복 제거** — 동일 LLM 단계 내 중복 도구 실행을 삭제
+- **`apply_patch` → `edit`/`write` 자동 전환** — 도구 파서 활성 시 diff 기반 편집을 라인 기반 도구로 대체
+- **PDF / DOCX / XLSX 텍스트 추출** 및 macOS Vision OCR
+- **종료 사유 처리** — `unknown` 종료 사유를 터미널 상태로 변환, 루프 가드레일 포함
+
+**[설정 가이드 →](docs/guides/toolparser-setup.md)** — 모델별 설정, 모델 호환성 표, 문제 해결.
+
+## 업스트림과의 관계
+
+이 포크는 업스트림 `dev` 브랜치를 추적하며 정기적으로 리베이스합니다. 버그 수정은 해당되는 경우 PR로 제출합니다.
+
+- npm: [`opencode-ai-nofc`](https://www.npmjs.com/package/opencode-ai-nofc) (공식 `opencode-ai` 패키지와 별도)
+- 관련: [#2917](https://github.com/anomalyco/opencode/issues/2917) (커스텀 도구 파서 요청) · [#1122](https://github.com/anomalyco/opencode/issues/1122) (vLLM + Hermes)
+- 라이선스: [MIT](LICENSE) (업스트림과 동일)
+
+---
+
+> *아래에 OpenCode 원본 README가 이어집니다.*
 
 <p align="center">
   <a href="https://opencode.ai">

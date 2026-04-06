@@ -37,7 +37,7 @@ export namespace SessionCompaction {
 
   /** Scale prune thresholds to model context size.
    *  Keeps the upstream default for ≤200K models, scales up for larger contexts. */
-  function pruneThresholds(contextLimit: number) {
+  export function pruneThresholds(contextLimit: number) {
     const protect = Math.max(PRUNE_PROTECT_DEFAULT, Math.round(contextLimit * 0.2))
     const minimum = Math.max(PRUNE_MINIMUM_DEFAULT, Math.round(protect * 0.5))
     return { protect, minimum }

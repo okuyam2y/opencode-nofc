@@ -1,22 +1,85 @@
-> **Αυτό είναι ένα fork του [anomalyco/opencode](https://github.com/anomalyco/opencode)** για παρόχους και API gateways που δεν υποστηρίζουν native function calling. Ενσωματώνει το middleware [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) ώστε οι κλήσεις εργαλείων να λειτουργούν μέσω πρωτοκόλλων κειμένου (Hermes, XML).
->
-> **Τι προσθέτει αυτό το fork:** tool parser middleware (Hermes / Hermes-strict / XML), streaming tag filter, stream deduplication, εξαγωγή PDF/DOCX/XLSX, macOS Vision OCR, διαχείριση finishReason και αυτόματη αντικατάσταση εργαλείων.
->
-> **Εγκατάσταση αυτού του fork:**
-> ```bash
-> # Λήψη προ-μεταγλωττισμένου εκτελέσιμου από GitHub Releases
-> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
-> ./opencode
->
-> # Ή μεταγλώττιση από τον πηγαίο κώδικα
-> git clone https://github.com/okuyam2y/opencode-nofc.git
-> cd opencode-nofc && bun install && bun turbo build
-> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
-> ```
->
-> **[Οδηγός ρύθμισης →](docs/guides/toolparser-setup.md)** — λεπτομερής ρύθμιση, ρυθμίσεις ανά μοντέλο και αντιμετώπιση προβλημάτων.
->
-> **Σχετικά:** [#2917](https://github.com/anomalyco/opencode/issues/2917) · [#1122](https://github.com/anomalyco/opencode/issues/1122) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser) | Ακολουθεί το upstream `dev` branch.
+# OpenCode (nofc fork)
+
+**Κλήσεις εργαλείων για παρόχους χωρίς native function calling.**
+
+Fork του [anomalyco/opencode](https://github.com/anomalyco/opencode) — ενσωματώνει το middleware [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) ώστε τα εργαλεία να λειτουργούν μέσω πρωτοκόλλων κειμένου (Hermes, XML) αντί της δομημένης παραμέτρου `tools` του API.
+
+## Εγκατάσταση
+
+```bash
+npx opencode-ai-nofc
+
+# ή εγκατάσταση παγκοσμίως
+npm i -g opencode-ai-nofc
+
+# ή λήψη προκατασκευασμένου εκτελέσιμου
+curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+./opencode
+
+# ή μεταγλώττιση από τον πηγαίο κώδικα
+git clone https://github.com/okuyam2y/opencode-nofc.git
+cd opencode-nofc && bun install && bun turbo build
+```
+
+## Γιατί αυτό το fork;
+
+Πολλά API gateways και self-hosted servers εξαγωγής συμπερασμάτων (vLLM, LiteLLM, προσαρμοσμένα proxies) αφαιρούν ή αγνοούν την παράμετρο `tools` από τα OpenAI-συμβατά αιτήματα. Χωρίς native function calling, τα εργαλεία του OpenCode — read, write, bash και άλλα — απλά δεν λειτουργούν.
+
+Αυτό το fork λύνει το πρόβλημα αναλύοντας τις κλήσεις εργαλείων απευθείας από την έξοδο κειμένου του μοντέλου. Το μοντέλο γράφει ετικέτες `<tool_call>` σε απλό κείμενο, και το middleware parser τις μετατρέπει σε τυπικά AI SDK events κλήσεων εργαλείων.
+
+## Ρύθμιση
+
+Προσθέστε `toolParser` στις επιλογές του παρόχου σας στο `opencode.json`:
+
+```jsonc
+{
+  "provider": {
+    "my-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://your-gateway/v1",
+        "toolParser": "hermes-strict"
+      },
+      "models": {
+        "your-model": {
+          "name": "Your Model",
+          "limit": { "context": 200000, "output": 32768 }
+        }
+      }
+    }
+  }
+}
+```
+
+| Λειτουργία | Περιγραφή |
+|------------|-----------|
+| `hermes-strict` | **Συνιστώμενο.** Αυστηρή μορφή JSON με ρητούς κανόνες στο system prompt. Πιο αξιόπιστο. |
+| `hermes` | Τυπικό πρωτόκολλο Hermes. Εναλλακτικό αν το hermes-strict προκαλεί προβλήματα. |
+| `xml` | Καθαρή μορφή XML για μοντέλα εκπαιδευμένα με XML κλήσεις εργαλείων. |
+
+## Τι περιλαμβάνει
+
+Εκτός από τον tool parser, αυτό το fork προσθέτει:
+
+- **Φίλτρο streaming tags** — αφαιρεί ετικέτες `<tool_call>` / `<tool_response>` που διαρρέουν στην ορατή έξοδο
+- **Αποδιπλασιασμός κλήσεων εργαλείων** — απορρίπτει διπλότυπες εκτελέσεις εργαλείων στο ίδιο βήμα LLM
+- **Αυτόματη αντικατάσταση `apply_patch` → `edit`/`write`** — αντικαθιστά την επεξεργασία με βάση τα diffs με εργαλεία βασισμένα σε γραμμές όταν ο tool parser είναι ενεργός
+- **Εξαγωγή κειμένου PDF / DOCX / XLSX** και macOS Vision OCR
+- **Διαχείριση λόγου τερματισμού** — μετατρέπει λόγους τερματισμού `unknown` σε τελικές καταστάσεις, με προστασία από βρόχους
+
+**[Οδηγός ρύθμισης →](docs/guides/toolparser-setup.md)** — ρυθμίσεις ανά μοντέλο, πίνακας συμβατότητας μοντέλων και αντιμετώπιση προβλημάτων.
+
+## Σχέση με το upstream
+
+Αυτό το fork παρακολουθεί τον upstream `dev` κλάδο και γίνεται τακτικά rebase. Οι διορθώσεις σφαλμάτων υποβάλλονται ως PRs όταν ισχύει.
+
+- npm: [`opencode-ai-nofc`](https://www.npmjs.com/package/opencode-ai-nofc) (ξεχωριστό από το επίσημο πακέτο `opencode-ai`)
+- Σχετικό: [#2917](https://github.com/anomalyco/opencode/issues/2917) (αίτημα για προσαρμοσμένο tool parser) · [#1122](https://github.com/anomalyco/opencode/issues/1122) (vLLM + Hermes)
+- Άδεια: [MIT](LICENSE) (ίδια με το upstream)
+
+---
+
+> *Το αρχικό README του OpenCode ακολουθεί παρακάτω.*
 
 <p align="center">
   <a href="https://opencode.ai">

@@ -1,48 +1,85 @@
-> **This is a fork of [anomalyco/opencode](https://github.com/anomalyco/opencode)** for providers and API gateways that lack native function calling support. It integrates [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) middleware so that tool calling works via text-based protocols (Hermes, XML).
->
-> **What this fork adds:**
-> - Tool parser middleware (Hermes / Hermes-strict / XML) — configured per-provider or per-model in `opencode.json`
-> - Streaming tag filter, stream deduplication, usage estimation fallback
-> - PDF / DOCX / XLSX text extraction, macOS Vision OCR
-> - Finish reason handling (`unknown` → terminal), loop guardrails
-> - Automatic `apply_patch` → `edit`/`write` substitution when tool parser is active
->
-> **Quick start:**
-> ```jsonc
-> // opencode.json — add toolParser to your provider options
-> {
->   "provider": {
->     "my-gateway": {
->       "npm": "@ai-sdk/openai-compatible",
->       "options": {
->         "baseURL": "https://your-gateway/v1",
->         "toolParser": "hermes"  // or "hermes-strict", "xml"
->       },
->       "models": {
->         "your-model": { "id": "your-model" }
->       }
->     }
->   }
-> }
-> ```
->
-> **Install this fork:**
-> ```bash
-> # Download pre-built binary from GitHub Releases
-> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
-> ./opencode
->
-> # Or build from source
-> git clone https://github.com/okuyam2y/opencode-nofc.git
-> cd opencode-nofc && bun install && bun turbo build
-> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
-> ```
->
-> **[Setup guide →](docs/guides/toolparser-setup.md)** — detailed configuration, per-model settings, and troubleshooting.
->
-> **Related:** [#2917](https://github.com/anomalyco/opencode/issues/2917) (custom tool parser request) · [#1122](https://github.com/anomalyco/opencode/issues/1122) (vLLM + Hermes) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser)
->
-> **License:** [MIT](LICENSE) (same as upstream) | Tracks upstream `dev` branch. Bug fixes are submitted as PRs when applicable.
+# OpenCode (nofc fork)
+
+**Tool calling for providers without native function calling.**
+
+Fork of [anomalyco/opencode](https://github.com/anomalyco/opencode) — integrates [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) middleware so that tools work through text-based protocols (Hermes, XML) instead of the structured `tools` API parameter.
+
+## Install
+
+```bash
+npx opencode-ai-nofc
+
+# or install globally
+npm i -g opencode-ai-nofc
+
+# or download pre-built binary
+curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+./opencode
+
+# or build from source
+git clone https://github.com/okuyam2y/opencode-nofc.git
+cd opencode-nofc && bun install && bun turbo build
+```
+
+## Why this fork?
+
+Many API gateways and self-hosted inference servers (vLLM, LiteLLM, custom proxies) strip or ignore the `tools` parameter from OpenAI-compatible requests. Without native function calling, OpenCode's tools — read, write, bash, and others — simply don't work.
+
+This fork solves the problem by parsing tool calls directly from model text output. The model writes `<tool_call>` tags in plain text, and the parser middleware converts them into standard AI SDK tool-call events.
+
+## Configuration
+
+Add `toolParser` to your provider options in `opencode.json`:
+
+```jsonc
+{
+  "provider": {
+    "my-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://your-gateway/v1",
+        "toolParser": "hermes-strict"
+      },
+      "models": {
+        "your-model": {
+          "name": "Your Model",
+          "limit": { "context": 200000, "output": 32768 }
+        }
+      }
+    }
+  }
+}
+```
+
+| Mode | Description |
+|------|-------------|
+| `hermes-strict` | **Recommended.** Strict JSON format with explicit rules in system prompt. Most reliable. |
+| `hermes` | Standard Hermes protocol. Fallback if hermes-strict causes issues. |
+| `xml` | Pure XML format for models trained on XML tool calling. |
+
+## What's included
+
+Beyond the tool parser, this fork adds:
+
+- **Streaming tag filter** — removes `<tool_call>` / `<tool_response>` tags leaked into visible output
+- **Tool call deduplication** — drops duplicate tool executions within the same LLM step
+- **`apply_patch` → `edit`/`write` auto-substitution** — replaces diff-based editing with line-based tools when the tool parser is active
+- **PDF / DOCX / XLSX text extraction** and macOS Vision OCR
+- **Finish reason handling** — converts `unknown` finish reasons to terminal states, with loop guardrails
+
+**[Setup guide →](docs/guides/toolparser-setup.md)** — per-model settings, model compatibility table, and troubleshooting.
+
+## Upstream relationship
+
+This fork tracks the upstream `dev` branch and is regularly rebased. Bug fixes are submitted as PRs when applicable.
+
+- npm: [`opencode-ai-nofc`](https://www.npmjs.com/package/opencode-ai-nofc) (separate from the official `opencode-ai` package)
+- Related: [#2917](https://github.com/anomalyco/opencode/issues/2917) (custom tool parser request) · [#1122](https://github.com/anomalyco/opencode/issues/1122) (vLLM + Hermes)
+- License: [MIT](LICENSE) (same as upstream)
+
+---
+
+> *The original OpenCode README follows below.*
 
 <p align="center">
   <a href="https://opencode.ai">

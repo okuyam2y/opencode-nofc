@@ -1,22 +1,85 @@
-> **Ovo je fork projekta [anomalyco/opencode](https://github.com/anomalyco/opencode)** za providere i API gateway-e koji ne podržavaju nativni function calling. Integriše [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) middleware tako da pozivi alata rade putem tekstualnih protokola (Hermes, XML).
->
-> **Šta ovaj fork dodaje:** tool parser middleware (Hermes / Hermes-strict / XML), streaming tag filter, stream deduplikacija, PDF/DOCX/XLSX ekstrakcija, macOS Vision OCR, finishReason handling i automatska zamjena alata.
->
-> **Instalirajte ovaj fork:**
-> ```bash
-> # Preuzmite unaprijed kompajlirani binarni fajl sa GitHub Releases
-> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
-> ./opencode
->
-> # Ili kompajlirajte iz izvornog koda
-> git clone https://github.com/okuyam2y/opencode-nofc.git
-> cd opencode-nofc && bun install && bun turbo build
-> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
-> ```
->
-> **[Vodič za postavljanje →](docs/guides/toolparser-setup.md)** — detaljna konfiguracija, postavke po modelu i rješavanje problema.
->
-> **Povezano:** [#2917](https://github.com/anomalyco/opencode/issues/2917) · [#1122](https://github.com/anomalyco/opencode/issues/1122) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser) | Prati upstream `dev` granu.
+# OpenCode (nofc fork)
+
+**Pozivanje alata za provajdere bez nativnog pozivanja funkcija.**
+
+Fork projekta [anomalyco/opencode](https://github.com/anomalyco/opencode) — integrira [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) middleware tako da alati rade kroz tekstualne protokole (Hermes, XML) umjesto strukturiranog `tools` API parametra.
+
+## Instalacija
+
+```bash
+npx opencode-ai-nofc
+
+# ili instalirajte globalno
+npm i -g opencode-ai-nofc
+
+# ili preuzmite unaprijed kompajliran binarni fajl
+curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+./opencode
+
+# ili kompajlirajte iz izvornog koda
+git clone https://github.com/okuyam2y/opencode-nofc.git
+cd opencode-nofc && bun install && bun turbo build
+```
+
+## Zašto ovaj fork?
+
+Mnogi API gateway-i i self-hosted serveri za inferenciju (vLLM, LiteLLM, prilagođeni proksiji) uklanjaju ili ignoriraju `tools` parametar iz OpenAI-kompatibilnih zahtjeva. Bez nativnog pozivanja funkcija, alati OpenCode-a — read, write, bash i drugi — jednostavno ne rade.
+
+Ovaj fork rješava problem parsiranjem poziva alata direktno iz tekstualnog izlaza modela. Model piše `<tool_call>` tagove u običnom tekstu, a parser middleware ih pretvara u standardne AI SDK događaje poziva alata.
+
+## Konfiguracija
+
+Dodajte `toolParser` u opcije provajdera u `opencode.json`:
+
+```jsonc
+{
+  "provider": {
+    "my-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://your-gateway/v1",
+        "toolParser": "hermes-strict"
+      },
+      "models": {
+        "your-model": {
+          "name": "Your Model",
+          "limit": { "context": 200000, "output": 32768 }
+        }
+      }
+    }
+  }
+}
+```
+
+| Način | Opis |
+|-------|------|
+| `hermes-strict` | **Preporučeno.** Strogi JSON format sa eksplicitnim pravilima u sistemskom promptu. Najpouzdanije. |
+| `hermes` | Standardni Hermes protokol. Alternativa ako hermes-strict uzrokuje probleme. |
+| `xml` | Čisti XML format za modele obučene na XML pozivanje alata. |
+
+## Šta je uključeno
+
+Osim parsera alata, ovaj fork dodaje:
+
+- **Filter streaming tagova** — uklanja `<tool_call>` / `<tool_response>` tagove koji procure u vidljivi izlaz
+- **Deduplikacija poziva alata** — odbacuje duplikate izvršavanja alata unutar istog LLM koraka
+- **Automatska zamjena `apply_patch` → `edit`/`write`** — zamjenjuje uređivanje bazirano na razlikama alatima baziranim na linijama kada je parser alata aktivan
+- **Ekstrakcija teksta iz PDF / DOCX / XLSX** i macOS Vision OCR
+- **Rukovanje razlogom završetka** — pretvara `unknown` razloge završetka u terminalna stanja, sa zaštitom od petlji
+
+**[Vodič za postavljanje →](docs/guides/toolparser-setup.md)** — postavke po modelu, tabela kompatibilnosti modela i rješavanje problema.
+
+## Odnos sa upstream-om
+
+Ovaj fork prati upstream `dev` granu i redovno se rebasira. Ispravke grešaka se šalju kao PR-ovi kada je primjenjivo.
+
+- npm: [`opencode-ai-nofc`](https://www.npmjs.com/package/opencode-ai-nofc) (odvojen od službenog `opencode-ai` paketa)
+- Povezano: [#2917](https://github.com/anomalyco/opencode/issues/2917) (zahtjev za prilagođeni parser alata) · [#1122](https://github.com/anomalyco/opencode/issues/1122) (vLLM + Hermes)
+- Licenca: [MIT](LICENSE) (ista kao upstream)
+
+---
+
+> *Originalni OpenCode README slijedi ispod.*
 
 <p align="center">
   <a href="https://opencode.ai">

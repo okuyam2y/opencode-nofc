@@ -1,22 +1,85 @@
-> **এটি [anomalyco/opencode](https://github.com/anomalyco/opencode)-এর একটি ফর্ক** যা নেটিভ function calling সমর্থন করে না এমন প্রোভাইডার ও API গেটওয়ের জন্য। [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) মিডলওয়্যার ইন্টিগ্রেট করে টেক্সট-ভিত্তিক প্রোটোকল (Hermes, XML) এর মাধ্যমে টুল কলিং কাজ করে।
->
-> **এই ফর্কের সংযোজন:** টুল পার্সার মিডলওয়্যার (Hermes / Hermes-strict / XML), স্ট্রিমিং ট্যাগ ফিল্টার, স্ট্রিম ডিডুপ্লিকেশন, PDF/DOCX/XLSX টেক্সট এক্সট্রাকশন, macOS Vision OCR, finishReason হ্যান্ডলিং এবং স্বয়ংক্রিয় টুল প্রতিস্থাপন।
->
-> **এই ফর্ক ইনস্টল করুন:**
-> ```bash
-> # GitHub Releases থেকে প্রি-বিল্ট বাইনারি ডাউনলোড করুন
-> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
-> ./opencode
->
-> # অথবা সোর্স থেকে বিল্ড করুন
-> git clone https://github.com/okuyam2y/opencode-nofc.git
-> cd opencode-nofc && bun install && bun turbo build
-> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
-> ```
->
-> **[সেটআপ গাইড →](docs/guides/toolparser-setup.md)** — বিস্তারিত কনফিগারেশন, মডেল-ভিত্তিক সেটিংস এবং সমস্যা সমাধান।
->
-> **সম্পর্কিত:** [#2917](https://github.com/anomalyco/opencode/issues/2917) · [#1122](https://github.com/anomalyco/opencode/issues/1122) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser) | upstream `dev` ব্রাঞ্চ ট্র্যাক করে।
+# OpenCode (nofc fork)
+
+**নেটিভ ফাংশন কলিং সমর্থন নেই এমন প্রোভাইডারদের জন্য টুল কলিং।**
+
+[anomalyco/opencode](https://github.com/anomalyco/opencode)-এর ফর্ক — [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) মিডলওয়্যার সংহত করে যাতে স্ট্রাকচার্ড `tools` API প্যারামিটারের পরিবর্তে টেক্সট-ভিত্তিক প্রোটোকল (Hermes, XML) দিয়ে টুল কাজ করে।
+
+## ইনস্টল
+
+```bash
+npx opencode-ai-nofc
+
+# অথবা গ্লোবালি ইনস্টল করুন
+npm i -g opencode-ai-nofc
+
+# অথবা প্রি-বিল্ট বাইনারি ডাউনলোড করুন
+curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+./opencode
+
+# অথবা সোর্স থেকে বিল্ড করুন
+git clone https://github.com/okuyam2y/opencode-nofc.git
+cd opencode-nofc && bun install && bun turbo build
+```
+
+## কেন এই ফর্ক?
+
+অনেক API গেটওয়ে এবং সেলফ-হোস্টেড ইনফারেন্স সার্ভার (vLLM, LiteLLM, কাস্টম প্রক্সি) OpenAI-সামঞ্জস্যপূর্ণ রিকোয়েস্ট থেকে `tools` প্যারামিটার সরিয়ে দেয় বা উপেক্ষা করে। নেটিভ ফাংশন কলিং ছাড়া, OpenCode-এর টুলগুলো — read, write, bash এবং অন্যান্য — কাজ করে না।
+
+এই ফর্ক মডেলের টেক্সট আউটপুট থেকে সরাসরি টুল কল পার্স করে সমস্যাটি সমাধান করে। মডেল প্লেইন টেক্সটে `<tool_call>` ট্যাগ লেখে, এবং পার্সার মিডলওয়্যার সেগুলোকে স্ট্যান্ডার্ড AI SDK টুল-কল ইভেন্টে রূপান্তর করে।
+
+## কনফিগারেশন
+
+`opencode.json`-এ আপনার প্রোভাইডার অপশনে `toolParser` যোগ করুন:
+
+```jsonc
+{
+  "provider": {
+    "my-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://your-gateway/v1",
+        "toolParser": "hermes-strict"
+      },
+      "models": {
+        "your-model": {
+          "name": "Your Model",
+          "limit": { "context": 200000, "output": 32768 }
+        }
+      }
+    }
+  }
+}
+```
+
+| মোড | বিবরণ |
+|------|-------|
+| `hermes-strict` | **প্রস্তাবিত।** সিস্টেম প্রম্পটে স্পষ্ট নিয়মসহ কঠোর JSON ফরম্যাট। সবচেয়ে নির্ভরযোগ্য। |
+| `hermes` | স্ট্যান্ডার্ড Hermes প্রোটোকল। hermes-strict সমস্যা করলে ফলব্যাক। |
+| `xml` | XML টুল কলিং-এ প্রশিক্ষিত মডেলের জন্য বিশুদ্ধ XML ফরম্যাট। |
+
+## কী অন্তর্ভুক্ত
+
+টুল পার্সারের বাইরে, এই ফর্ক যোগ করে:
+
+- **স্ট্রিমিং ট্যাগ ফিল্টার** — দৃশ্যমান আউটপুটে লিক হওয়া `<tool_call>` / `<tool_response>` ট্যাগ সরায়
+- **টুল কল ডিডুপ্লিকেশন** — একই LLM স্টেপের মধ্যে ডুপ্লিকেট টুল এক্সিকিউশন বাদ দেয়
+- **`apply_patch` → `edit`/`write` স্বয়ংক্রিয় প্রতিস্থাপন** — টুল পার্সার সক্রিয় থাকলে diff-ভিত্তিক এডিটিং-কে লাইন-ভিত্তিক টুলে প্রতিস্থাপন করে
+- **PDF / DOCX / XLSX টেক্সট এক্সট্রাকশন** এবং macOS Vision OCR
+- **ফিনিশ রিজন হ্যান্ডলিং** — `unknown` ফিনিশ রিজনকে টার্মিনাল স্টেটে রূপান্তর করে, লুপ গার্ডরেইলসহ
+
+**[সেটআপ গাইড →](docs/guides/toolparser-setup.md)** — মডেল-ভিত্তিক সেটিংস, মডেল সামঞ্জস্যতা তালিকা, এবং সমস্যা সমাধান।
+
+## আপস্ট্রিমের সাথে সম্পর্ক
+
+এই ফর্ক আপস্ট্রিম `dev` ব্রাঞ্চ ট্র্যাক করে এবং নিয়মিত রিবেস করা হয়। বাগ ফিক্স প্রযোজ্য হলে PR হিসেবে জমা দেওয়া হয়।
+
+- npm: [`opencode-ai-nofc`](https://www.npmjs.com/package/opencode-ai-nofc) (অফিসিয়াল `opencode-ai` প্যাকেজ থেকে আলাদা)
+- সম্পর্কিত: [#2917](https://github.com/anomalyco/opencode/issues/2917) (কাস্টম টুল পার্সার অনুরোধ) · [#1122](https://github.com/anomalyco/opencode/issues/1122) (vLLM + Hermes)
+- লাইসেন্স: [MIT](LICENSE) (আপস্ট্রিমের মতো একই)
+
+---
+
+> *নিচে OpenCode-এর মূল README অনুসরণ করে।*
 
 <p align="center">
   <a href="https://opencode.ai">

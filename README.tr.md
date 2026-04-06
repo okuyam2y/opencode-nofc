@@ -1,22 +1,85 @@
-> **Bu, [anomalyco/opencode](https://github.com/anomalyco/opencode) projesinin bir fork'udur.** Yerel function calling desteği olmayan sağlayıcılar ve API gateway'ler için [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) middleware'ini entegre ederek araç çağrılarının metin tabanlı protokoller (Hermes, XML) üzerinden çalışmasını sağlar.
->
-> **Bu fork'un eklediği:** tool parser middleware (Hermes / Hermes-strict / XML), streaming tag filtresi, stream deduplikasyonu, PDF/DOCX/XLSX metin çıkarma, macOS Vision OCR, finishReason yönetimi ve otomatik araç değişimi.
->
-> **Bu fork'u kurun:**
-> ```bash
-> # GitHub Releases'dan önceden derlenmiş ikili dosyayı indirin
-> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
-> ./opencode
->
-> # Veya kaynak koddan derleyin
-> git clone https://github.com/okuyam2y/opencode-nofc.git
-> cd opencode-nofc && bun install && bun turbo build
-> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
-> ```
->
-> **[Kurulum rehberi →](docs/guides/toolparser-setup.md)** — ayrıntılı yapılandırma, model bazlı ayarlar ve sorun giderme.
->
-> **İlgili:** [#2917](https://github.com/anomalyco/opencode/issues/2917) · [#1122](https://github.com/anomalyco/opencode/issues/1122) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser) | Upstream `dev` dalını takip eder.
+# OpenCode (nofc fork)
+
+**Yerel function calling desteği olmayan sağlayıcılar için araç çağrısı.**
+
+[anomalyco/opencode](https://github.com/anomalyco/opencode) fork'u — [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) middleware'ini entegre ederek araçların yapılandırılmış `tools` API parametresi yerine metin tabanlı protokoller (Hermes, XML) üzerinden çalışmasını sağlar.
+
+## Kurulum
+
+```bash
+npx opencode-ai-nofc
+
+# veya global olarak yükleyin
+npm i -g opencode-ai-nofc
+
+# veya önceden derlenmiş ikili dosyayı indirin
+curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+./opencode
+
+# veya kaynak koddan derleyin
+git clone https://github.com/okuyam2y/opencode-nofc.git
+cd opencode-nofc && bun install && bun turbo build
+```
+
+## Neden bu fork?
+
+Birçok API gateway ve kendi barındırdığınız çıkarım sunucusu (vLLM, LiteLLM, özel proxy'ler) OpenAI uyumlu isteklerden `tools` parametresini kaldırır veya yok sayar. Yerel function calling olmadan, OpenCode'un araçları — read, write, bash ve diğerleri — çalışmaz.
+
+Bu fork, araç çağrılarını modelin metin çıktısından doğrudan ayrıştırarak sorunu çözer. Model düz metin olarak `<tool_call>` etiketleri yazar ve parser middleware bunları standart AI SDK araç çağrısı olaylarına dönüştürür.
+
+## Yapılandırma
+
+`opencode.json` dosyasındaki sağlayıcı seçeneklerine `toolParser` ekleyin:
+
+```jsonc
+{
+  "provider": {
+    "my-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://your-gateway/v1",
+        "toolParser": "hermes-strict"
+      },
+      "models": {
+        "your-model": {
+          "name": "Your Model",
+          "limit": { "context": 200000, "output": 32768 }
+        }
+      }
+    }
+  }
+}
+```
+
+| Mod | Açıklama |
+|-----|----------|
+| `hermes-strict` | **Önerilen.** Sistem prompt'unda açık kurallarla sıkı JSON formatı. En güvenilir. |
+| `hermes` | Standart Hermes protokolü. hermes-strict sorun çıkarırsa yedek seçenek. |
+| `xml` | XML araç çağrısı ile eğitilmiş modeller için saf XML formatı. |
+
+## Neler dahil
+
+Araç parser'ın ötesinde, bu fork şunları ekler:
+
+- **Streaming etiket filtresi** — görünen çıktıya sızan `<tool_call>` / `<tool_response>` etiketlerini kaldırır
+- **Araç çağrısı tekrar önleme** — aynı LLM adımındaki yinelenen araç çalıştırmalarını atar
+- **`apply_patch` → `edit`/`write` otomatik değiştirme** — araç parser aktifken diff tabanlı düzenlemeyi satır tabanlı araçlarla değiştirir
+- **PDF / DOCX / XLSX metin çıkarma** ve macOS Vision OCR
+- **Bitiş nedeni yönetimi** — `unknown` bitiş nedenlerini terminal durumlara dönüştürür, döngü koruması ile
+
+**[Kurulum rehberi →](docs/guides/toolparser-setup.md)** — model bazlı ayarlar, model uyumluluk tablosu ve sorun giderme.
+
+## Upstream ile ilişki
+
+Bu fork, upstream `dev` dalını takip eder ve düzenli olarak rebase edilir. Hata düzeltmeleri uygun olduğunda PR olarak gönderilir.
+
+- npm: [`opencode-ai-nofc`](https://www.npmjs.com/package/opencode-ai-nofc) (resmî `opencode-ai` paketinden ayrı)
+- İlgili: [#2917](https://github.com/anomalyco/opencode/issues/2917) (özel araç parser isteği) · [#1122](https://github.com/anomalyco/opencode/issues/1122) (vLLM + Hermes)
+- Lisans: [MIT](LICENSE) (upstream ile aynı)
+
+---
+
+> *OpenCode'un orijinal README'si aşağıda devam etmektedir.*
 
 <p align="center">
   <a href="https://opencode.ai">

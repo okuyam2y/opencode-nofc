@@ -1,22 +1,85 @@
-> **Это форк [anomalyco/opencode](https://github.com/anomalyco/opencode)** для провайдеров и API-шлюзов без нативной поддержки function calling. Интегрирует middleware [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser), чтобы вызовы инструментов работали через текстовые протоколы (Hermes, XML).
->
-> **Что добавляет этот форк:** middleware tool parser (Hermes / Hermes-strict / XML), потоковый фильтр тегов, дедупликация потока, извлечение PDF/DOCX/XLSX, macOS Vision OCR, обработка finishReason и автоматическая замена инструментов.
->
-> **Установить этот форк:**
-> ```bash
-> # Скачать готовый бинарный файл из GitHub Releases
-> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
-> ./opencode
->
-> # Или собрать из исходного кода
-> git clone https://github.com/okuyam2y/opencode-nofc.git
-> cd opencode-nofc && bun install && bun turbo build
-> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
-> ```
->
-> **[Руководство по настройке →](docs/guides/toolparser-setup.md)** — подробная настройка, настройки для каждой модели и устранение неполадок.
->
-> **Связанное:** [#2917](https://github.com/anomalyco/opencode/issues/2917) · [#1122](https://github.com/anomalyco/opencode/issues/1122) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser) | Отслеживает upstream ветку `dev`.
+# OpenCode (nofc fork)
+
+**Вызов инструментов для провайдеров без нативного function calling.**
+
+Форк [anomalyco/opencode](https://github.com/anomalyco/opencode) — интегрирует middleware [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser), чтобы инструменты работали через текстовые протоколы (Hermes, XML) вместо структурированного параметра `tools` API.
+
+## Установка
+
+```bash
+npx opencode-ai-nofc
+
+# или установите глобально
+npm i -g opencode-ai-nofc
+
+# или скачайте готовый бинарный файл
+curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+./opencode
+
+# или соберите из исходного кода
+git clone https://github.com/okuyam2y/opencode-nofc.git
+cd opencode-nofc && bun install && bun turbo build
+```
+
+## Зачем этот форк?
+
+Многие API-шлюзы и self-hosted серверы вывода (vLLM, LiteLLM, пользовательские прокси) удаляют или игнорируют параметр `tools` из OpenAI-совместимых запросов. Без нативного function calling инструменты OpenCode — read, write, bash и другие — просто не работают.
+
+Этот форк решает проблему, разбирая вызовы инструментов непосредственно из текстового вывода модели. Модель пишет теги `<tool_call>` в обычном тексте, а middleware-парсер преобразует их в стандартные события вызова инструментов AI SDK.
+
+## Настройка
+
+Добавьте `toolParser` в параметры провайдера в `opencode.json`:
+
+```jsonc
+{
+  "provider": {
+    "my-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://your-gateway/v1",
+        "toolParser": "hermes-strict"
+      },
+      "models": {
+        "your-model": {
+          "name": "Your Model",
+          "limit": { "context": 200000, "output": 32768 }
+        }
+      }
+    }
+  }
+}
+```
+
+| Режим | Описание |
+|-------|----------|
+| `hermes-strict` | **Рекомендуется.** Строгий формат JSON с явными правилами в системном промпте. Наиболее надёжный. |
+| `hermes` | Стандартный протокол Hermes. Запасной вариант, если hermes-strict вызывает проблемы. |
+| `xml` | Чистый формат XML для моделей, обученных на XML-вызовах инструментов. |
+
+## Что включено
+
+Помимо парсера инструментов, этот форк добавляет:
+
+- **Потоковый фильтр тегов** — удаляет теги `<tool_call>` / `<tool_response>`, просачивающиеся в видимый вывод
+- **Дедупликация вызовов инструментов** — отбрасывает дублирующиеся выполнения инструментов в одном шаге LLM
+- **Автоматическая замена `apply_patch` → `edit`/`write`** — заменяет редактирование на основе diff инструментами на основе строк при активном парсере инструментов
+- **Извлечение текста из PDF / DOCX / XLSX** и macOS Vision OCR
+- **Обработка причины завершения** — преобразует причины завершения `unknown` в терминальные состояния, с защитой от циклов
+
+**[Руководство по настройке →](docs/guides/toolparser-setup.md)** — настройки для каждой модели, таблица совместимости моделей и устранение неполадок.
+
+## Связь с upstream
+
+Этот форк отслеживает ветку `dev` upstream и регулярно перебазируется. Исправления ошибок отправляются как PR при необходимости.
+
+- npm: [`opencode-ai-nofc`](https://www.npmjs.com/package/opencode-ai-nofc) (отдельно от официального пакета `opencode-ai`)
+- Связанное: [#2917](https://github.com/anomalyco/opencode/issues/2917) (запрос на пользовательский парсер инструментов) · [#1122](https://github.com/anomalyco/opencode/issues/1122) (vLLM + Hermes)
+- Лицензия: [MIT](LICENSE) (такая же, как у upstream)
+
+---
+
+> *Оригинальный README OpenCode следует ниже.*
 
 <p align="center">
   <a href="https://opencode.ai">

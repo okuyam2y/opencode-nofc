@@ -1,48 +1,85 @@
-> **这是 [anomalyco/opencode](https://github.com/anomalyco/opencode) 的分支，** 适用于不支持原生 function calling 的提供商和 API 网关。集成了 [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) 中间件，通过基于文本的协议（Hermes、XML）实现工具调用。
->
-> **本分支新增功能：**
-> - 工具解析中间件（Hermes / Hermes-strict / XML）— 在 `opencode.json` 中按提供商或模型配置
-> - 流式标签过滤器、流去重、用量估算回退
-> - PDF / DOCX / XLSX 文本提取、macOS Vision OCR
-> - 结束原因处理（`unknown` → 终止）、循环防护
-> - 工具解析器启用时自动将 `apply_patch` 切换为 `edit`/`write`
->
-> **快速开始：**
-> ```jsonc
-> // opencode.json — 在提供商选项中添加 toolParser
-> {
->   "provider": {
->     "my-gateway": {
->       "npm": "@ai-sdk/openai-compatible",
->       "options": {
->         "baseURL": "https://your-gateway/v1",
->         "toolParser": "hermes"  // 或 "hermes-strict"、"xml"
->       },
->       "models": {
->         "your-model": { "id": "your-model" }
->       }
->     }
->   }
-> }
-> ```
->
-> **安装此分支:**
-> ```bash
-> # 从 GitHub Releases 下载预编译二进制文件
-> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
-> ./opencode
->
-> # 或从源码构建
-> git clone https://github.com/okuyam2y/opencode-nofc.git
-> cd opencode-nofc && bun install && bun turbo build
-> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
-> ```
->
-> **[配置指南 →](docs/guides/toolparser-setup.md)** — 详细配置、按模型设置和故障排除。
->
-> **相关：** [#2917](https://github.com/anomalyco/opencode/issues/2917)（自定义工具解析器请求）· [#1122](https://github.com/anomalyco/opencode/issues/1122)（vLLM + Hermes）· [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser)
->
-> 跟踪上游 `dev` 分支。Bug 修复会适时提交 PR 到上游。
+# OpenCode (nofc fork)
+
+**为不支持原生 function calling 的提供商提供工具调用。**
+
+[anomalyco/opencode](https://github.com/anomalyco/opencode) 的分支 — 集成 [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) 中间件，使工具通过基于文本的协议（Hermes、XML）工作，而非结构化的 `tools` API 参数。
+
+## 安装
+
+```bash
+npx opencode-ai-nofc
+
+# 或全局安装
+npm i -g opencode-ai-nofc
+
+# 或下载预编译二进制文件
+curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+./opencode
+
+# 或从源码构建
+git clone https://github.com/okuyam2y/opencode-nofc.git
+cd opencode-nofc && bun install && bun turbo build
+```
+
+## 为什么需要这个分支？
+
+许多 API 网关和自托管推理服务器（vLLM、LiteLLM、自定义代理）会从 OpenAI 兼容请求中剥离或忽略 `tools` 参数。没有原生 function calling，OpenCode 的工具 — read、write、bash 等 — 根本无法工作。
+
+本分支通过直接从模型的文本输出中解析工具调用来解决此问题。模型在纯文本中写入 `<tool_call>` 标签，解析器中间件将其转换为标准的 AI SDK 工具调用事件。
+
+## 配置
+
+在 `opencode.json` 的提供商选项中添加 `toolParser`：
+
+```jsonc
+{
+  "provider": {
+    "my-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://your-gateway/v1",
+        "toolParser": "hermes-strict"
+      },
+      "models": {
+        "your-model": {
+          "name": "Your Model",
+          "limit": { "context": 200000, "output": 32768 }
+        }
+      }
+    }
+  }
+}
+```
+
+| 模式 | 说明 |
+|------|------|
+| `hermes-strict` | **推荐。** 系统提示词中包含明确规则的严格 JSON 格式。最可靠。 |
+| `hermes` | 标准 Hermes 协议。hermes-strict 出问题时的备选方案。 |
+| `xml` | 纯 XML 格式，适用于经 XML 工具调用训练的模型。 |
+
+## 包含内容
+
+除了工具解析器，本分支还添加了：
+
+- **流式标签过滤器** — 移除泄露到可见输出中的 `<tool_call>` / `<tool_response>` 标签
+- **工具调用去重** — 丢弃同一 LLM 步骤内的重复工具执行
+- **`apply_patch` → `edit`/`write` 自动替换** — 工具解析器启用时，将基于 diff 的编辑替换为基于行的工具
+- **PDF / DOCX / XLSX 文本提取** 及 macOS Vision OCR
+- **结束原因处理** — 将 `unknown` 结束原因转换为终止状态，附带循环防护
+
+**[配置指南 →](docs/guides/toolparser-setup.md)** — 按模型设置、模型兼容性表和故障排除。
+
+## 与上游的关系
+
+本分支追踪上游 `dev` 分支，并定期进行 rebase。Bug 修复会在适当时作为 PR 提交。
+
+- npm：[`opencode-ai-nofc`](https://www.npmjs.com/package/opencode-ai-nofc)（与官方 `opencode-ai` 包分开）
+- 相关：[#2917](https://github.com/anomalyco/opencode/issues/2917)（自定义工具解析器请求）· [#1122](https://github.com/anomalyco/opencode/issues/1122)（vLLM + Hermes）
+- 许可证：[MIT](LICENSE)（与上游相同）
+
+---
+
+> *OpenCode 原始 README 如下。*
 
 <p align="center">
   <a href="https://opencode.ai">

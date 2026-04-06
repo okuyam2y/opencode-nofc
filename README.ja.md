@@ -1,48 +1,85 @@
-> **これは [anomalyco/opencode](https://github.com/anomalyco/opencode) のフォークです。** ネイティブの function calling をサポートしていないプロバイダーや API ゲートウェイ向けに、[`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) ミドルウェアを統合し、テキストベースのプロトコル（Hermes, XML）でツール呼び出しを実現します。
->
-> **このフォークの追加機能:**
-> - ツールパーサーミドルウェア（Hermes / Hermes-strict / XML）— `opencode.json` でプロバイダー/モデル単位で設定可能
-> - ストリーミングタグフィルター、ストリーム重複排除、使用量推定フォールバック
-> - PDF / DOCX / XLSX テキスト抽出、macOS Vision OCR
-> - 終了理由ハンドリング（`unknown` → 終了扱い）、ループガードレール
-> - ツールパーサー有効時に `apply_patch` → `edit`/`write` を自動切替
->
-> **クイックスタート:**
-> ```jsonc
-> // opencode.json — プロバイダーオプションに toolParser を追加
-> {
->   "provider": {
->     "my-gateway": {
->       "npm": "@ai-sdk/openai-compatible",
->       "options": {
->         "baseURL": "https://your-gateway/v1",
->         "toolParser": "hermes"  // or "hermes-strict", "xml"
->       },
->       "models": {
->         "your-model": { "id": "your-model" }
->       }
->     }
->   }
-> }
-> ```
->
-> **このフォークのインストール:**
-> ```bash
-> # GitHub Releases からビルド済みバイナリをダウンロード
-> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
-> ./opencode
->
-> # またはソースからビルド
-> git clone https://github.com/okuyam2y/opencode-nofc.git
-> cd opencode-nofc && bun install && bun turbo build
-> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
-> ```
->
-> **[セットアップガイド →](docs/guides/toolparser-setup.md)** — 詳細な設定方法、モデル別設定、トラブルシューティング。
->
-> **関連:** [#2917](https://github.com/anomalyco/opencode/issues/2917)（カスタムツールパーサー要望）· [#1122](https://github.com/anomalyco/opencode/issues/1122)（vLLM + Hermes）· [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser)
->
-> **ライセンス:** [MIT](LICENSE)（upstream と同一）| upstream の `dev` ブランチを追跡。バグ修正は適宜 upstream に PR を提出。
+# OpenCode (nofc fork)
+
+**ネイティブの function calling を持たないプロバイダー向けのツール呼び出し対応。**
+
+[anomalyco/opencode](https://github.com/anomalyco/opencode) のフォークです。[`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) ミドルウェアを統合し、構造化された `tools` API パラメータの代わりに、テキストベースのプロトコル（Hermes, XML）でツール呼び出しを実現します。
+
+## インストール
+
+```bash
+npx opencode-ai-nofc
+
+# グローバルインストール
+npm i -g opencode-ai-nofc
+
+# ビルド済みバイナリをダウンロード
+curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+./opencode
+
+# ソースからビルド
+git clone https://github.com/okuyam2y/opencode-nofc.git
+cd opencode-nofc && bun install && bun turbo build
+```
+
+## なぜこのフォーク？
+
+多くの API ゲートウェイやセルフホスト推論サーバー（vLLM, LiteLLM, カスタムプロキシ等）は、OpenAI 互換リクエストの `tools` パラメータを無視、または除去します。ネイティブの function calling がなければ、OpenCode のツール群（read, write, bash など）は動作しません。
+
+このフォークは、モデルのテキスト出力からツール呼び出しを直接パースすることで問題を解決します。モデルがプレーンテキストで `<tool_call>` タグを出力し、パーサーミドルウェアがそれを AI SDK 標準のツール呼び出しイベントに変換します。
+
+## 設定
+
+`opencode.json` のプロバイダーオプションに `toolParser` を追加してください：
+
+```jsonc
+{
+  "provider": {
+    "my-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://your-gateway/v1",
+        "toolParser": "hermes-strict"
+      },
+      "models": {
+        "your-model": {
+          "name": "Your Model",
+          "limit": { "context": 200000, "output": 32768 }
+        }
+      }
+    }
+  }
+}
+```
+
+| モード | 説明 |
+|--------|------|
+| `hermes-strict` | **推奨。** システムプロンプトに明示的なルールを含む厳密な JSON 形式。最も安定。 |
+| `hermes` | 標準の Hermes プロトコル。hermes-strict で問題が出る場合のフォールバック。 |
+| `xml` | XML ツール呼び出しで訓練されたモデル向けの純粋な XML 形式。 |
+
+## 含まれる機能
+
+ツールパーサー以外に、このフォークでは以下を追加しています：
+
+- **ストリーミングタグフィルター** — 表示出力に漏れた `<tool_call>` / `<tool_response>` タグを除去
+- **ツール呼び出し重複排除** — 同一 LLM ステップ内の重複ツール実行をドロップ
+- **`apply_patch` → `edit`/`write` 自動切替** — ツールパーサー有効時に diff ベースの編集を行ベースのツールに置換
+- **PDF / DOCX / XLSX テキスト抽出** および macOS Vision OCR
+- **終了理由ハンドリング** — `unknown` 終了理由を終了状態に変換、ループガードレール付き
+
+**[セットアップガイド →](docs/guides/toolparser-setup.md)** — モデル別設定、モデル互換性一覧、トラブルシューティング。
+
+## upstream との関係
+
+このフォークは upstream の `dev` ブランチを追跡し、定期的にリベースしています。バグ修正は適宜 upstream に PR を提出しています。
+
+- npm: [`opencode-ai-nofc`](https://www.npmjs.com/package/opencode-ai-nofc)（公式の `opencode-ai` パッケージとは別）
+- 関連: [#2917](https://github.com/anomalyco/opencode/issues/2917)（カスタムツールパーサー要望）· [#1122](https://github.com/anomalyco/opencode/issues/1122)（vLLM + Hermes）
+- ライセンス: [MIT](LICENSE)（upstream と同一）
+
+---
+
+> *以下は OpenCode 本体の README です。*
 
 <p align="center">
   <a href="https://opencode.ai">

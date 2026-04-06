@@ -1,22 +1,85 @@
-> **هذا فرع من [anomalyco/opencode](https://github.com/anomalyco/opencode)** لمزودي الخدمة وبوابات API التي لا تدعم function calling الأصلي. يدمج وسيط [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) لتمكين استدعاء الأدوات عبر بروتوكولات نصية (Hermes، XML).
->
-> **ما يضيفه هذا الفرع:** وسيط تحليل الأدوات (Hermes / Hermes-strict / XML)، فلتر العلامات أثناء البث، إزالة التكرار، استخراج PDF/DOCX/XLSX، OCR عبر macOS Vision، معالجة finishReason والتبديل التلقائي للأدوات.
->
-> **تثبيت هذا الفرع:**
-> ```bash
-> # تنزيل ملف ثنائي جاهز من GitHub Releases
-> curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
-> ./opencode
->
-> # أو البناء من المصدر
-> git clone https://github.com/okuyam2y/opencode-nofc.git
-> cd opencode-nofc && bun install && bun turbo build
-> ./packages/opencode/dist/opencode-$(uname -s | tr A-Z a-z)-$(uname -m)/bin/opencode
-> ```
->
-> **[دليل الإعداد →](docs/guides/toolparser-setup.md)** — التكوين التفصيلي، الإعدادات لكل نموذج، واستكشاف الأخطاء.
->
-> **ذو صلة:** [#2917](https://github.com/anomalyco/opencode/issues/2917) · [#1122](https://github.com/anomalyco/opencode/issues/1122) · [@ai-sdk-tool/parser](https://www.npmjs.com/package/@ai-sdk-tool/parser) | يتتبع فرع upstream `dev`.
+# OpenCode (nofc fork)
+
+**استدعاء الأدوات لمزودي الخدمات الذين لا يدعمون استدعاء الدوال الأصلي.**
+
+فرع من [anomalyco/opencode](https://github.com/anomalyco/opencode) — يدمج وسيط [`@ai-sdk-tool/parser`](https://www.npmjs.com/package/@ai-sdk-tool/parser) بحيث تعمل الأدوات من خلال بروتوكولات نصية (Hermes, XML) بدلاً من معامل `tools` API المهيكل.
+
+## التثبيت
+
+```bash
+npx opencode-ai-nofc
+
+# أو التثبيت العام
+npm i -g opencode-ai-nofc
+
+# أو تنزيل ملف ثنائي جاهز
+curl -fsSL https://github.com/okuyam2y/opencode-nofc/releases/latest/download/opencode-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz | tar xz
+./opencode
+
+# أو البناء من المصدر
+git clone https://github.com/okuyam2y/opencode-nofc.git
+cd opencode-nofc && bun install && bun turbo build
+```
+
+## لماذا هذا الفرع؟
+
+العديد من بوابات API وخوادم الاستدلال الذاتية الاستضافة (vLLM, LiteLLM, البروكسيات المخصصة) تزيل أو تتجاهل معامل `tools` من الطلبات المتوافقة مع OpenAI. بدون استدعاء الدوال الأصلي، لا تعمل أدوات OpenCode — read, write, bash وغيرها — ببساطة.
+
+يحل هذا الفرع المشكلة عن طريق تحليل استدعاءات الأدوات مباشرة من مخرجات النموذج النصية. يكتب النموذج وسوم `<tool_call>` كنص عادي، ويحولها وسيط المحلل إلى أحداث استدعاء أدوات AI SDK القياسية.
+
+## الإعداد
+
+أضف `toolParser` إلى خيارات المزود في `opencode.json`:
+
+```jsonc
+{
+  "provider": {
+    "my-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://your-gateway/v1",
+        "toolParser": "hermes-strict"
+      },
+      "models": {
+        "your-model": {
+          "name": "Your Model",
+          "limit": { "context": 200000, "output": 32768 }
+        }
+      }
+    }
+  }
+}
+```
+
+| الوضع | الوصف |
+|-------|-------|
+| `hermes-strict` | **موصى به.** تنسيق JSON صارم مع قواعد صريحة في موجه النظام. الأكثر موثوقية. |
+| `hermes` | بروتوكول Hermes القياسي. بديل احتياطي إذا تسبب hermes-strict في مشاكل. |
+| `xml` | تنسيق XML خالص للنماذج المدربة على استدعاء الأدوات بـ XML. |
+
+## ما يتضمنه
+
+بالإضافة إلى محلل الأدوات، يضيف هذا الفرع:
+
+- **مرشح وسوم البث** — يزيل وسوم `<tool_call>` / `<tool_response>` المتسربة إلى المخرجات المرئية
+- **إزالة تكرار استدعاءات الأدوات** — يسقط تنفيذات الأدوات المكررة ضمن نفس خطوة LLM
+- **الاستبدال التلقائي `apply_patch` → `edit`/`write`** — يستبدل التحرير القائم على الفروقات بأدوات قائمة على الأسطر عند تفعيل محلل الأدوات
+- **استخراج نصوص PDF / DOCX / XLSX** و macOS Vision OCR
+- **معالجة سبب الإنهاء** — يحول أسباب الإنهاء `unknown` إلى حالات نهائية، مع حواجز حماية من التكرار
+
+**[دليل الإعداد →](docs/guides/toolparser-setup.md)** — إعدادات لكل نموذج، جدول توافق النماذج، واستكشاف الأخطاء.
+
+## العلاقة مع المشروع الأصلي
+
+يتتبع هذا الفرع فرع `dev` الأصلي ويتم إعادة تأسيسه بانتظام. يتم تقديم إصلاحات الأخطاء كطلبات سحب عند الاقتضاء.
+
+- npm: [`opencode-ai-nofc`](https://www.npmjs.com/package/opencode-ai-nofc) (منفصل عن حزمة `opencode-ai` الرسمية)
+- ذو صلة: [#2917](https://github.com/anomalyco/opencode/issues/2917) (طلب محلل أدوات مخصص) · [#1122](https://github.com/anomalyco/opencode/issues/1122) (vLLM + Hermes)
+- الترخيص: [MIT](LICENSE) (نفس المشروع الأصلي)
+
+---
+
+> *يلي أدناه ملف README الأصلي لـ OpenCode.*
 
 <p align="center">
   <a href="https://opencode.ai">

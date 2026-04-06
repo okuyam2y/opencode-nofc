@@ -10,7 +10,7 @@ import { $ } from "bun"
 import pkg from "../package.json"
 import { fileURLToPath } from "url"
 
-const dir = fileURLToPath(new URL("..", import.meta.url))
+const dir = fileURLToPath(new URL("../packages/opencode", import.meta.url))
 process.chdir(dir)
 
 const PREFIX = "opencode-ai-nofc"

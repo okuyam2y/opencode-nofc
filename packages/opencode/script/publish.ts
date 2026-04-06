@@ -91,7 +91,7 @@ async function publishDir(distDir: string) {
   if (process.platform !== "win32") {
     await $`chmod -R 755 .`.cwd(distDir)
   }
-  await $`rm -f *.tgz`.cwd(distDir)
+  await $`rm -f *.tgz`.cwd(distDir).nothrow()
   await $`bun pm pack`.cwd(distDir)
   try {
     await $`npm publish *.tgz --access public --tag latest`.cwd(distDir)

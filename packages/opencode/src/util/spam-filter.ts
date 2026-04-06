@@ -24,6 +24,7 @@ const SPAM_KEYWORDS = [
  */
 const TRACE_MARKERS = [
   /\bRTLRanalysis\s+to=/,
+  /\bRTLU\s+to=/,
   /\+#\+#\+#\+#\+#\+\s+to=/,
   /】【[^】]*】【[^】]*】【[^】]*assistant\s+to=/,
 ]

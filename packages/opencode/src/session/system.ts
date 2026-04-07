@@ -34,11 +34,23 @@ export namespace SystemPrompt {
     else prompts = [PROMPT_DEFAULT]
 
     if (options?.toolParser) {
+      const toolParserGuidance = [
+        "",
+        "## Editing best practices (tool-parser environment)",
+        "- apply_patch is not available. Use the available file editing tools instead.",
+        "- Edit one location at a time. Do not batch multiple edits into a single tool call — if one fails, it corrupts the context for subsequent edits in the same file.",
+        "- After each successful edit on a complex file, re-read the surrounding section before the next edit.",
+        "- For large files (roughly 200+ lines) or files with multiple similar methods/blocks, prefer read + line_edit over broad edit replacements.",
+        "- If an edit fails, re-read the file before retrying. Do not retry with the same old_string — the file content may have shifted.",
+        "- If two consecutive edits fail on the same file, stop and switch to line_edit or re-read a larger window.",
+        "- Use write for full-file replacement only as a last resort — after re-reading the file and confirming a known-good replacement. Prefer targeted edits first.",
+        "- When using write, verify the result immediately with read before making further edits.",
+      ].join("\n")
       prompts = prompts.map((p) =>
         p
           .replace(
             /^.*Always use apply_patch for manual code edits\..*$/m,
-            "- Use the available file editing tools for code edits. Do not use cat, echo, or heredocs to create or edit files. apply_patch is not available.",
+            "- Use the available file editing tools for code edits. Do not use cat, echo, or heredocs to create or edit files.",
           )
           .replace(
             /^.*Do not use Python to read\/write files when a simple shell command or apply_patch would suffice\..*$/m,
@@ -46,8 +58,8 @@ export namespace SystemPrompt {
           )
           .replace(
             /^.*Try to use apply_patch for single file edits.*$/m,
-            "- Use the available file editing tools for single file edits. apply_patch is not available.",
-          ),
+            "- Use the available file editing tools for single file edits.",
+          ) + toolParserGuidance,
       )
     }
 

@@ -1,5 +1,7 @@
 # Tool Parser Setup Guide
 
+最終更新: 2026-04-07
+
 OpenCode fork for gateways that don't support native function calling.
 
 ## When you need this
@@ -126,6 +128,11 @@ Tested models (as of 2026-04):
 5. Tool results are sent back as `<tool_response>` text in the `user` role (not the structured `tool` role)
 
 This means the model sees everything as text — there's no structured channel for tool calls or results.
+
+Additionally, when toolParser is active:
+- `apply_patch` is removed from the available tools (replaced by `edit`/`write`/`line_edit`)
+- System prompt references to `apply_patch` (in `gpt.txt`, `codex.txt`) are rewritten to recommend "available file editing tools" instead
+- This prevents models from attempting to call `apply_patch` via bash when they don't see it in the tool list
 
 ## Troubleshooting
 

@@ -67,6 +67,21 @@ await $`cp -r ./bin ${wrapperDir}/bin`
 await $`cp ./script/postinstall.mjs ${wrapperDir}/postinstall.mjs`
 await Bun.file(`${wrapperDir}/LICENSE`).write(await Bun.file("../../LICENSE").text())
 
+// Patch binary name references: build outputs "opencode-{platform}-{arch}" but
+// the published npm packages are named "opencode-ai-nofc-{platform}-{arch}".
+// This must run AFTER copying files because `bun turbo build` regenerates them
+// from source, wiping any prior patches (e.g. from sync-public.sh).
+for (const file of [`${wrapperDir}/bin/opencode`, `${wrapperDir}/postinstall.mjs`]) {
+  let content = await Bun.file(file).text()
+  const patched = content
+    .replaceAll('`opencode-${platform}-${arch}`', '`opencode-ai-nofc-${platform}-${arch}`')
+    .replaceAll('"opencode-" + platform + "-" + arch', '"opencode-ai-nofc-" + platform + "-" + arch')
+  if (patched !== content) {
+    await Bun.file(file).write(patched)
+    console.log(`Patched binary name in ${file}`)
+  }
+}
+
 await Bun.file(`${wrapperDir}/package.json`).write(
   JSON.stringify(
     {

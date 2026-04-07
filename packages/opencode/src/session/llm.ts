@@ -224,6 +224,7 @@ export namespace LLM {
           : undefined,
         topP: input.agent.topP ?? ProviderTransform.topP(input.model),
         topK: ProviderTransform.topK(input.model),
+        maxOutputTokens: ProviderTransform.maxOutputTokens(input.model),
         options,
       },
     )
@@ -241,12 +242,6 @@ export namespace LLM {
         headers: {},
       },
     )
-
-    const noMaxTokens = input.model.options?.noMaxTokens ?? provider.options?.["noMaxTokens"]
-    const disableMaxTokens = isOpenaiOauth || provider.id.includes("github-copilot") || noMaxTokens
-    const maxOutputTokens = disableMaxTokens
-      ? undefined
-      : ProviderTransform.maxOutputTokens(input.model)
 
     const tools = await resolveTools(input)
 
@@ -358,7 +353,7 @@ export namespace LLM {
       activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
       tools,
       toolChoice: input.toolChoice,
-      maxOutputTokens,
+      maxOutputTokens: params.maxOutputTokens,
       abortSignal: input.abort,
       headers: {
         ...(input.model.providerID.startsWith("opencode")
@@ -402,7 +397,7 @@ export namespace LLM {
                 args.params.prompt = ProviderTransform.message(args.params.prompt, input.model, options)
               }
               // Strip max_tokens for gateways that reject it (require max_completion_tokens)
-              if (disableMaxTokens) {
+              if (input.model.options?.noMaxTokens ?? provider.options?.["noMaxTokens"]) {
                 args.params.maxOutputTokens = undefined
               }
               // Debug: log final prompt size after all middleware transforms

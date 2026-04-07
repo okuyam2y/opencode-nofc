@@ -146,7 +146,11 @@ export namespace LLM {
     // TODO: move this to a proper hook
     const isOpenaiOauth = provider.id === "openai" && auth?.type === "oauth"
 
-    const root = SystemPrompt.provider(input.model)
+    const toolParser = input.model.options?.toolParser ?? provider.options?.toolParser
+    // Only rewrite apply_patch references when tool parser is actually active for this request
+    const root = SystemPrompt.provider(input.model, {
+      toolParser: toolParser && input.toolChoice !== "none" ? toolParser : undefined,
+    })
     const system: string[] = []
     system.push(
       [
@@ -256,8 +260,8 @@ export namespace LLM {
       input.model.providerID.toLowerCase().includes("litellm") ||
       input.model.api.id.toLowerCase().includes("litellm")
 
-    // Resolve tool parser mode from model options (highest priority) or provider options
-    const toolParserMode = input.model.options?.toolParser ?? provider.options?.toolParser
+    // toolParser was already resolved above for system prompt selection
+    const toolParserMode = toolParser
 
     // LiteLLM/Bedrock rejects requests where the message history contains tool
     // calls but no tools param is present. When there are no active tools (e.g.

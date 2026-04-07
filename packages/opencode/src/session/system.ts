@@ -17,20 +17,41 @@ import { Permission } from "@/permission"
 import { Skill } from "@/skill"
 
 export namespace SystemPrompt {
-  export function provider(model: Provider.Model) {
+  export function provider(model: Provider.Model, options?: { toolParser?: string }) {
+    let prompts: string[]
     if (model.api.id.includes("gpt-4") || model.api.id.includes("o1") || model.api.id.includes("o3"))
-      return [PROMPT_BEAST]
-    if (model.api.id.includes("gpt")) {
+      prompts = [PROMPT_BEAST]
+    else if (model.api.id.includes("gpt")) {
       if (model.api.id.includes("codex")) {
-        return [PROMPT_CODEX]
+        prompts = [PROMPT_CODEX]
+      } else {
+        prompts = [PROMPT_GPT]
       }
-      return [PROMPT_GPT]
+    } else if (model.api.id.includes("gemini-")) prompts = [PROMPT_GEMINI]
+    else if (model.api.id.includes("claude")) prompts = [PROMPT_ANTHROPIC]
+    else if (model.api.id.toLowerCase().includes("trinity")) prompts = [PROMPT_TRINITY]
+    else if (model.api.id.toLowerCase().includes("kimi")) prompts = [PROMPT_KIMI]
+    else prompts = [PROMPT_DEFAULT]
+
+    if (options?.toolParser) {
+      prompts = prompts.map((p) =>
+        p
+          .replace(
+            /^.*Always use apply_patch for manual code edits\..*$/m,
+            "- Use the available file editing tools for code edits. Do not use cat, echo, or heredocs to create or edit files. apply_patch is not available.",
+          )
+          .replace(
+            /^.*Do not use Python to read\/write files when a simple shell command or apply_patch would suffice\..*$/m,
+            "- Do not use Python to read/write files when a dedicated tool or simple shell command would suffice.",
+          )
+          .replace(
+            /^.*Try to use apply_patch for single file edits.*$/m,
+            "- Use the available file editing tools for single file edits. apply_patch is not available.",
+          ),
+      )
     }
-    if (model.api.id.includes("gemini-")) return [PROMPT_GEMINI]
-    if (model.api.id.includes("claude")) return [PROMPT_ANTHROPIC]
-    if (model.api.id.toLowerCase().includes("trinity")) return [PROMPT_TRINITY]
-    if (model.api.id.toLowerCase().includes("kimi")) return [PROMPT_KIMI]
-    return [PROMPT_DEFAULT]
+
+    return prompts
   }
 
   export async function environment(model: Provider.Model) {

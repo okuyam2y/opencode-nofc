@@ -36,9 +36,7 @@ export async function applyPatchWithFullPipeline(
       filePath: string
       relativePath: string
       type: string
-      diff: string
-      before: string
-      after: string
+      patch: string
       additions: number
       deletions: number
       movePath?: string
@@ -163,9 +161,7 @@ export async function applyPatchWithFullPipeline(
     filePath: change.filePath,
     relativePath: path.relative(Instance.worktree, change.movePath ?? change.filePath).replaceAll("\\", "/"),
     type: change.type,
-    diff: change.diff,
-    before: change.oldContent,
-    after: change.newContent,
+    patch: change.diff,
     additions: change.additions,
     deletions: change.deletions,
     movePath: change.movePath,

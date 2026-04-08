@@ -131,8 +131,7 @@ export const EditTool = Tool.define("edit", {
 
     const filediff: Snapshot.FileDiff = {
       file: filePath,
-      before: contentOld,
-      after: contentNew,
+      patch: diff,
       additions: 0,
       deletions: 0,
     }

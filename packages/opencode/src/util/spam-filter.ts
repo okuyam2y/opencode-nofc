@@ -27,6 +27,7 @@ const TRACE_MARKERS = [
   /\bRTLU\s+to=/,
   /\+#\+#\+#\+#\+#\+\s+to=/,
   /】【[^】]*】【[^】]*】【[^】]*assistant\s+to=/,
+  /\bto=functions\./,
 ]
 
 const SPAM_KEYWORD_RE = new RegExp(SPAM_KEYWORDS.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"))

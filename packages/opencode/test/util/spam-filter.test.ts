@@ -6,6 +6,7 @@ describe("containsSpam (requires keyword + trace marker)", () => {
     expect(containsSpam("\tRTLRanalysis to=all code  天天中彩票彩金")).toBe(true)
     expect(containsSpam("+#+#+#+#+#+ to=commentary code  重庆时时彩彩")).toBe(true)
     expect(containsSpam("】【：】【\"】【assistant to=edit commentating code  大发快三的arguments  天天中彩票软件")).toBe(true)
+    expect(containsSpam("天天中彩票 to=functions.read  日本毛片免费视频观看")).toBe(true)
   })
 
   test("does NOT flag spam keyword alone (no trace marker)", () => {
@@ -53,6 +54,7 @@ describe("containsTraceMarker", () => {
     expect(containsTraceMarker("RTLRanalysis to=all code")).toBe(true)
     expect(containsTraceMarker("+#+#+#+#+#+ to=commentary")).toBe(true)
     expect(containsTraceMarker("】【：】【\"】【assistant to=edit")).toBe(true)
+    expect(containsTraceMarker("to=functions.read")).toBe(true)
   })
 
   test("does not flag normal text", () => {

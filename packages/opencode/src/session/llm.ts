@@ -312,12 +312,22 @@ export namespace LLM {
     }
 
     // Debug: log LLM stream parameters for diagnosing tool-call instability
-    log.info("stream-debug", {
-      buildTag: "20260404-dev-1",
+    const systemFull = system.join("\n")
+    if (Flag.OPENCODE_DEBUG_LLM) log.info("stream-debug", {
+      buildTag: "20260408-dev-2",
       agentName: input.agent.name ?? "unknown",
       hasAgentPrompt: !!input.agent.prompt,
       toolParserMode: toolParserMode ?? "none",
-      systemPromptChars: system.join("\n").length,
+      systemPromptChars: systemFull.length,
+      systemPromptHash: Array.from(
+        new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(systemFull)),
+        ),
+      )
+        .slice(0, 8)
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join(""),
+      systemPromptPreview: systemFull.slice(0, 100),
       toolCount: Object.keys(tools).length,
       messageCount: messages.length,
       modelID: input.model.api.id,

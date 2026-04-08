@@ -52,4 +52,6 @@ coverage/
 packages/opencode/src/provider/models-snapshot.d.ts
 packages/opencode/src/provider/models-snapshot.js
 tsconfig.tsbuildinfo
+docs/evaluations/
+dev-tools/
 .npmrc

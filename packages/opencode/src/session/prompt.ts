@@ -62,6 +62,41 @@ IMPORTANT:
 
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema.`
 
+/**
+ * Detect whether the last assistant text output looks incomplete (truncated mid-sentence).
+ * Used to decide if an automatic "continue" should be injected.
+ */
+function looksIncomplete(text: string): { incomplete: boolean; reason?: string } {
+  const trimmed = text.trimEnd()
+  if (!trimmed) return { incomplete: false }
+
+  // Unclosed code fences
+  const fenceCount = (trimmed.match(/^```/gm) || []).length
+  if (fenceCount % 2 !== 0) return { incomplete: true, reason: "unclosed-code-fence" }
+
+  // Unclosed markdown table (last line starts with |)
+  const lastLine = trimmed.split("\n").pop()?.trim() ?? ""
+  if (lastLine.startsWith("|") && !lastLine.endsWith("|"))
+    return { incomplete: true, reason: "unclosed-table-row" }
+
+  // Ends with a heading or list marker without content
+  if (/^#{1,6}\s*$/m.test(lastLine)) return { incomplete: true, reason: "empty-heading" }
+  if (/^\d+\.\s*$/.test(lastLine)) return { incomplete: true, reason: "empty-numbered-item" }
+  if (/^[-*]\s*$/.test(lastLine)) return { incomplete: true, reason: "empty-list-item" }
+
+  // Sentence clearly cut mid-word (ends with a letter/kana, no terminal punctuation)
+  // Allow common endings: period, colon, parenthesis, bracket, quote, newline after block
+  if (/[a-zA-Z\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]$/.test(trimmed)) {
+    // Check if it looks like a natural sentence ending
+    // "...する" "...です" "...ます" are valid Japanese endings
+    if (!/[。．.!！?？)\]】」』>]$/.test(trimmed)) {
+      return { incomplete: true, reason: "mid-sentence" }
+    }
+  }
+
+  return { incomplete: false }
+}
+
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
 
@@ -1349,6 +1384,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           let structured: unknown | undefined
           let step = 0
           let lastModel: Provider.Model | undefined
+          let autoContinueCount = 0
+          const MAX_AUTO_CONTINUE = 3
           const session = yield* sessions.get(sessionID)
 
           while (true) {
@@ -1386,7 +1423,58 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               !hasToolCalls &&
               lastUser.id < lastAssistant.id
             ) {
-              log.info("exiting loop", { sessionID })
+              // Auto-continue: if the last text output looks truncated, inject a
+              // synthetic "continue" message instead of breaking.
+              const lastText = lastAssistantMsg?.parts
+                .filter((p) => p.type === "text")
+                .map((p) => (p as { text: string }).text)
+                .join("")
+              const incomplete = looksIncomplete(lastText ?? "")
+
+              if (incomplete.incomplete && autoContinueCount < MAX_AUTO_CONTINUE) {
+                autoContinueCount++
+                log.info("auto-continue", {
+                  sessionID,
+                  attempt: autoContinueCount,
+                  reason: incomplete.reason,
+                  lastChars: (lastText ?? "").slice(-80),
+                })
+                // Inject a synthetic user message to trigger continuation
+                const contMsgID = MessageID.ascending()
+                const contMsg: MessageV2.User = {
+                  id: contMsgID,
+                  sessionID,
+                  role: "user",
+                  model: lastUser.model,
+                  agent: lastUser.agent,
+                  time: { created: Date.now() },
+                }
+                yield* sessions.updateMessage(contMsg)
+                yield* sessions.updatePart({
+                  id: PartID.ascending(),
+                  messageID: contMsgID,
+                  sessionID,
+                  type: "text",
+                  text: [
+                    "Continue exactly from the last incomplete point.",
+                    "Do not repeat prior content.",
+                    "Do not add any preface, explanation, or mention that the user asked to continue.",
+                    "Output only the continuation text.",
+                  ].join("\n"),
+                  synthetic: true,
+                })
+                // Re-read messages on next iteration
+                continue
+              }
+
+              log.info("exiting loop", {
+                sessionID,
+                finish: lastAssistant.finish,
+                hasToolCalls,
+                step,
+                autoContinueCount,
+                incompleteCheck: incomplete,
+              })
               break
             }
 

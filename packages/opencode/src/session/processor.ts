@@ -19,6 +19,7 @@ import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
 import { Question } from "@/question"
 import { containsSpamInValues, stripSpam } from "@/util/spam-filter"
+import { Flag } from "@/flag/flag"
 
 /**
  * Strip tool response/result tags that models echo from conversation history.
@@ -643,7 +644,7 @@ export namespace SessionProcessor {
                   : !hasToolCalls && (value.finishReason as string) === "unknown"
                     ? "stop"
                     : value.finishReason
-              log.debug("finish-step", {
+              if (Flag.OPENCODE_DEBUG_LLM) log.info("finish-step", {
                 originalReason: value.finishReason,
                 effectiveReason: finishReason,
                 hasToolCalls,

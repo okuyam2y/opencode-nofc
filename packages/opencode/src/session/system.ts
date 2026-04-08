@@ -36,6 +36,9 @@ export namespace SystemPrompt {
     if (options?.toolParser) {
       const toolParserGuidance = [
         "",
+        "## Tool-parser environment rules",
+        "- When reusing opaque values (hashes, IDs, URLs, paths, PR numbers) from a previous tool result, prefer piping or combining commands so the value never leaves the shell (e.g. `git log --format=%H -3 | xargs git show --stat`). If you must pass a value to a separate tool call, use the shortest unambiguous form and keep the count minimal.",
+        "",
         "## Editing best practices (tool-parser environment)",
         "- apply_patch is not available. Use the available file editing tools instead.",
         "- Edit one location at a time. Do not batch multiple edits into a single tool call — if one fails, it corrupts the context for subsequent edits in the same file.",

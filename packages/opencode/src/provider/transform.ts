@@ -18,7 +18,7 @@ function mimeToModality(mime: string): Modality | undefined {
 }
 
 export namespace ProviderTransform {
-  export const OUTPUT_TOKEN_MAX = Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
+  export const OUTPUT_TOKEN_MAX = Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 65_536
 
   // Maps npm package to the key the AI SDK expects for providerOptions
   function sdkKey(npm: string): string | undefined {
@@ -376,7 +376,8 @@ export namespace ProviderTransform {
       id.includes("mistral") ||
       id.includes("kimi") ||
       id.includes("k2p5") ||
-      id.includes("qwen")
+      id.includes("qwen") ||
+      id.includes("big-pickle")
     )
       return {}
 

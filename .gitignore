@@ -8,6 +8,7 @@ node_modules
 .idea
 .vscode
 .codex
+drafts
 .claude/*
 !.claude/skills/
 !.claude/hooks/

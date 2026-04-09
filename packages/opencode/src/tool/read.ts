@@ -1,7 +1,7 @@
 import z from "zod"
 import { Effect, Scope } from "effect"
 import { createReadStream } from "fs"
-import { open } from "fs/promises"
+import { open, readdir } from "fs/promises"
 import * as path from "path"
 import { createInterface } from "readline"
 import { Tool } from "./tool"
@@ -56,6 +56,18 @@ export const ReadTool = Tool.defineEffect(
       if (items.length > 0) {
         return yield* Effect.fail(
           new Error(`File not found: ${filepath}\n\nDid you mean one of these?\n${items.join("\n")}`),
+        )
+      }
+
+      // Parent dir search found nothing — search the repo for files with the same basename.
+      const root = Instance.directory
+      const repoHits = yield* Effect.tryPromise(() =>
+        findByBasename(root, base),
+      ).pipe(Effect.catch(() => Effect.succeed([] as string[])))
+
+      if (repoHits.length > 0) {
+        return yield* Effect.fail(
+          new Error(`File not found: ${filepath}\n\nDid you mean one of these?\n${repoHits.join("\n")}`),
         )
       }
 
@@ -429,4 +441,31 @@ async function isBinaryFile(filepath: string, fileSize: number): Promise<boolean
   } finally {
     await fh.close()
   }
+}
+
+const SKIP_DIRS = new Set(["node_modules", ".git", ".claude", "dist", "build", ".next", "__pycache__", ".venv", "target"])
+
+async function findByBasename(root: string, basename: string, maxResults = 5): Promise<string[]> {
+  const results: string[] = []
+  const lower = basename.toLowerCase()
+
+  async function walk(dir: string, depth: number) {
+    if (depth > 8) return
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) await walk(path.join(dir, entry.name), depth + 1)
+      } else if (entry.name.toLowerCase() === lower) {
+        results.push(path.join(dir, entry.name))
+      }
+    }
+  }
+
+  await walk(root, 0)
+  return results.sort().slice(0, maxResults)
 }

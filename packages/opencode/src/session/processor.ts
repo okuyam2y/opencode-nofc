@@ -67,26 +67,39 @@ const trailingPartialTagRe = buildPartialTagRe(STRIP_TAG_NAMES)
 function createStreamingTagFilter() {
   let buf = ""
   let inside = false
+  let hasPartial = false
   return {
     push(delta: string): string {
       buf += delta
       let out = ""
       while (true) {
         if (!inside) {
+          // If we were holding a partial tag prefix from a previous delta,
+          // check whether it's still valid before doing anything else.
+          // This prevents stale prefixes from leaking via later tag matches.
+          if (hasPartial && !isStillValidPartial(buf)) {
+            const dropLen = longestValidPrefixLen(buf)
+            buf = buf.slice(dropLen)
+            hasPartial = false
+            continue
+          }
           const m = buf.match(STRIP_OPEN_RE)
           if (m && m.index !== undefined) {
             out += buf.slice(0, m.index)
             buf = buf.slice(m.index)
             inside = true
+            hasPartial = false
             continue
           }
           const partialIdx = partialOpenTagIndex(buf)
           if (partialIdx >= 0) {
             out += buf.slice(0, partialIdx)
             buf = buf.slice(partialIdx)
+            hasPartial = true
           } else {
             out += buf
             buf = ""
+            hasPartial = false
           }
           break
         } else {
@@ -107,6 +120,7 @@ function createStreamingTagFilter() {
         // mid-tag due to gateway error) to prevent leaking raw tool markup.
         buf = ""
         inside = false
+        hasPartial = false
         return ""
       }
       // Also strip any partial opening tag left in the buffer (e.g. stream
@@ -115,6 +129,7 @@ function createStreamingTagFilter() {
       if (partialIdx >= 0) {
         const rest = buf.slice(0, partialIdx)
         buf = ""
+        hasPartial = false
         return rest
       }
       const rest = buf
@@ -138,6 +153,38 @@ function partialOpenTagIndex(text: string): number {
     }
   }
   return -1
+}
+
+/** Check whether `buf` (which starts with a previously-valid partial tag)
+ *  could still resolve normally — either it's still an incomplete prefix that
+ *  could complete into `<tag_name>`, or it already contains a complete opening
+ *  tag (which STRIP_OPEN_RE will handle).  Returns false only when buf has
+ *  diverged from all tag names and cannot be handled by normal scanning. */
+function isStillValidPartial(buf: string): boolean {
+  for (const tag of STRIP_TAG_NAMES) {
+    const full = `<${tag}>`
+    const checkLen = Math.min(buf.length, full.length)
+    if (full.slice(0, checkLen) === buf.slice(0, checkLen)) return true
+  }
+  return false
+}
+
+/** Return the length of the longest prefix of `text` that is also a prefix
+ *  of some opening tag in STRIP_TAG_NAMES.  Used to determine how many
+ *  characters to drop when a previously-valid partial tag becomes invalid
+ *  (e.g. "<tool" was valid, then " match" arrived making "<tool match" invalid;
+ *  longestValidPrefixLen returns 5 for "<tool"). */
+function longestValidPrefixLen(text: string): number {
+  let maxLen = 0
+  for (const tag of STRIP_TAG_NAMES) {
+    const full = `<${tag}>`
+    let len = 0
+    while (len < text.length && len < full.length && text[len] === full[len]) {
+      len++
+    }
+    if (len > maxLen) maxLen = len
+  }
+  return maxLen
 }
 
 /**

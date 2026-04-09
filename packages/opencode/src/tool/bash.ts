@@ -321,7 +321,12 @@ function cmd(shell: string, name: string, command: string, cwd: string, env: Nod
     })
   }
 
-  return ChildProcess.make(command, [], {
+  // zsh errors on unmatched globs (NOMATCH is on by default), which breaks
+  // LLM-generated commands like `mvn -Dincludes=com.google.protobuf:*`.
+  // nonomatch makes unmatched globs pass through as literal strings (bash default).
+  const wrapped = name === "zsh" ? `setopt nonomatch 2>/dev/null; ${command}` : command
+
+  return ChildProcess.make(wrapped, [], {
     shell,
     cwd,
     env,

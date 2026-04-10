@@ -12,7 +12,7 @@ import { Installation } from "../installation"
 import { Database, NotFoundError, eq, and, gte, isNull, desc, like, inArray, lt } from "../storage/db"
 import { SyncEvent } from "../sync"
 import type { SQL } from "../storage/db"
-import { SessionTable } from "./session.sql"
+import { PartTable, SessionTable } from "./session.sql"
 import { ProjectTable } from "../project/project.sql"
 import { Storage } from "@/storage/storage"
 import { Log } from "../util/log"
@@ -20,16 +20,13 @@ import { updateSchema } from "../util/update-schema"
 import { MessageV2 } from "./message-v2"
 import { Instance } from "../project/instance"
 import { InstanceState } from "@/effect/instance-state"
-import { SessionPrompt } from "./prompt"
 import { fn } from "@/util/fn"
-import { Command } from "../command"
 import { Snapshot } from "@/snapshot"
 import { ProjectID } from "../project/schema"
 import { WorkspaceID } from "../control-plane/schema"
 import { SessionID, MessageID, PartID } from "./schema"
 
 import type { Provider } from "@/provider/provider"
-import { ModelID, ProviderID } from "@/provider/schema"
 import { Permission } from "@/permission"
 import { Global } from "@/global"
 import type { LanguageModelV2Usage } from "@ai-sdk/provider"
@@ -345,6 +342,11 @@ export namespace Session {
       messageID: MessageID
       partID: PartID
     }) => Effect.Effect<PartID>
+    readonly getPart: (input: {
+      sessionID: SessionID
+      messageID: MessageID
+      partID: PartID
+    }) => Effect.Effect<MessageV2.Part | undefined>
     readonly updatePart: <T extends MessageV2.Part>(part: T) => Effect.Effect<T>
     readonly updatePartDelta: (input: {
       sessionID: SessionID
@@ -352,12 +354,6 @@ export namespace Session {
       partID: PartID
       field: string
       delta: string
-    }) => Effect.Effect<void>
-    readonly initialize: (input: {
-      sessionID: SessionID
-      modelID: ModelID
-      providerID: ProviderID
-      messageID: MessageID
     }) => Effect.Effect<void>
   }
 
@@ -492,6 +488,29 @@ export namespace Session {
           return part
         }).pipe(Effect.withSpan("Session.updatePart"))
 
+      const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
+        const row = Database.use((db) =>
+          db
+            .select()
+            .from(PartTable)
+            .where(
+              and(
+                eq(PartTable.session_id, input.sessionID),
+                eq(PartTable.message_id, input.messageID),
+                eq(PartTable.id, input.partID),
+              ),
+            )
+            .get(),
+        )
+        if (!row) return
+        return {
+          ...row.data,
+          id: row.id,
+          sessionID: row.session_id,
+          messageID: row.message_id,
+        } as MessageV2.Part
+      })
+
       const create = Effect.fn("Session.create")(function* (input?: {
         parentID?: SessionID
         title?: string
@@ -588,7 +607,7 @@ export namespace Session {
 
       const diff = Effect.fn("Session.diff")(function* (sessionID: SessionID) {
         return yield* Effect.tryPromise(() => Storage.read<Snapshot.FileDiff[]>(["session_diff", sessionID])).pipe(
-          Effect.orElseSucceed(() => [] as Snapshot.FileDiff[]),
+          Effect.orElseSucceed((): Snapshot.FileDiff[] => []),
         )
       })
 
@@ -637,23 +656,6 @@ export namespace Session {
         yield* bus.publish(MessageV2.Event.PartDelta, input)
       })
 
-      const initialize = Effect.fn("Session.initialize")(function* (input: {
-        sessionID: SessionID
-        modelID: ModelID
-        providerID: ProviderID
-        messageID: MessageID
-      }) {
-        yield* Effect.promise(() =>
-          SessionPrompt.command({
-            sessionID: input.sessionID,
-            messageID: input.messageID,
-            model: input.providerID + "/" + input.modelID,
-            command: Command.Default.INIT,
-            arguments: "",
-          }),
-        )
-      })
-
       return Service.of({
         create,
         fork,
@@ -675,8 +677,8 @@ export namespace Session {
         removeMessage,
         removePart,
         updatePart,
+        getPart,
         updatePartDelta,
-        initialize,
       })
     }),
   )
@@ -701,7 +703,6 @@ export namespace Session {
     runPromise((svc) => svc.fork(input)),
   )
 
-  export const touch = fn(SessionID.zod, (id) => runPromise((svc) => svc.touch(id)))
   export const get = fn(SessionID.zod, (id) => runPromise((svc) => svc.get(id)))
   export const share = fn(SessionID.zod, (id) => runPromise((svc) => svc.share(id)))
   export const unshare = fn(SessionID.zod, (id) => runPromise((svc) => svc.unshare(id)))
@@ -714,23 +715,11 @@ export namespace Session {
     runPromise((svc) => svc.setArchived(input)),
   )
 
-  export const setPermission = fn(z.object({ sessionID: SessionID.zod, permission: Permission.Ruleset }), (input) =>
-    runPromise((svc) => svc.setPermission(input)),
-  )
-
   export const setRevert = fn(
     z.object({ sessionID: SessionID.zod, revert: Info.shape.revert, summary: Info.shape.summary }),
     (input) =>
       runPromise((svc) => svc.setRevert({ sessionID: input.sessionID, revert: input.revert, summary: input.summary })),
   )
-
-  export const clearRevert = fn(SessionID.zod, (id) => runPromise((svc) => svc.clearRevert(id)))
-
-  export const setSummary = fn(z.object({ sessionID: SessionID.zod, summary: Info.shape.summary }), (input) =>
-    runPromise((svc) => svc.setSummary({ sessionID: input.sessionID, summary: input.summary })),
-  )
-
-  export const diff = fn(SessionID.zod, (id) => runPromise((svc) => svc.diff(id)))
 
   export const messages = fn(z.object({ sessionID: SessionID.zod, limit: z.number().optional() }), (input) =>
     runPromise((svc) => svc.messages(input)),
@@ -878,10 +867,5 @@ export namespace Session {
       delta: z.string(),
     }),
     (input) => runPromise((svc) => svc.updatePartDelta(input)),
-  )
-
-  export const initialize = fn(
-    z.object({ sessionID: SessionID.zod, modelID: ModelID.zod, providerID: ProviderID.zod, messageID: MessageID.zod }),
-    (input) => runPromise((svc) => svc.initialize(input)),
   )
 }

@@ -290,7 +290,11 @@ export namespace LLM {
     // from the workflow service are executed via opencode's tool system
     // and results sent back over the WebSocket.
     if (language instanceof GitLabWorkflowLanguageModel) {
-      const workflowModel = language
+      const workflowModel = language as GitLabWorkflowLanguageModel & {
+        sessionID?: string
+        sessionPreapprovedTools?: string[]
+        approvalHandler?: (approvalTools: { name: string; args: string }[]) => Promise<{ approved: boolean }>
+      }
       workflowModel.sessionID = input.sessionID
       workflowModel.systemPrompt = system.join("\n")
       workflowModel.toolExecutor = async (toolName, argsJson, _requestID) => {
@@ -357,7 +361,7 @@ export namespace LLM {
             ruleset: [],
           })
           for (const name of uniqueNames) approvedToolsForSession.add(name)
-          workflowModel.sessionPreapprovedTools = [...workflowModel.sessionPreapprovedTools, ...uniqueNames]
+          workflowModel.sessionPreapprovedTools = [...(workflowModel.sessionPreapprovedTools ?? []), ...uniqueNames]
           return { approved: true }
         } catch {
           return { approved: false }

@@ -19,6 +19,8 @@ import { ListTool } from "../../tool/ls"
 import { ReadTool } from "../../tool/read"
 import { WebFetchTool } from "../../tool/webfetch"
 import { EditTool } from "../../tool/edit"
+import { LineEditTool } from "../../tool/line_edit"
+import { ApplyPatchTool } from "../../tool/apply_patch"
 import { WriteTool } from "../../tool/write"
 import { CodeSearchTool } from "../../tool/codesearch"
 import { WebSearchTool } from "../../tool/websearch"
@@ -153,6 +155,29 @@ function edit(info: ToolProps<typeof EditTool>) {
   )
 }
 
+function lineEdit(info: ToolProps<typeof LineEditTool>) {
+  const title = normalizePath(info.input.filePath)
+  const diff = info.metadata.diff
+  block(
+    {
+      icon: "←",
+      title: `Edit ${title}`,
+    },
+    diff,
+  )
+}
+
+function applyPatch(info: ToolProps<typeof ApplyPatchTool>) {
+  const diff = info.metadata.diff
+  block(
+    {
+      icon: "←",
+      title: `Patch`,
+    },
+    diff,
+  )
+}
+
 function codesearch(info: ToolProps<typeof CodeSearchTool>) {
   inline({
     icon: "◇",
@@ -192,7 +217,12 @@ function skill(info: ToolProps<typeof SkillTool>) {
 }
 
 function bash(info: ToolProps<typeof BashTool>) {
-  const output = info.part.state.status === "completed" ? info.part.state.output?.trim() : undefined
+  const raw = info.part.state.status === "completed" ? info.part.state.output?.trim() : undefined
+  let output = raw
+  if (raw) {
+    const lines = raw.split("\n")
+    if (lines.length > 10) output = [...lines.slice(0, 10), "…"].join("\n")
+  }
   block(
     {
       icon: "$",
@@ -424,6 +454,8 @@ export const RunCommand = cmd({
           if (part.tool === "write") return write(props<typeof WriteTool>(part))
           if (part.tool === "webfetch") return webfetch(props<typeof WebFetchTool>(part))
           if (part.tool === "edit") return edit(props<typeof EditTool>(part))
+          if (part.tool === "line_edit") return lineEdit(props<typeof LineEditTool>(part))
+          if (part.tool === "apply_patch") return applyPatch(props<typeof ApplyPatchTool>(part))
           if (part.tool === "codesearch") return codesearch(props<typeof CodeSearchTool>(part))
           if (part.tool === "websearch") return websearch(props<typeof WebSearchTool>(part))
           if (part.tool === "task") return task(props<typeof TaskTool>(part))
@@ -639,30 +671,36 @@ export const RunCommand = cmd({
       }
       await share(sdk, sessionID)
 
-      loop().catch((e) => {
-        console.error(e)
-        process.exit(1)
-      })
+      const dispatchFailed = (e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e)
+        error = error ? error + EOL + msg : msg
+        UI.error(msg)
+        events.stream.return?.(undefined)
+      }
 
       if (args.command) {
-        await sdk.session.command({
+        sdk.session.command({
           sessionID,
           agent,
           model: args.model,
           command: args.command,
           arguments: message,
           variant: args.variant,
-        })
+        }).catch(dispatchFailed)
       } else {
         const model = args.model ? Provider.parseModel(args.model) : undefined
-        await sdk.session.prompt({
+        sdk.session.promptAsync({
           sessionID,
           agent,
           model,
           variant: args.variant,
           parts: [...files, { type: "text", text: message }],
-        })
+        }).catch(dispatchFailed)
       }
+
+      await loop()
+
+      if (error) process.exit(1)
     }
 
     if (args.attach) {

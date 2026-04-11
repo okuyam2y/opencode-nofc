@@ -1,4 +1,4 @@
-import { Cause, Deferred, Effect, Layer, ServiceMap } from "effect"
+import { Cause, Deferred, Effect, Layer, Context } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Bus } from "@/bus"
@@ -6,7 +6,7 @@ import { Config } from "@/config/config"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { Snapshot } from "@/snapshot"
-import { Log } from "@/util/log"
+import { EffectLogger } from "@/effect/logger"
 import { Session } from "."
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
@@ -247,7 +247,7 @@ function estimateTokensFromInput(input: { messages: unknown[]; system: string[];
 
 export namespace SessionProcessor {
   const DOOM_LOOP_THRESHOLD = 3
-  const log = Log.create({ service: "session.processor" })
+  const log = EffectLogger.create({ service: "session.processor" })
 
   /**
    * Build a dedup key from tool name and input.
@@ -342,7 +342,7 @@ export namespace SessionProcessor {
 
   type StreamEvent = Event
 
-  export class Service extends ServiceMap.Service<Service, Interface>()("@opencode/SessionProcessor") {}
+  export class Service extends Context.Service<Service, Interface>()("@opencode/SessionProcessor") {}
 
   export const layer: Layer.Layer<
     Service,
@@ -392,6 +392,7 @@ export namespace SessionProcessor {
           reasoningMap: {},
         }
         let aborted = false
+        const slog = log.with({ sessionID: input.sessionID, messageID: input.assistantMessage.id })
         /** Attempt-scoped flag: set to true when any tool reaches completed or error state.
          *  Unlike ctx.hasToolCalls (step-scoped, reset on start-step), this persists
          *  across steps within a single attempt and prevents retry after tool execution. */
@@ -521,7 +522,7 @@ export namespace SessionProcessor {
 
             case "reasoning-end":
               if (!(value.id in ctx.reasoningMap)) return
-              ctx.reasoningMap[value.id].text = ctx.reasoningMap[value.id].text.trimEnd()
+              ctx.reasoningMap[value.id].text = ctx.reasoningMap[value.id].text
               ctx.reasoningMap[value.id].time = { ...ctx.reasoningMap[value.id].time, end: Date.now() }
               if (value.providerMetadata) ctx.reasoningMap[value.id].metadata = value.providerMetadata
               yield* session.updatePart(ctx.reasoningMap[value.id])
@@ -922,7 +923,7 @@ export namespace SessionProcessor {
               return
 
             default:
-              log.info("unhandled", { ...value })
+              yield* slog.info("unhandled", { event: value.type, value })
               return
           }
         })
@@ -992,7 +993,7 @@ export namespace SessionProcessor {
         })
 
         const halt = Effect.fn("SessionProcessor.halt")(function* (e: unknown) {
-          log.error("process", { error: e, stack: e instanceof Error ? e.stack : undefined })
+          yield* slog.error("process", { error: errorMessage(e), stack: e instanceof Error ? e.stack : undefined })
           const error = parse(e)
           if (MessageV2.ContextOverflowError.isInstance(error)) {
             ctx.needsCompaction = true
@@ -1135,19 +1136,17 @@ export namespace SessionProcessor {
     }),
   )
 
-  export const defaultLayer = Layer.unwrap(
-    Effect.sync(() =>
-      layer.pipe(
-        Layer.provide(Session.defaultLayer),
-        Layer.provide(Snapshot.defaultLayer),
-        Layer.provide(Agent.defaultLayer),
-        Layer.provide(LLM.defaultLayer),
-        Layer.provide(Permission.defaultLayer),
-        Layer.provide(Plugin.defaultLayer),
-        Layer.provide(SessionStatus.layer.pipe(Layer.provide(Bus.layer))),
-        Layer.provide(Bus.layer),
-        Layer.provide(Config.defaultLayer),
-      ),
+  export const defaultLayer = Layer.suspend(() =>
+    layer.pipe(
+      Layer.provide(Session.defaultLayer),
+      Layer.provide(Snapshot.defaultLayer),
+      Layer.provide(Agent.defaultLayer),
+      Layer.provide(LLM.defaultLayer),
+      Layer.provide(Permission.defaultLayer),
+      Layer.provide(Plugin.defaultLayer),
+      Layer.provide(SessionStatus.defaultLayer),
+      Layer.provide(Bus.layer),
+      Layer.provide(Config.defaultLayer),
     ),
   )
 }

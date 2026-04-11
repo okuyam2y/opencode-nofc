@@ -15,6 +15,7 @@ import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { Effect } from "effect"
+import { EffectLogger } from "@/effect/logger"
 
 /** Error shape thrown by Bun's fetch() when gzip/br decompression fails mid-stream */
 interface FetchDecompressionError extends Error {
@@ -721,7 +722,18 @@ export namespace MessageV2 {
           if (part.type === "tool") {
             toolNames.add(part.tool)
             if (part.state.status === "completed") {
-              const outputText = part.state.time.compacted ? "[Old tool result content cleared]" : part.state.output
+              let outputText = part.state.time.compacted ? "[Old tool result content cleared]" : part.state.output
+              // Prepend exit code so the model sees non-zero exit explicitly.
+              // Currently only bash sets metadata.exit (bash.ts:425).
+              // Skip for compacted messages — the original output is gone, signal is not useful.
+              // Note: rev.5 softened the prefix from "[SOFT FAILURE: exit_code=N]" to "[exit_code=N]"
+              // because "FAILURE" was too strong — it made models overly cautious in test-driven loops.
+              if (!part.state.time.compacted) {
+                const exitCode = part.state.metadata?.exit
+                if (typeof exitCode === "number" && exitCode !== 0) {
+                  outputText = `[exit_code=${exitCode}]\n${outputText}`
+                }
+              }
               const attachments = part.state.time.compacted || options?.stripMedia ? [] : (part.state.attachments ?? [])
 
               // For providers that don't support media in tool results, extract media files
@@ -839,7 +851,7 @@ export namespace MessageV2 {
     model: Provider.Model,
     options?: { stripMedia?: boolean },
   ): Promise<ModelMessage[]> {
-    return Effect.runPromise(toModelMessagesEffect(input, model, options))
+    return Effect.runPromise(toModelMessagesEffect(input, model, options).pipe(Effect.provide(EffectLogger.layer)))
   }
 
   export function page(input: { sessionID: SessionID; limit: number; before?: string }) {

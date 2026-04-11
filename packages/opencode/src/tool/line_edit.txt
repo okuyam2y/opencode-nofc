@@ -3,8 +3,8 @@ Performs line-based text replacement in files using explicit line numbers. Use t
 Usage:
 - You must use the Read tool first to see the file contents with line numbers.
 - startLine and endLine are 1-based and inclusive (matching Read tool output line numbers).
-- oldText must exactly match the content at the specified line range (whitespace-sensitive).
-- The tool will FAIL if the actual content at the line range doesn't match oldText.
+- oldText is optional. If provided, it must exactly match the content at the line range (whitespace-sensitive) or the tool will fail. If omitted, the tool trusts the line numbers and skips content verification.
+- Omit oldText when you just Read the file and are confident in the line numbers. Provide oldText when the file may have changed since your last Read.
 - This tool only modifies existing files. Use Write to create new files.
 - For simple replacements where the text is unique, prefer the Edit tool.
 

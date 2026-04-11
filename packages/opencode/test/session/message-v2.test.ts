@@ -863,6 +863,123 @@ describe("session.message-v2.toModelMessage", () => {
       },
     ])
   })
+
+  test("prepends soft failure signal for non-zero exit code", async () => {
+    const userID = MessageID.make("u-soft")
+    const assistantID = MessageID.make("a-soft")
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "t1"),
+            type: "tool",
+            callID: "call-bash",
+            tool: "bash",
+            state: {
+              status: "completed",
+              input: { command: "exit 1" },
+              output: "test failed",
+              title: "Bash",
+              metadata: { exit: 1 },
+              time: { start: 0, end: 1 },
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model)
+    const toolMsg = result.find((m) => m.role === "tool")
+    expect(toolMsg).toBeDefined()
+    const toolResult = (toolMsg as any).content[0]
+    expect(toolResult.output).toStrictEqual({
+      type: "text",
+      value: "[exit_code=1]\ntest failed",
+    })
+  })
+
+  test("does not prepend soft failure signal for zero exit code", async () => {
+    const userID = MessageID.make("u-ok")
+    const assistantID = MessageID.make("a-ok")
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "t2"),
+            type: "tool",
+            callID: "call-bash-ok",
+            tool: "bash",
+            state: {
+              status: "completed",
+              input: { command: "echo hi" },
+              output: "hi",
+              title: "Bash",
+              metadata: { exit: 0 },
+              time: { start: 0, end: 1 },
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model)
+    const toolMsg = result.find((m) => m.role === "tool")
+    expect(toolMsg).toBeDefined()
+    const toolResult = (toolMsg as any).content[0]
+    expect(toolResult.output).toStrictEqual({
+      type: "text",
+      value: "hi",
+    })
+  })
+
+  test("does not prepend soft failure signal for compacted tool result", async () => {
+    const userID = MessageID.make("u-compact")
+    const assistantID = MessageID.make("a-compact")
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "t3"),
+            type: "tool",
+            callID: "call-compact",
+            tool: "bash",
+            state: {
+              status: "completed",
+              input: { command: "exit 1" },
+              output: "test failed",
+              title: "Bash",
+              metadata: { exit: 1 },
+              time: { start: 0, end: 1, compacted: 2 },
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model)
+    const toolMsg = result.find((m) => m.role === "tool")
+    expect(toolMsg).toBeDefined()
+    const toolResult = (toolMsg as any).content[0]
+    expect(toolResult.output).toStrictEqual({
+      type: "text",
+      value: "[Old tool result content cleared]",
+    })
+  })
 })
 
 describe("session.message-v2.fromError", () => {

@@ -124,6 +124,75 @@ describe("SessionProcessor.isDuplicate + dedupKey", () => {
     expect(deduped).toBe(4) // 4 duplicates of a.ts:1
   })
 
+  describe("checkNearDuplicateWrite + trackWriteFilePath", () => {
+    test("non-write tool returns undefined and does not track", () => {
+      const map = new Map<string, { toolCallId: string; contentLength: number }>()
+      expect(SessionProcessor.checkNearDuplicateWrite(map, "read", { filePath: "a.ts" })).toBeUndefined()
+      SessionProcessor.trackWriteFilePath(map, "read", { filePath: "a.ts" }, "c1")
+      expect(map.size).toBe(0)
+    })
+
+    test("first write returns undefined; trackWriteFilePath records it", () => {
+      const map = new Map<string, { toolCallId: string; contentLength: number }>()
+      const input = { filePath: "/a.ts", content: "hello" }
+      expect(SessionProcessor.checkNearDuplicateWrite(map, "write", input)).toBeUndefined()
+      SessionProcessor.trackWriteFilePath(map, "write", input, "c1")
+      expect(map.get("/a.ts")).toEqual({ toolCallId: "c1", contentLength: 5 })
+    })
+
+    test("second write to same path returns near-duplicate info", () => {
+      const map = new Map<string, { toolCallId: string; contentLength: number }>()
+      SessionProcessor.trackWriteFilePath(map, "write", { filePath: "/a.ts", content: "short" }, "c1")
+      const result = SessionProcessor.checkNearDuplicateWrite(map, "write", { filePath: "/a.ts", content: "longer content" })
+      expect(result).toEqual({
+        prevToolCallId: "c1",
+        prevContentLength: 5,
+        newContentLength: 14,
+      })
+    })
+
+    test("different filePaths are independent", () => {
+      const map = new Map<string, { toolCallId: string; contentLength: number }>()
+      SessionProcessor.trackWriteFilePath(map, "write", { filePath: "/a.ts", content: "aaa" }, "c1")
+      expect(SessionProcessor.checkNearDuplicateWrite(map, "write", { filePath: "/b.ts", content: "bbb" })).toBeUndefined()
+    })
+
+    test("skipped call does not update map — 3rd write compares against allowed write", () => {
+      // Sequence: long(c1, allowed) -> short(c2, skipped) -> medium(c3)
+      // c3 should compare against c1 (length 20), not c2 (length 3).
+      const map = new Map<string, { toolCallId: string; contentLength: number }>()
+
+      // c1: first write, allowed
+      SessionProcessor.trackWriteFilePath(map, "write", { filePath: "/a.ts", content: "a]".repeat(10) }, "c1")
+
+      // c2: shorter → near-duplicate detected, caller would skip (no trackWriteFilePath)
+      const dup2 = SessionProcessor.checkNearDuplicateWrite(map, "write", { filePath: "/a.ts", content: "abc" })
+      expect(dup2).toBeDefined()
+      expect(dup2!.newContentLength).toBeLessThanOrEqual(dup2!.prevContentLength)
+      // Caller skips c2 — map still points to c1
+
+      // c3: medium (length 10) — still shorter than c1 (length 20), should be caught
+      const dup3 = SessionProcessor.checkNearDuplicateWrite(map, "write", { filePath: "/a.ts", content: "0123456789" })
+      expect(dup3).toBeDefined()
+      expect(dup3!.prevToolCallId).toBe("c1")
+      expect(dup3!.prevContentLength).toBe(20)
+      expect(dup3!.newContentLength).toBe(10)
+    })
+
+    test("write without content field uses length 0", () => {
+      const map = new Map<string, { toolCallId: string; contentLength: number }>()
+      SessionProcessor.trackWriteFilePath(map, "write", { filePath: "/a.ts" }, "c1")
+      expect(map.get("/a.ts")).toEqual({ toolCallId: "c1", contentLength: 0 })
+    })
+
+    test("write without filePath is ignored", () => {
+      const map = new Map<string, { toolCallId: string; contentLength: number }>()
+      expect(SessionProcessor.checkNearDuplicateWrite(map, "write", { content: "abc" })).toBeUndefined()
+      SessionProcessor.trackWriteFilePath(map, "write", { content: "abc" }, "c1")
+      expect(map.size).toBe(0)
+    })
+  })
+
   test("deduped call's tool-result is safely ignored", () => {
     // After dedup, the call is deleted from ctx.toolcalls.
     // When tool-result arrives for that callID, it won't find a match in

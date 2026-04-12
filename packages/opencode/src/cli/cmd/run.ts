@@ -30,6 +30,35 @@ import { BashTool } from "../../tool/bash"
 import { TodoWriteTool } from "../../tool/todo"
 import { Locale } from "../../util/locale"
 
+/**
+ * Buffers text parts within a step and flushes or discards them when
+ * step-finish arrives.  "tool-calls" steps produce intermediate text
+ * that would duplicate the final summary, so we discard it.
+ */
+export class StepTextBuffer {
+  private pending: string[] = []
+  skipped = 0
+  constructor(private readonly write: (text: string) => void) {}
+
+  push(text: string) {
+    this.pending.push(text)
+  }
+
+  stepFinish(reason: string) {
+    if (reason === "tool-calls") {
+      this.skipped += this.pending.length
+      this.pending.length = 0
+    } else {
+      this.flush()
+    }
+  }
+
+  flush() {
+    for (const text of this.pending) this.write(text)
+    this.pending.length = 0
+  }
+}
+
 type ToolProps<T> = {
   input: Tool.InferParameters<T>
   metadata: Tool.InferMetadata<T>
@@ -480,6 +509,15 @@ export const RunCommand = cmd({
 
       async function loop() {
         const toggles = new Map<string, boolean>()
+        const textBuffer = new StepTextBuffer((text) => {
+          if (!process.stdout.isTTY) {
+            process.stdout.write(text + EOL)
+            return
+          }
+          UI.empty()
+          UI.println(text)
+          UI.empty()
+        })
 
         for await (const event of events.stream) {
           if (
@@ -500,6 +538,7 @@ export const RunCommand = cmd({
 
             if (part.type === "tool" && (part.state.status === "completed" || part.state.status === "error")) {
               if (emit("tool_use", { part })) continue
+              if (part.tool === "complete" && part.state.status === "completed") continue
               if (part.state.status === "completed") {
                 tool(part)
                 continue
@@ -528,19 +567,17 @@ export const RunCommand = cmd({
 
             if (part.type === "step-finish") {
               if (emit("step_finish", { part })) continue
+              // Flush or discard buffered text based on step finish reason.
+              // "tool-calls" means the model is continuing — the text is an
+              // intermediate summary that will be superseded by the final one.
+              textBuffer.stepFinish(part.reason)
             }
 
             if (part.type === "text" && part.time?.end) {
               if (emit("text", { part })) continue
               const text = part.text.trim()
               if (!text) continue
-              if (!process.stdout.isTTY) {
-                process.stdout.write(text + EOL)
-                continue
-              }
-              UI.empty()
-              UI.println(text)
-              UI.empty()
+              textBuffer.push(text)
             }
 
             if (part.type === "reasoning" && part.time?.end && args.thinking) {
@@ -599,6 +636,16 @@ export const RunCommand = cmd({
               })
             }
           }
+        }
+        // Flush any remaining buffered text (e.g. final step had no step-finish,
+        // or the stream ended before step-finish arrived).
+        textBuffer.flush()
+        if (textBuffer.skipped > 0 && args.format !== "json") {
+          UI.println(
+            UI.Style.TEXT_DIM +
+              `(${textBuffer.skipped} intermediate text part${textBuffer.skipped > 1 ? "s" : ""} from tool-calls steps omitted)` +
+              UI.Style.TEXT_NORMAL,
+          )
         }
       }
 
@@ -679,23 +726,27 @@ export const RunCommand = cmd({
       }
 
       if (args.command) {
-        sdk.session.command({
-          sessionID,
-          agent,
-          model: args.model,
-          command: args.command,
-          arguments: message,
-          variant: args.variant,
-        }).catch(dispatchFailed)
+        sdk.session
+          .command({
+            sessionID,
+            agent,
+            model: args.model,
+            command: args.command,
+            arguments: message,
+            variant: args.variant,
+          })
+          .catch(dispatchFailed)
       } else {
         const model = args.model ? Provider.parseModel(args.model) : undefined
-        sdk.session.promptAsync({
-          sessionID,
-          agent,
-          model,
-          variant: args.variant,
-          parts: [...files, { type: "text", text: message }],
-        }).catch(dispatchFailed)
+        sdk.session
+          .promptAsync({
+            sessionID,
+            agent,
+            model,
+            variant: args.variant,
+            parts: [...files, { type: "text", text: message }],
+          })
+          .catch(dispatchFailed)
       }
 
       await loop()

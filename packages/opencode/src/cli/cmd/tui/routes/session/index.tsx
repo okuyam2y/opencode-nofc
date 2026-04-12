@@ -1510,8 +1510,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
   const ctx = use()
   const sync = useSync()
 
-  // Hide tool if showDetails is false and tool completed successfully
+  // Hide complete tool output because its summary is rendered as a text part.
   const shouldHide = createMemo(() => {
+    if (props.part.tool === "complete") return true
     if (ctx.showDetails()) return false
     if (props.part.state.status !== "completed") return false
     return true

@@ -272,6 +272,41 @@ export namespace SessionProcessor {
     return acceptedKeys.has(dedupKey(toolName, input))
   }
 
+  /**
+   * Detect near-duplicate write tool calls targeting the same filePath within
+   * a single step.  hermes parser boundary errors can split one write into
+   * two calls — first incomplete, second complete.  Exact dedup (isDuplicate)
+   * misses these because the content differs.
+   *
+   * Pure check — does NOT update the map.  Call {@link trackWriteFilePath}
+   * after deciding to allow the write so skipped calls never become the
+   * comparison baseline.
+   * Exported for unit testing.
+   */
+  export function checkNearDuplicateWrite(
+    writeFilePaths: Map<string, { toolCallId: string; contentLength: number }>,
+    toolName: string,
+    input: Record<string, unknown>,
+  ): { prevToolCallId: string; prevContentLength: number; newContentLength: number } | undefined {
+    if (toolName !== "write" || typeof input.filePath !== "string") return
+    const prev = writeFilePaths.get(input.filePath)
+    if (!prev) return
+    const contentLength = typeof input.content === "string" ? input.content.length : 0
+    return { prevToolCallId: prev.toolCallId, prevContentLength: prev.contentLength, newContentLength: contentLength }
+  }
+
+  /** Record an allowed write so future near-duplicate checks compare against it. */
+  export function trackWriteFilePath(
+    writeFilePaths: Map<string, { toolCallId: string; contentLength: number }>,
+    toolName: string,
+    input: Record<string, unknown>,
+    toolCallId: string,
+  ): void {
+    if (toolName !== "write" || typeof input.filePath !== "string") return
+    const contentLength = typeof input.content === "string" ? input.content.length : 0
+    writeFilePaths.set(input.filePath, { toolCallId, contentLength })
+  }
+
   export type Result = "compact" | "stop" | "continue"
 
   export type Event = LLM.Event
@@ -325,6 +360,9 @@ export namespace SessionProcessor {
      *  Persists across tool-result deletions from ctx.toolcalls so that dedup
      *  still detects duplicates even after the first call completes. */
     acceptedToolKeys: Set<string>
+    /** Tracks write tool filePaths within the current step for near-duplicate
+     *  detection.  Maps filePath → { toolCallId, contentLength }. */
+    writeFilePaths: Map<string, { toolCallId: string; contentLength: number }>
     shouldBreak: boolean
     snapshot: string | undefined
     blocked: boolean
@@ -381,6 +419,7 @@ export namespace SessionProcessor {
           toolcalls: {},
           hasToolCalls: false,
           acceptedToolKeys: new Set(),
+          writeFilePaths: new Map(),
           shouldBreak: false,
           snapshot: initialSnapshot,
           blocked: false,
@@ -636,6 +675,49 @@ export namespace SessionProcessor {
                 return
               }
               ctx.acceptedToolKeys.add(dedupKey(value.toolName, value.input))
+              // Stage 5: near-duplicate write detection (same filePath, different content).
+              // hermes can split one write into incomplete + complete pair.
+              // The second (longer) write overwrites the first, so allow execution
+              // but log for monitoring.  Shorter duplicates are skipped.
+              // Map is only updated for allowed writes so skipped calls never
+              // become the comparison baseline.
+              const nearDup = checkNearDuplicateWrite(ctx.writeFilePaths, value.toolName, value.input)
+              if (nearDup) {
+                if (nearDup.newContentLength <= nearDup.prevContentLength) {
+                  log.warn("near-duplicate write skipped (shorter or equal content)", {
+                    toolCallId: value.toolCallId,
+                    toolName: value.toolName,
+                    filePath: (value.input as Record<string, unknown>).filePath,
+                    prevToolCallId: nearDup.prevToolCallId,
+                    prevContentLength: nearDup.prevContentLength,
+                    newContentLength: nearDup.newContentLength,
+                  })
+                  const ndMatch = yield* readToolCall(value.toolCallId)
+                  if (ndMatch) {
+                    yield* session.updatePart({
+                      ...ndMatch.part,
+                      tool: value.toolName,
+                      state: {
+                        status: "error",
+                        input: value.input,
+                        error: "Near-duplicate write to same filePath skipped (shorter content)",
+                        time: { start: Date.now(), end: Date.now() },
+                      },
+                    })
+                    yield* settleToolCall(value.toolCallId)
+                  }
+                  return
+                }
+                log.warn("near-duplicate write detected (longer content, allowing)", {
+                  toolCallId: value.toolCallId,
+                  toolName: value.toolName,
+                  filePath: (value.input as Record<string, unknown>).filePath,
+                  prevToolCallId: nearDup.prevToolCallId,
+                  prevContentLength: nearDup.prevContentLength,
+                  newContentLength: nearDup.newContentLength,
+                })
+              }
+              trackWriteFilePath(ctx.writeFilePaths, value.toolName, value.input, value.toolCallId)
               // Mark as executed BEFORE updateToolCall — prevents retry if updateToolCall fails
               hasExecutedTool = true
               yield* updateToolCall(value.toolCallId, (match) => ({
@@ -700,6 +782,7 @@ export namespace SessionProcessor {
             case "start-step":
               ctx.hasToolCalls = false
               ctx.acceptedToolKeys.clear()
+              ctx.writeFilePaths.clear()
               if (!ctx.snapshot) ctx.snapshot = yield* snapshot.track()
               yield* session.updatePart({
                 id: PartID.ascending(),
@@ -1013,6 +1096,7 @@ export namespace SessionProcessor {
           ctx.lastStreamInput = streamInput
           ctx.hasToolCalls = false
           ctx.acceptedToolKeys.clear()
+          ctx.writeFilePaths.clear()
           ctx.needsCompaction = false
           hasExecutedTool = false
           ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
@@ -1060,6 +1144,7 @@ export namespace SessionProcessor {
             ctx.toolcalls = {}
             ctx.hasToolCalls = false
             ctx.acceptedToolKeys.clear()
+            ctx.writeFilePaths.clear()
             hasExecutedTool = false
             ctx.currentText = undefined
             ctx.tagFilter = undefined

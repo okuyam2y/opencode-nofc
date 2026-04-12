@@ -63,6 +63,16 @@ IMPORTANT:
 
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema.`
 
+const COMPLETE_DESCRIPTION = `Call this tool ONLY when the entire task is finished and verified.
+- Every command you ran must have succeeded (exit code 0) before calling this
+- Do NOT call if any test, build, or lint command failed
+- The summary is your final message to the user — include what was done, what files changed, and verification results
+- Do NOT output explanation text after calling this tool; put everything in the summary
+- Mention only files that were actually changed — use exact file paths only, and do not invent, duplicate, or misspell them
+- Mention only commands/tests that actually ran and succeeded
+- Keep the summary concise but readable — break it into short paragraphs, and list changed files one per line using relative paths
+- Write the summary in the same language as the user's latest message — keep file paths, command names, and code identifiers unchanged`
+
 /**
  * Detect whether the last assistant text output looks incomplete (truncated mid-sentence).
  * Used to decide if an automatic "continue" should be injected.
@@ -1337,6 +1347,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           const ctx = yield* InstanceState.context
           const slog = elog.with({ sessionID })
           let structured: unknown | undefined
+          let completed: string | undefined
           let step = 0
           let lastModel: Provider.Model | undefined
           let autoContinueCount = 0
@@ -1541,6 +1552,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                     structured = output
                   },
                 })
+              } else {
+                tools["complete"] = createCompleteTool({
+                  onSuccess(summary) {
+                    completed = summary
+                  },
+                  messages: () => msgs,
+                })
               }
 
               if (step === 1) SessionSummary.summarize({ sessionID, messageID: lastUser.id })
@@ -1592,6 +1610,35 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 handle.message.finish = handle.message.finish ?? "stop"
                 yield* sessions.updateMessage(handle.message)
                 return "break" as const
+              }
+
+              if (completed !== undefined) {
+                // Post-step validation: execute-time check only sees the pre-step
+                // msgs snapshot.  Re-validate against current step's actual parts
+                // so a batched bash(exit!=0) + complete in one step is caught.
+                const currentParts = MessageV2.parts(handle.message.id)
+                const postReject = validateCompleteFromParts(currentParts)
+                if (postReject) {
+                  log.warn("complete overridden by post-step validation", {
+                    sessionID,
+                    reason: postReject,
+                  })
+                  completed = undefined
+                  // Loop continues — model will see tool results and can retry
+                } else {
+                  // Persist summary as a visible text part so it renders as the
+                  // assistant's final message, not just an internal tool result.
+                  yield* sessions.updatePart({
+                    id: PartID.ascending(),
+                    messageID: handle.message.id,
+                    sessionID,
+                    type: "text",
+                    text: completed,
+                  } satisfies MessageV2.TextPart)
+                  handle.message.finish = handle.message.finish ?? "stop"
+                  yield* sessions.updateMessage(handle.message)
+                  return "break" as const
+                }
               }
 
               const finished = handle.message.finish && !["tool-calls", "unknown"].includes(handle.message.finish)
@@ -1963,6 +2010,100 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           output: "Structured output captured successfully.",
           title: "Structured Output",
           metadata: { valid: true },
+        }
+      },
+      toModelOutput({ output }) {
+        return {
+          type: "text",
+          value: output.output,
+        }
+      },
+    })
+  }
+
+  /**
+   * Check the current session messages for unresolved failures that should
+   * prevent a premature `complete` call.  Returns an error string if the
+   * model should NOT be allowed to mark the task as done, undefined otherwise.
+   */
+  /**
+   * Scan an array of parts for tool failures (error state or bash non-zero exit).
+   * Shared by both execute-time and post-step validation.
+   */
+  export function validateCompleteFromParts(parts: MessageV2.Part[]): string | undefined {
+    for (const part of parts) {
+      if (part.type !== "tool") continue
+      if (part.state.status === "error") {
+        return `Cannot complete: tool "${part.tool}" failed — ${part.state.error}`
+      }
+      if (
+        part.tool === "bash" &&
+        part.state.status === "completed" &&
+        part.state.metadata?.exit != null &&
+        part.state.metadata.exit !== 0
+      ) {
+        return `Cannot complete: bash command exited with code ${part.state.metadata.exit} — fix the error before completing`
+      }
+    }
+    return undefined
+  }
+
+  /**
+   * Check the current session messages for unresolved failures that should
+   * prevent a premature `complete` call.  Returns an error string if the
+   * model should NOT be allowed to mark the task as done, undefined otherwise.
+   *
+   * NOTE: this runs at execute time, so it only sees the pre-step `msgs`
+   * snapshot.  Same-step failures (bash + complete batched in one inference)
+   * are caught by the post-step check in the break判定.
+   */
+  export function validateComplete(msgs: MessageV2.WithParts[]): string | undefined {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const msg = msgs[i]
+      if (msg.info.role !== "assistant") continue
+
+      // 1. Assistant-level error (e.g. content filter, stream failure)
+      if (msg.info.error) {
+        return `Cannot complete: the last assistant response has an error — ${typeof msg.info.error === "string" ? msg.info.error : JSON.stringify(msg.info.error)}`
+      }
+
+      // 2. Scan tool parts for failures
+      const partReject = validateCompleteFromParts(msg.parts)
+      if (partReject) return partReject
+
+      break // only check last assistant
+    }
+    return undefined
+  }
+
+  export function createCompleteTool(input: {
+    onSuccess: (summary: string) => void
+    messages: () => MessageV2.WithParts[]
+  }): AITool {
+    return tool({
+      id: "complete" as any,
+      description: COMPLETE_DESCRIPTION,
+      inputSchema: jsonSchema({
+        type: "object",
+        properties: {
+          summary: { type: "string", description: "A concise plain-text summary: what was done, which files changed (exact paths only), and verification results" },
+        },
+        required: ["summary"],
+      } as any),
+      async execute(args) {
+        const rejection = validateComplete(input.messages())
+        if (rejection) {
+          return {
+            output: rejection,
+            title: "Complete rejected",
+            metadata: { rejected: true },
+          }
+        }
+        input.onSuccess(args.summary)
+        return {
+          output: args.summary,
+          title: "Complete",
+          metadata: {},
         }
       },
       toModelOutput({ output }) {

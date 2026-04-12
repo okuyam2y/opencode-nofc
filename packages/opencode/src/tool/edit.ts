@@ -104,7 +104,12 @@ export const EditTool = Tool.define(
               }
 
               const info = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
-              if (!info) throw new Error(`File ${filePath} not found. To create a new file, use the write tool instead.`)
+              if (!info) {
+                // Truncate filePath to avoid re-injecting garbled text from
+                // broken tool-parser output back into the model context.
+                const safePath = filePath.length > 200 ? filePath.slice(0, 200) + "…" : filePath
+                throw new Error(`File ${safePath} not found. To create a new file, use the write tool instead.`)
+              }
               if (info.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
               yield* filetime.assert(ctx.sessionID, filePath)
               contentOld = yield* afs.readFileString(filePath)

@@ -41,7 +41,7 @@ export namespace SystemPrompt {
         "",
         "## Editing best practices (tool-parser environment)",
         "- apply_patch is not available. Use the available file editing tools instead.",
-        "- For new files, use write. For structured content (JSON, YAML, XML, config files), prefer write over edit — edit arguments containing deeply nested quotes are fragile.",
+        "- IMPORTANT: For new files, ALWAYS use write, never edit. For structured content (JSON, YAML, XML, config files, package.json, tsconfig.json), use write even when modifying — edit arguments containing deeply nested quotes or braces are fragile and frequently produce malformed tool calls.",
         "- For modifying existing files, use edit for small targeted changes.",
         "- Edit one location at a time. Do not batch multiple edits into a single tool call — if one fails, it corrupts the context for subsequent edits in the same file.",
         "- After each successful edit on a complex file, re-read the surrounding section before the next edit.",

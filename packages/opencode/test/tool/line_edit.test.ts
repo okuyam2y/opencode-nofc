@@ -9,7 +9,9 @@ import { FileTime } from "../../src/file/time"
 import { LSP } from "../../src/lsp"
 import { AppFileSystem } from "../../src/filesystem"
 import { Format } from "../../src/format"
+import { Agent } from "../../src/agent/agent"
 import { Bus } from "../../src/bus"
+import { Truncate } from "../../src/tool/truncate"
 import { SessionID, MessageID } from "../../src/session/schema"
 
 const testLayer = Layer.mergeAll(
@@ -18,6 +20,8 @@ const testLayer = Layer.mergeAll(
   AppFileSystem.defaultLayer,
   Format.defaultLayer,
   Bus.layer,
+  Truncate.defaultLayer,
+  Agent.defaultLayer,
 )
 
 const runtime = ManagedRuntime.make(testLayer)

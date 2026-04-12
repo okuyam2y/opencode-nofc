@@ -536,7 +536,7 @@ it.live("session.processor effect tests retry recognized structured json errors"
   ),
 )
 
-it.live("session.processor effect tests publish retry status updates", () =>
+it.live("session.processor effect tests retries 503 via SDK maxRetries (no SessionRetry bus event)", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
       Effect.gen(function* () {
@@ -582,7 +582,9 @@ it.live("session.processor effect tests publish retry status updates", () =>
 
         expect(value).toBe("continue")
         expect(yield* llm.calls).toBe(2)
-        expect(states).toStrictEqual([1])
+        // Fork: maxRetries=4 means AI SDK retries the 503 internally,
+        // so SessionRetry.set is never called and no bus event is published.
+        expect(states).toStrictEqual([])
       }),
     { git: true, config: (url) => providerCfg(url) },
   ),

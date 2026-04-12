@@ -1185,16 +1185,23 @@ export namespace SessionProcessor {
                 SessionRetry.policy({
                   parse,
                   set: (info) =>
-                    rollbackAttempt().pipe(
-                      Effect.andThen(
-                        status.set(ctx.sessionID, {
-                          type: "retry",
-                          attempt: info.attempt,
-                          message: info.message,
-                          next: info.next,
-                        }),
-                      ),
-                    ),
+                    Effect.gen(function* () {
+                      // Rollback is best-effort: absorb failures/defects so status.set
+                      // always runs, but re-throw any cause containing interrupts.
+                      yield* rollbackAttempt().pipe(
+                        Effect.catchCauseIf(
+                          (cause) => !Cause.hasInterrupts(cause),
+                          (cause) =>
+                            Effect.sync(() => log.warn("rollback-attempt-failed", { error: Cause.squash(cause) })),
+                        ),
+                      )
+                      yield* status.set(ctx.sessionID, {
+                        type: "retry",
+                        attempt: info.attempt,
+                        message: info.message,
+                        next: info.next,
+                      })
+                    }),
                 }),
               ),
               Effect.catch(halt),

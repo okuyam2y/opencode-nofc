@@ -287,10 +287,15 @@ export namespace ToolRegistry {
         //   model.options.toolParser ?? provider.options.toolParser
         // configModelID is the exact config key for the selected model, which
         // may differ from modelID (api.id) for aliased configs.
+        // getProvider returns undefined for unknown/test providers that have no
+        // config entry. Fall back to no toolParser (standard tool set).
         const providerInfo = yield* providers.getProvider(input.providerID)
-        const lookupKey = input.configModelID ?? input.modelID
-        const modelInfo = providerInfo.models[lookupKey]
-        const hasToolParser = !!(modelInfo?.options?.toolParser ?? providerInfo.options?.toolParser)
+        let hasToolParser = false
+        if (providerInfo) {
+          const lookupKey = input.configModelID ?? input.modelID
+          const modelInfo = providerInfo.models[lookupKey]
+          hasToolParser = !!(modelInfo?.options?.toolParser ?? providerInfo.options?.toolParser)
+        }
         const usePatch = !!Env.get("OPENCODE_E2E_LLM_URL") || (isGptPatch && !hasToolParser)
 
         const filtered = (yield* all()).filter((tool) => {

@@ -50,22 +50,24 @@ function testLayer(
 
 describe("installation", () => {
   describe("latest", () => {
-    test("reads release version from GitHub releases", async () => {
+    // Fork: GitHub releases API path removed — latest() returns VERSION for
+    // unknown/curl methods instead of querying GitHub.
+    test("returns VERSION for unknown install method (fork: no GitHub API)", async () => {
       const layer = testLayer(() => jsonResponse({ tag_name: "v1.2.3" }))
 
       const result = await Effect.runPromise(
         Installation.Service.use((svc) => svc.latest("unknown")).pipe(Effect.provide(layer)),
       )
-      expect(result).toBe("1.2.3")
+      expect(result).toBe(Installation.VERSION)
     })
 
-    test("strips v prefix from GitHub release tag", async () => {
+    test("returns VERSION for curl install method (fork: no GitHub API)", async () => {
       const layer = testLayer(() => jsonResponse({ tag_name: "v4.0.0-beta.1" }))
 
       const result = await Effect.runPromise(
         Installation.Service.use((svc) => svc.latest("curl")).pipe(Effect.provide(layer)),
       )
-      expect(result).toBe("4.0.0-beta.1")
+      expect(result).toBe(Installation.VERSION)
     })
 
     test("reads npm registry versions", async () => {

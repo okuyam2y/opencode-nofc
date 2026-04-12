@@ -1,4 +1,4 @@
-import { Ripgrep } from "../file/ripgrep"
+import { Context, Effect, Layer } from "effect"
 
 import { Instance } from "../project/instance"
 
@@ -41,13 +41,14 @@ export namespace SystemPrompt {
         "",
         "## Editing best practices (tool-parser environment)",
         "- apply_patch is not available. Use the available file editing tools instead.",
+        "- For new files, use write. For structured content (JSON, YAML, XML, config files), prefer write over edit — edit arguments containing deeply nested quotes are fragile.",
+        "- For modifying existing files, use edit for small targeted changes.",
         "- Edit one location at a time. Do not batch multiple edits into a single tool call — if one fails, it corrupts the context for subsequent edits in the same file.",
         "- After each successful edit on a complex file, re-read the surrounding section before the next edit.",
         "- For large files (roughly 200+ lines) or files with multiple similar methods/blocks, prefer read + line_edit over broad edit replacements.",
         "- If an edit fails, re-read the file before retrying. Do not retry with the same old_string — the file content may have shifted.",
         "- If two consecutive edits fail on the same file, stop and switch to line_edit or re-read a larger window.",
-        "- Use write for full-file replacement only as a last resort — after re-reading the file and confirming a known-good replacement. Prefer targeted edits first.",
-        "- When using write, verify the result immediately with read before making further edits.",
+        "- When using write for full-file replacement of an existing file, re-read the file first and verify the result immediately after.",
       ].join("\n")
       prompts = prompts.map((p) =>
         p
@@ -69,44 +70,52 @@ export namespace SystemPrompt {
     return prompts
   }
 
-  export async function environment(model: Provider.Model) {
-    const project = Instance.project
-    return [
-      [
-        `You are powered by the model named ${model.api.id}. The exact model ID is ${model.providerID}/${model.api.id}`,
-        `Here is some useful information about the environment you are running in:`,
-        `<env>`,
-        `  Working directory: ${Instance.directory}`,
-        `  Workspace root folder: ${Instance.worktree}`,
-        `  Is directory a git repo: ${project.vcs === "git" ? "yes" : "no"}`,
-        `  Platform: ${process.platform}`,
-        `  Today's date: ${new Date().toDateString()}`,
-        `</env>`,
-        `<directories>`,
-        `  ${
-          project.vcs === "git" && false
-            ? await Ripgrep.tree({
-                cwd: Instance.directory,
-                limit: 50,
-              })
-            : ""
-        }`,
-        `</directories>`,
-      ].join("\n"),
-    ]
+  export interface Interface {
+    readonly environment: (model: Provider.Model) => string[]
+    readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
   }
 
-  export async function skills(agent: Agent.Info) {
-    if (Permission.disabled(["skill"], agent.permission).has("skill")) return
+  export class Service extends Context.Service<Service, Interface>()("@opencode/SystemPrompt") {}
 
-    const list = await Skill.available(agent)
+  export const layer = Layer.effect(
+    Service,
+    Effect.gen(function* () {
+      const skill = yield* Skill.Service
 
-    return [
-      "Skills provide specialized instructions and workflows for specific tasks.",
-      "Use the skill tool to load a skill when a task matches its description.",
-      // the agents seem to ingest the information about skills a bit better if we present a more verbose
-      // version of them here and a less verbose version in tool description, rather than vice versa.
-      Skill.fmt(list, { verbose: true }),
-    ].join("\n")
-  }
+      return Service.of({
+        environment(model) {
+          const project = Instance.project
+          return [
+            [
+              `You are powered by the model named ${model.api.id}. The exact model ID is ${model.providerID}/${model.api.id}`,
+              `Here is some useful information about the environment you are running in:`,
+              `<env>`,
+              `  Working directory: ${Instance.directory}`,
+              `  Workspace root folder: ${Instance.worktree}`,
+              `  Is directory a git repo: ${project.vcs === "git" ? "yes" : "no"}`,
+              `  Platform: ${process.platform}`,
+              `  Today's date: ${new Date().toDateString()}`,
+              `</env>`,
+            ].join("\n"),
+          ]
+        },
+
+        skills: Effect.fn("SystemPrompt.skills")(function* (agent: Agent.Info) {
+          if (Permission.disabled(["skill"], agent.permission).has("skill")) return
+
+          const list = yield* skill.available(agent)
+
+          return [
+            "Skills provide specialized instructions and workflows for specific tasks.",
+            "Use the skill tool to load a skill when a task matches its description.",
+            // the agents seem to ingest the information about skills a bit better if we present a more verbose
+            // version of them here and a less verbose version in tool description, rather than vice versa.
+            Skill.fmt(list, { verbose: true }),
+          ].join("\n")
+        }),
+      })
+    }),
+  )
+
+  export const defaultLayer = layer.pipe(Layer.provide(Skill.defaultLayer))
 }

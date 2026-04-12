@@ -20,7 +20,66 @@ import { Effect, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 
+import * as fs from "fs"
+
 const MAX_METADATA_LENGTH = 30_000
+
+// --- Diagnostic artifact collection (Phase 2) ---
+// When bash exits non-zero, auto-collect error-context files and test reports
+// so the model can fix issues without needing to Read them manually.
+// Only reads files within the project directory (Instance.containsPath check)
+// and only scans paths mentioned in command output — no recursive glob.
+
+const DIAGNOSTIC_MAX_PER_FILE = 5 * 1024
+const DIAGNOSTIC_MAX_TOTAL = 20 * 1024
+const DIAGNOSTIC_DELIMITER = "\n\n--- diagnostic artifacts (auto-collected) ---"
+
+const DIAGNOSTIC_PATTERNS = [
+  /error-context\.md$/,
+  /junit[.-].*\.xml$/,
+  /test-report\./,
+  /test-results?[/\\]/,
+]
+
+const SKIP_PATTERNS = [/\.(?:spec|test)\.[jt]sx?$/, /\.(?:spec|test)\.[cm]?[jt]s$/]
+
+function collectDiagnosticArtifacts(output: string, cwd: string): string {
+  // Only collect paths mentioned in error output (stack traces, file references).
+  // No recursive glob — avoids scanning large repos on every failing command.
+  const candidates = new Set<string>()
+  for (const m of output.matchAll(/(?:^|\s|["'(])([/\\]?(?:[\w\p{L}\p{N}.-]+[/\\])+[\w\p{L}\p{N}.-]+\.\w+)(?::(\d+))?/gmu)) {
+    const raw = m[1]
+    const resolved = path.isAbsolute(raw) ? raw : path.resolve(cwd, raw)
+    if (SKIP_PATTERNS.some((re) => re.test(resolved))) continue
+    if (!DIAGNOSTIC_PATTERNS.some((re) => re.test(resolved))) continue
+    // Security: only read files within the project directory
+    if (!Instance.containsPath(resolved)) continue
+    candidates.add(resolved)
+  }
+
+  if (candidates.size === 0) return ""
+
+  let total = 0
+  const parts: string[] = []
+  for (const filepath of candidates) {
+    if (total >= DIAGNOSTIC_MAX_TOTAL) break
+    try {
+      const stat = fs.statSync(filepath)
+      if (!stat.isFile()) continue
+      const budget = Math.min(DIAGNOSTIC_MAX_PER_FILE, DIAGNOSTIC_MAX_TOTAL - total)
+      const buf = fs.readFileSync(filepath)
+      const slice = buf.subarray(0, budget)
+      const content = new TextDecoder("utf-8", { fatal: false }).decode(slice)
+      const rel = path.relative(cwd, filepath)
+      parts.push(`\n<diagnostic file="${rel}">\n${content}${slice.length < stat.size ? "\n[truncated]" : ""}\n</diagnostic>`)
+      total += slice.length
+    } catch {
+      // skip unreadable files
+    }
+  }
+
+  return parts.length > 0 ? DIAGNOSTIC_DELIMITER + parts.join("") : ""
+}
 const DEFAULT_TIMEOUT = Flag.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
 const PS = new Set(["powershell", "pwsh"])
 const CWD = new Set(["cd", "push-location", "set-location"])
@@ -253,7 +312,12 @@ function cmd(shell: string, name: string, command: string, cwd: string, env: Nod
     })
   }
 
-  return ChildProcess.make(command, [], {
+  // zsh errors on unmatched globs (NOMATCH is on by default), which breaks
+  // LLM-generated commands like `mvn -Dincludes=com.google.protobuf:*`.
+  // nonomatch makes unmatched globs pass through as literal strings (bash default).
+  const wrapped = name === "zsh" ? `setopt nonomatch 2>/dev/null; ${command}` : command
+
+  return ChildProcess.make(wrapped, [], {
     shell,
     cwd,
     env,
@@ -443,6 +507,12 @@ export const BashTool = Tool.define(
         output += "\n\n<bash_metadata>\n" + meta.join("\n") + "\n</bash_metadata>"
       }
 
+      // Phase 2: collect diagnostic artifacts on non-zero exit
+      if (code !== null && code !== 0) {
+        const artifacts = collectDiagnosticArtifacts(output, input.cwd)
+        if (artifacts) output += artifacts
+      }
+
       return {
         title: input.description,
         metadata: {
@@ -454,52 +524,53 @@ export const BashTool = Tool.define(
       }
     })
 
-    return async () => {
-      const shell = Shell.acceptable()
-      const name = Shell.name(shell)
-      const chain =
-        name === "powershell"
-          ? "If the commands depend on each other and must run sequentially, avoid '&&' in this shell because Windows PowerShell 5.1 does not support it. Use PowerShell conditionals such as `cmd1; if ($?) { cmd2 }` when later commands must depend on earlier success."
-          : "If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like mkdir before cp, Write before Bash for git operations, or git add before git commit), run these operations sequentially instead."
-      log.info("bash tool using shell", { shell })
+    return () =>
+      Effect.sync(() => {
+        const shell = Shell.acceptable()
+        const name = Shell.name(shell)
+        const chain =
+          name === "powershell"
+            ? "If the commands depend on each other and must run sequentially, avoid '&&' in this shell because Windows PowerShell 5.1 does not support it. Use PowerShell conditionals such as `cmd1; if ($?) { cmd2 }` when later commands must depend on earlier success."
+            : "If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together (e.g., `git add . && git commit -m \"message\" && git push`). For instance, if one operation must complete before another starts (like mkdir before cp, Write before Bash for git operations, or git add before git commit), run these operations sequentially instead."
+        log.info("bash tool using shell", { shell })
 
-      return {
-        description: DESCRIPTION.replaceAll("${directory}", Instance.directory)
-          .replaceAll("${os}", process.platform)
-          .replaceAll("${shell}", name)
-          .replaceAll("${chaining}", chain)
-          .replaceAll("${maxLines}", String(Truncate.MAX_LINES))
-          .replaceAll("${maxBytes}", String(Truncate.MAX_BYTES)),
-        parameters: Parameters,
-        execute: (params: z.infer<typeof Parameters>, ctx: Tool.Context) =>
-          Effect.gen(function* () {
-            const cwd = params.workdir
-              ? yield* resolvePath(params.workdir, Instance.directory, shell)
-              : Instance.directory
-            if (params.timeout !== undefined && params.timeout < 0) {
-              throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
-            }
-            const timeout = params.timeout ?? DEFAULT_TIMEOUT
-            const ps = PS.has(name)
-            const root = yield* parse(params.command, ps)
-            const scan = yield* collect(root, cwd, ps, shell)
-            if (!Instance.containsPath(cwd)) scan.dirs.add(cwd)
-            yield* ask(ctx, scan)
+        return {
+          description: DESCRIPTION.replaceAll("${directory}", Instance.directory)
+            .replaceAll("${os}", process.platform)
+            .replaceAll("${shell}", name)
+            .replaceAll("${chaining}", chain)
+            .replaceAll("${maxLines}", String(Truncate.MAX_LINES))
+            .replaceAll("${maxBytes}", String(Truncate.MAX_BYTES)),
+          parameters: Parameters,
+          execute: (params: z.infer<typeof Parameters>, ctx: Tool.Context) =>
+            Effect.gen(function* () {
+              const cwd = params.workdir
+                ? yield* resolvePath(params.workdir, Instance.directory, shell)
+                : Instance.directory
+              if (params.timeout !== undefined && params.timeout < 0) {
+                throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
+              }
+              const timeout = params.timeout ?? DEFAULT_TIMEOUT
+              const ps = PS.has(name)
+              const root = yield* parse(params.command, ps)
+              const scan = yield* collect(root, cwd, ps, shell)
+              if (!Instance.containsPath(cwd)) scan.dirs.add(cwd)
+              yield* ask(ctx, scan)
 
-            return yield* run(
-              {
-                shell,
-                name,
-                command: params.command,
-                cwd,
-                env: yield* shellEnv(ctx, cwd),
-                timeout,
-                description: params.description,
-              },
-              ctx,
-            )
-          }),
-      }
-    }
+              return yield* run(
+                {
+                  shell,
+                  name,
+                  command: params.command,
+                  cwd,
+                  env: yield* shellEnv(ctx, cwd),
+                  timeout,
+                  description: params.description,
+                },
+                ctx,
+              )
+            }),
+        }
+      })
   }),
 )

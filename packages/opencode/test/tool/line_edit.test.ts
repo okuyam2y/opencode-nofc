@@ -44,7 +44,7 @@ const resolve = () =>
   runtime.runPromise(
     Effect.gen(function* () {
       const info = yield* LineEditTool
-      return yield* Effect.promise(() => info.init())
+      return yield* info.init()
     }),
   )
 

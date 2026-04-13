@@ -1,6 +1,7 @@
+diff --git a/dist/chunk-GSD5HDOQ.js b/dist/chunk-GSD5HDOQ.js
 --- a/dist/chunk-GSD5HDOQ.js
 +++ b/dist/chunk-GSD5HDOQ.js
-@@ -884,29 +884,166 @@
+@@ -884,29 +884,211 @@
        result: toolResult.output
      })}${toolResponseEnd}`;
    },
@@ -99,11 +100,55 @@
 +        for (var k = 0; k < knownArgKeys.length; k++) known[knownArgKeys[k]] = true;
 +        allKeys = allKeys.filter(function(entry) { return !!known[entry.key]; });
 +      }
-+      // For duplicate key names, keep only the LAST occurrence as the real
-+      // boundary.  Earlier occurrences are inside a value.
++      // For duplicate key names, try both first-occurrence and last-occurrence
++      // heuristics and pick the one that produces more parsable values.
++      var firstByKey = {};
 +      var lastByKey = {};
-+      for (var idx = 0; idx < allKeys.length; idx++) lastByKey[allKeys[idx].key] = idx;
-+      var keyPositions = allKeys.filter(function(_, i) { return lastByKey[allKeys[i].key] === i; });
++      for (var idx = 0; idx < allKeys.length; idx++) {
++        if (!(allKeys[idx].key in firstByKey)) firstByKey[allKeys[idx].key] = idx;
++        lastByKey[allKeys[idx].key] = idx;
++      }
++      var firstPositions = allKeys.filter(function(_, i) { return firstByKey[allKeys[i].key] === i; });
++      var lastPositions = allKeys.filter(function(_, i) { return lastByKey[allKeys[i].key] === i; });
++      var keyPositions;
++      if (firstPositions.length === lastPositions.length &&
++          firstPositions.every(function(fp, i) { return fp.matchStart === lastPositions[i].matchStart; })) {
++        keyPositions = firstPositions;
++      } else {
++        function scorePositions(positions) {
++          var raw = 0, repaired = 0;
++          for (var si = 0; si < positions.length; si++) {
++            var svs = positions[si].valueStart;
++            var sve = (si + 1 < positions.length) ? positions[si + 1].matchStart : argsBody.length;
++            var srv = argsBody.substring(svs, sve).replace(/,\s*$/, '');
++            try { JSON.parse(srv); raw++; continue; } catch (_) {}
++            if (srv.charAt(0) === '"') {
++              var seq = srv.length - 1;
++              while (seq > 0 && srv.charAt(seq) !== '"') seq--;
++              if (seq > 0) {
++                var sinner = srv.substring(1, seq);
++                var sesc = "";
++                var sbs = 0;
++                for (var sch of sinner) {
++                  if (sch === '\\') { sbs++; sesc += sch; }
++                  else if (sch === '"' && sbs % 2 === 0) { sbs = 0; sesc += '\\"'; }
++                  else { sbs = 0; sesc += sch; }
++                }
++                sesc = sesc.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
++                try { JSON.parse('"' + sesc + '"'); repaired++; } catch (_) {}
++              }
++            }
++          }
++          return [raw, repaired];
++        }
++        var fs = scorePositions(firstPositions);
++        var ls = scorePositions(lastPositions);
++        if (ls[0] > fs[0] || (ls[0] === fs[0] && ls[1] > fs[1])) {
++          keyPositions = lastPositions;
++        } else {
++          keyPositions = firstPositions;
++        }
++      }
 +      if (keyPositions.length === 0) return null;
 +      // Repair each value
 +      var args = {};
@@ -111,7 +156,7 @@
 +        var kp = keyPositions[i];
 +        var vs = kp.valueStart;
 +        var ve = (i + 1 < keyPositions.length) ? keyPositions[i + 1].matchStart : argsBody.length;
-+        var rv = argsBody.substring(vs, ve);
++        var rv = argsBody.substring(vs, ve).replace(/,\s*$/, '');
 +        try { args[kp.key] = JSON.parse(rv); continue; } catch { /* needs repair */ }
 +        if (rv.charAt(0) === '"') {
 +          var eq = rv.length - 1;
@@ -119,10 +164,11 @@
 +          if (eq <= 0) { args[kp.key] = rv; continue; }
 +          var inner = rv.substring(1, eq);
 +          var esc = "";
-+          for (var j = 0; j < inner.length; j++) {
-+            var ch = inner.charAt(j);
-+            if (ch === '"' && (j === 0 || inner.charAt(j - 1) !== '\\')) esc += '\\"';
-+            else esc += ch;
++          var bs = 0;
++          for (var ch of inner) {
++            if (ch === '\\') { bs++; esc += ch; }
++            else if (ch === '"' && bs % 2 === 0) { bs = 0; esc += '\\"'; }
++            else { bs = 0; esc += ch; }
 +          }
 +          esc = esc.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
 +          try { args[kp.key] = JSON.parse('"' + esc + '"'); }
@@ -181,7 +227,7 @@
            processedElements.push({
              type: "tool-call",
              toolCallId: generateId2(),
-@@ -914,16 +1051,36 @@
+@@ -914,16 +1096,36 @@
              input: JSON.stringify((_a = parsedToolCall.arguments) != null ? _a : {})
            });
          } catch (error) {
@@ -225,7 +271,7 @@
      }
      if (currentIndex < text.length) {
        const remainingText = text.substring(currentIndex);
-@@ -944,16 +1101,7 @@
+@@ -944,16 +1146,7 @@
          var _a;
          if (chunk.type === "finish") {
            if (isInsideToolCall && buffer.length > 0) {
@@ -243,7 +289,7 @@
              buffer = "";
            } else if (!isInsideToolCall && buffer.length > 0) {
              if (!currentTextId) {
-@@ -974,16 +1122,15 @@
+@@ -974,16 +1167,15 @@
              hasEmittedTextStart = false;
            }
            if (currentToolCallJson) {
@@ -267,7 +313,7 @@
            controller.enqueue(chunk);
            return;
          }
-@@ -1013,6 +1160,105 @@
+@@ -1013,6 +1205,150 @@
              });
            }
          };
@@ -341,16 +387,60 @@
 +            for (var k = 0; k < knownArgKeys.length; k++) known[knownArgKeys[k]] = true;
 +            allKeys = allKeys.filter(function(entry) { return !!known[entry.key]; });
 +          }
++          var firstByKey = {};
 +          var lastByKey = {};
-+          for (var idx = 0; idx < allKeys.length; idx++) lastByKey[allKeys[idx].key] = idx;
-+          var keyPositions = allKeys.filter(function(_, i) { return lastByKey[allKeys[i].key] === i; });
++          for (var idx = 0; idx < allKeys.length; idx++) {
++            if (!(allKeys[idx].key in firstByKey)) firstByKey[allKeys[idx].key] = idx;
++            lastByKey[allKeys[idx].key] = idx;
++          }
++          var firstPositions = allKeys.filter(function(_, i) { return firstByKey[allKeys[i].key] === i; });
++          var lastPositions = allKeys.filter(function(_, i) { return lastByKey[allKeys[i].key] === i; });
++          var keyPositions;
++          if (firstPositions.length === lastPositions.length &&
++              firstPositions.every(function(fp, i) { return fp.matchStart === lastPositions[i].matchStart; })) {
++            keyPositions = firstPositions;
++          } else {
++            function scorePositions(positions) {
++              var raw = 0, repaired = 0;
++              for (var si = 0; si < positions.length; si++) {
++                var svs = positions[si].valueStart;
++                var sve = (si + 1 < positions.length) ? positions[si + 1].matchStart : argsBody.length;
++                var srv = argsBody.substring(svs, sve).replace(/,\s*$/, '');
++                try { JSON.parse(srv); raw++; continue; } catch (_) {}
++                if (srv.charAt(0) === '"') {
++                  var seq = srv.length - 1;
++                  while (seq > 0 && srv.charAt(seq) !== '"') seq--;
++                  if (seq > 0) {
++                    var sinner = srv.substring(1, seq);
++                    var sesc = "";
++                    var sbs = 0;
++                    for (var sch of sinner) {
++                      if (sch === '\\') { sbs++; sesc += sch; }
++                      else if (sch === '"' && sbs % 2 === 0) { sbs = 0; sesc += '\\"'; }
++                      else { sbs = 0; sesc += sch; }
++                    }
++                    sesc = sesc.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
++                    try { JSON.parse('"' + sesc + '"'); repaired++; } catch (_) {}
++                  }
++                }
++              }
++              return [raw, repaired];
++            }
++            var fs = scorePositions(firstPositions);
++            var ls = scorePositions(lastPositions);
++            if (ls[0] > fs[0] || (ls[0] === fs[0] && ls[1] > fs[1])) {
++              keyPositions = lastPositions;
++            } else {
++              keyPositions = firstPositions;
++            }
++          }
 +          if (keyPositions.length === 0) return null;
 +          var args = {};
 +          for (var i = 0; i < keyPositions.length; i++) {
 +            var kp = keyPositions[i];
 +            var vs = kp.valueStart;
 +            var ve = (i + 1 < keyPositions.length) ? keyPositions[i + 1].matchStart : argsBody.length;
-+            var rv = argsBody.substring(vs, ve);
++            var rv = argsBody.substring(vs, ve).replace(/,\s*$/, '');
 +            try { args[kp.key] = JSON.parse(rv); continue; } catch { /* needs repair */ }
 +            if (rv.charAt(0) === '"') {
 +              var eq = rv.length - 1;
@@ -358,10 +448,11 @@
 +              if (eq <= 0) { args[kp.key] = rv; continue; }
 +              var inner = rv.substring(1, eq);
 +              var esc = "";
-+              for (var j = 0; j < inner.length; j++) {
-+                var ch = inner.charAt(j);
-+                if (ch === '"' && (j === 0 || inner.charAt(j - 1) !== '\\')) esc += '\\"';
-+                else esc += ch;
++              var bs = 0;
++              for (var ch of inner) {
++                if (ch === '\\') { bs++; esc += ch; }
++                else if (ch === '"' && bs % 2 === 0) { bs = 0; esc += '\\"'; }
++                else { bs = 0; esc += ch; }
 +              }
 +              esc = esc.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
 +              try { args[kp.key] = JSON.parse('"' + esc + '"'); }
@@ -373,21 +464,21 @@
          let startIndex;
          while ((startIndex = getPotentialStartIndex(
            buffer,
-@@ -1021,6 +1267,13 @@
-           const tag = isInsideToolCall ? toolCallEnd : toolCallStart;
+@@ -1022,6 +1358,13 @@
            if (startIndex + tag.length > buffer.length) {
              break;
-+          }
+           }
 +          // When inside a tool call, check if the end marker falls inside a
 +          // JSON string literal.  If so, treat it as content, not a delimiter.
 +          if (isInsideToolCall && isInsideJsonString(currentToolCallJson + buffer.slice(0, startIndex))) {
 +            currentToolCallJson += buffer.slice(0, startIndex + tag.length);
 +            buffer = buffer.slice(startIndex + tag.length);
 +            continue;
-           }
++          }
            publish(buffer.slice(0, startIndex));
            buffer = buffer.slice(startIndex + tag.length);
-@@ -1029,7 +1282,7 @@
+           if (!isInsideToolCall) {
+@@ -1029,7 +1372,7 @@
              isInsideToolCall = true;
            } else {
              try {
@@ -396,7 +487,7 @@
                if (currentTextId && hasEmittedTextStart) {
                  controller.enqueue({ type: "text-end", id: currentTextId });
                  currentTextId = null;
-@@ -1042,17 +1295,34 @@
+@@ -1042,17 +1385,34 @@
                  input: JSON.stringify((_a = parsedToolCall.arguments) != null ? _a : {})
                });
              } catch (e) {
@@ -441,7 +532,7 @@
                    {
                      toolCall: `${toolCallStart}${currentToolCallJson}${toolCallEnd}`
                    }
-@@ -2065,4 +2335,4 @@
+@@ -2065,4 +2425,4 @@
    hermesToolMiddleware,
    morphXmlToolMiddleware
  };

@@ -425,7 +425,24 @@ export namespace LLM {
       temperature: params.temperature,
       topP: params.topP,
       topK: params.topK,
-      providerOptions: ProviderTransform.providerOptions(input.model, params.options),
+      providerOptions: (() => {
+        const base = ProviderTransform.providerOptions(input.model, params.options)
+        if (!toolParserMode) return base
+        const existing = (base as any)?.toolCallMiddleware ?? {}
+        const existingOnError = typeof existing.onError === "function" ? existing.onError : undefined
+        return {
+          ...base,
+          toolCallMiddleware: {
+            ...existing,
+            onError: (message: string, context?: Record<string, unknown>) => {
+              existingOnError?.(message, context)
+              let ctx: string | undefined
+              try { ctx = context ? JSON.stringify(context).slice(0, 200) : undefined } catch { ctx = "[unserializable]" }
+              l.warn("tool-parser", { message, ...(ctx && { context: ctx }) })
+            },
+          } as any,
+        }
+      })(),
       activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
       tools,
       toolChoice: input.toolChoice,

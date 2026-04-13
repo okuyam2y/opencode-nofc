@@ -51,17 +51,25 @@ const escapeForRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 const STRIP_OPEN_RE = new RegExp(`<(?:${STRIP_TAG_NAMES.map(escapeForRegex).join("|")})>`)
 const STRIP_CLOSE_RE = new RegExp(`</(?:${STRIP_TAG_NAMES.map(escapeForRegex).join("|")})>`)
 
-// Builds a regex that matches a trailing partial opening tag at end of string.
-// For tag "tool_call", generates: <(?:t(?:o(?:o(?:l(?:_(?:c(?:a(?:l(?:l)?)?)?)?)?)?)?)?$
-// This catches any prefix of "<tool_call>" that got cut off mid-stream.
+// Builds a regex that matches a trailing partial tag (open or close) at end of string.
+// For tag "tool_call", generates open: <(?:t(?:o(...)?)?)?$ and close: <(?:/(?:t(?:o(...)?)?)?)?$
+// This catches any prefix of "<tool_call>" or "</tool_call>" that got cut off mid-stream.
 function buildPartialTagRe(names: string[]): RegExp {
-  const alts = names.map((name) => {
-    let pattern = ""
+  const alts: string[] = []
+  for (const name of names) {
+    // Open tag: <tag_name>
+    let open = ""
     for (let i = name.length; i >= 1; i--) {
-      pattern = escapeForRegex(name[i - 1]) + "(?:" + pattern + ")?"
+      open = escapeForRegex(name[i - 1]) + "(?:" + open + ")?"
     }
-    return pattern
-  })
+    alts.push(open)
+    // Close tag: </tag_name>
+    let close = ""
+    for (let i = name.length; i >= 1; i--) {
+      close = escapeForRegex(name[i - 1]) + "(?:" + close + ")?"
+    }
+    alts.push(`/(?:${close})?`)
+  }
   return new RegExp(`<(?:${alts.join("|")})$`)
 }
 const trailingPartialTagRe = buildPartialTagRe(STRIP_TAG_NAMES)
@@ -148,8 +156,13 @@ function partialOpenTagIndex(text: string): number {
     if (tail[i] !== "<") continue
     const candidate = tail.slice(i)
     for (const tag of STRIP_TAG_NAMES) {
-      const full = `<${tag}>`
-      if (candidate.length < full.length && full.startsWith(candidate)) {
+      // Check both open tag `<tag>` and close tag `</tag>` prefixes
+      const open = `<${tag}>`
+      if (candidate.length < open.length && open.startsWith(candidate)) {
+        return offset + i
+      }
+      const close = `</${tag}>`
+      if (candidate.length < close.length && close.startsWith(candidate)) {
         return offset + i
       }
     }
@@ -159,32 +172,34 @@ function partialOpenTagIndex(text: string): number {
 
 /** Check whether `buf` (which starts with a previously-valid partial tag)
  *  could still resolve normally — either it's still an incomplete prefix that
- *  could complete into `<tag_name>`, or it already contains a complete opening
- *  tag (which STRIP_OPEN_RE will handle).  Returns false only when buf has
- *  diverged from all tag names and cannot be handled by normal scanning. */
+ *  could complete into `<tag_name>` or `</tag_name>`, or it already contains a
+ *  complete tag (which STRIP_OPEN_RE/STRIP_CLOSE_RE will handle).  Returns
+ *  false only when buf has diverged from all tag names. */
 function isStillValidPartial(buf: string): boolean {
   for (const tag of STRIP_TAG_NAMES) {
-    const full = `<${tag}>`
-    const checkLen = Math.min(buf.length, full.length)
-    if (full.slice(0, checkLen) === buf.slice(0, checkLen)) return true
+    for (const full of [`<${tag}>`, `</${tag}>`]) {
+      const checkLen = Math.min(buf.length, full.length)
+      if (full.slice(0, checkLen) === buf.slice(0, checkLen)) return true
+    }
   }
   return false
 }
 
 /** Return the length of the longest prefix of `text` that is also a prefix
- *  of some opening tag in STRIP_TAG_NAMES.  Used to determine how many
- *  characters to drop when a previously-valid partial tag becomes invalid
+ *  of some tag (open or close) in STRIP_TAG_NAMES.  Used to determine how
+ *  many characters to drop when a previously-valid partial tag becomes invalid
  *  (e.g. "<tool" was valid, then " match" arrived making "<tool match" invalid;
  *  longestValidPrefixLen returns 5 for "<tool"). */
 function longestValidPrefixLen(text: string): number {
   let maxLen = 0
   for (const tag of STRIP_TAG_NAMES) {
-    const full = `<${tag}>`
-    let len = 0
-    while (len < text.length && len < full.length && text[len] === full[len]) {
-      len++
+    for (const full of [`<${tag}>`, `</${tag}>`]) {
+      let len = 0
+      while (len < text.length && len < full.length && text[len] === full[len]) {
+        len++
+      }
+      if (len > maxLen) maxLen = len
     }
-    if (len > maxLen) maxLen = len
   }
   return maxLen
 }

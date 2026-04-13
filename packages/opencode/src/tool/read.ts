@@ -168,7 +168,7 @@ export const ReadTool = Tool.define(
         // (e.g. gateway strips image_url, or model lacks image input capability).
         const model = ctx.extra?.model as Provider.Model | undefined
         const canReceiveImage = model?.capabilities?.input?.image
-        const cfg = yield* Effect.promise(() => Config.get())
+        const cfg = yield* Config.Service.use((svc) => svc.get()).pipe(Effect.provide(Config.defaultLayer))
         const providerCfg = model ? cfg.provider?.[model.providerID] : undefined
         const hasToolParser = !!(
           (model?.id ? providerCfg?.models?.[model.id]?.options?.toolParser : undefined) ??

@@ -141,14 +141,24 @@ export namespace LLM {
       modelID: input.model.id,
       providerID: input.model.providerID,
     })
-    const [language, cfg, provider, auth] = await Promise.all([
-      Provider.getLanguage(input.model),
-      Config.get(),
-      Provider.getProvider(input.model.providerID),
-      Auth.get(input.model.providerID),
-    ])
+    const [language, cfg, provider, info] = await Effect.runPromise(
+      Effect.gen(function* () {
+        const auth = yield* Auth.Service
+        const cfg = yield* Config.Service
+        const provider = yield* Provider.Service
+        return yield* Effect.all(
+          [
+            provider.getLanguage(input.model),
+            cfg.get(),
+            provider.getProvider(input.model.providerID),
+            auth.get(input.model.providerID),
+          ],
+          { concurrency: "unbounded" },
+        )
+      }).pipe(Effect.provide(Layer.mergeAll(Auth.defaultLayer, Config.defaultLayer, Provider.defaultLayer))),
+    )
     // TODO: move this to a proper hook
-    const isOpenaiOauth = provider.id === "openai" && auth?.type === "oauth"
+    const isOpenaiOauth = provider.id === "openai" && info?.type === "oauth"
 
     const toolParser = input.model.options?.toolParser ?? provider.options?.toolParser
     // Only rewrite apply_patch references when tool parser is actually active for this request
@@ -253,7 +263,7 @@ export namespace LLM {
       },
     )
 
-    const tools = await resolveTools(input)
+    const tools = resolveTools(input)
 
     // LiteLLM and some Anthropic proxies require the tools parameter to be present
     // when message history contains tool calls, even if no tools are being used.

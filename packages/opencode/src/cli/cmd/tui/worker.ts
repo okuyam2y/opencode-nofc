@@ -83,7 +83,7 @@ export const rpc = {
     })
   },
   async reload() {
-    await Config.invalidate(true)
+    await AppRuntime.runPromise(Config.Service.use((cfg) => cfg.invalidate(true)))
   },
   async shutdown() {
     Log.Default.info("worker shutting down")

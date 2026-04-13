@@ -137,6 +137,7 @@ export namespace SessionPrompt {
       const instruction = yield* Instruction.Service
       const state = yield* SessionRunState.Service
       const revert = yield* SessionRevert.Service
+      const summary = yield* SessionSummary.Service
       const sys = yield* SystemPrompt.Service
       const llm = yield* LLM.Service
 
@@ -1561,7 +1562,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 })
               }
 
-              if (step === 1) SessionSummary.summarize({ sessionID, messageID: lastUser.id })
+              if (step === 1)
+                yield* summary
+                  .summarize({ sessionID, messageID: lastUser.id })
+                  .pipe(Effect.ignore, Effect.forkIn(scope))
 
               if (step > 1 && lastFinished) {
                 for (const m of msgs) {
@@ -1846,6 +1850,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Session.defaultLayer),
       Layer.provide(SessionRevert.defaultLayer),
+      Layer.provide(SessionSummary.defaultLayer),
       Layer.provide(
         Layer.mergeAll(
           Agent.defaultLayer,

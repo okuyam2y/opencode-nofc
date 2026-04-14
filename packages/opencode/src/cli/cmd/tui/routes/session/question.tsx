@@ -47,7 +47,7 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
     const answers = questions().map((_, i) => store.answers[i] ?? [])
     sdk.client.question.reply({
       requestID: props.request.id,
-      answers,
+      questionReply: { answers },
     })
   }
 
@@ -69,7 +69,7 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
     if (single()) {
       sdk.client.question.reply({
         requestID: props.request.id,
-        answers: [[answer]],
+        questionReply: { answers: [[answer]] },
       })
       return
     }

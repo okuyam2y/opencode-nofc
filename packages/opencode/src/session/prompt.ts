@@ -46,7 +46,7 @@ import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Layer, Option, Scope, Context } from "effect"
 import { EffectLogger } from "@/effect/logger"
 import { InstanceState } from "@/effect/instance-state"
-import { attach, makeRuntime } from "@/effect/run-service"
+import { attach } from "@/effect/run-service"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
 
@@ -144,8 +144,7 @@ export namespace SessionPrompt {
       const run = {
         promise: <A, E>(effect: Effect.Effect<A, E>) =>
           Effect.runPromise(attach(effect).pipe(Effect.provide(EffectLogger.layer))),
-        fork: <A, E>(effect: Effect.Effect<A, E>) =>
-          Effect.runFork(attach(effect).pipe(Effect.provide(EffectLogger.layer))),
+        fork: <A, E>(effect: Effect.Effect<A, E>) => Effect.runFork(attach(effect).pipe(Effect.provide(EffectLogger.layer))),
       }
 
       /** Highest confirmed inputTokens (input + cache.read) per session.
@@ -156,7 +155,7 @@ export namespace SessionPrompt {
       const confirmedInputs = new Map<string, number>()
 
       const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
-        yield* elog.info("cancel", { sessionID })
+        log.info("cancel", { sessionID })
         yield* state.cancel(sessionID)
       })
 
@@ -1358,7 +1357,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
           while (true) {
             yield* status.set(sessionID, { type: "busy" })
-            yield* slog.info("loop", { step })
+            log.info("loop", { sessionID, step })
 
             let msgs = yield* MessageV2.filterCompactedEffect(sessionID)
 
@@ -1700,7 +1699,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       )
 
       const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
-        yield* elog.info("command", { sessionID: input.sessionID, command: input.command, agent: input.agent })
+        log.info("command", { sessionID: input.sessionID, command: input.command, agent: input.agent })
         const cmd = yield* commands.get(input.command)
         if (!cmd) {
           const available = (yield* commands.list()).map((c) => c.name)
@@ -1863,8 +1862,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       ),
     ),
   )
-  const { runPromise } = makeRuntime(Service, defaultLayer)
-
   export const PromptInput = z.object({
     sessionID: SessionID.zod,
     messageID: MessageID.zod.optional(),
@@ -1932,25 +1929,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
   })
   export type PromptInput = z.infer<typeof PromptInput>
 
-  export async function prompt(input: PromptInput) {
-    return runPromise((svc) => svc.prompt(PromptInput.parse(input)))
-  }
-
-  export async function resolvePromptParts(template: string) {
-    return runPromise((svc) => svc.resolvePromptParts(z.string().parse(template)))
-  }
-
-  export async function cancel(sessionID: SessionID) {
-    return runPromise((svc) => svc.cancel(SessionID.zod.parse(sessionID)))
-  }
-
   export const LoopInput = z.object({
     sessionID: SessionID.zod,
   })
-
-  export async function loop(input: z.infer<typeof LoopInput>) {
-    return runPromise((svc) => svc.loop(LoopInput.parse(input)))
-  }
 
   export const ShellInput = z.object({
     sessionID: SessionID.zod,
@@ -1965,10 +1946,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     command: z.string(),
   })
   export type ShellInput = z.infer<typeof ShellInput>
-
-  export async function shell(input: ShellInput) {
-    return runPromise((svc) => svc.shell(ShellInput.parse(input)))
-  }
 
   export const CommandInput = z.object({
     messageID: MessageID.zod.optional(),
@@ -1992,10 +1969,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       .optional(),
   })
   export type CommandInput = z.infer<typeof CommandInput>
-
-  export async function command(input: CommandInput) {
-    return runPromise((svc) => svc.command(CommandInput.parse(input)))
-  }
 
   /** @internal Exported for testing */
   export function createStructuredOutputTool(input: {

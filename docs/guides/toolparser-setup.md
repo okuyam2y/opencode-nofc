@@ -1,6 +1,6 @@
 # Tool Parser Setup Guide
 
-最終更新: 2026-04-14
+Last updated: 2026-04-14
 
 OpenCode fork for gateways that don't support native function calling.
 

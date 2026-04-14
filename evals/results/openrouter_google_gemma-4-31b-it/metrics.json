@@ -1,0 +1,1 @@
+{"model": "openrouter/google/gemma-4-31b-it", "date": "2026-04-14T00:34:08Z", "scenario_a": {"time_s": 35, "steps": 1, "exit": 0}, "scenario_b": {"time_s": 137, "steps": 1, "exit": 0}, "scenario_c": {"time_s": 103, "steps": 2, "exit": 0}}

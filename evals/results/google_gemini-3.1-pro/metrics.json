@@ -1,0 +1,3 @@
+{"model": "google/gemini-3.1-pro", "date": "2026-04-14T00:03:10Z", "scenario_a": {"time_s": 4, "steps": 0
+0, "exit": 1}, "scenario_b": {"time_s": 1, "steps": 0
+0, "exit": 1}, "scenario_c": {"skipped": true}}

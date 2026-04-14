@@ -1,0 +1,12 @@
+
+> build · anthropic/claude-opus-4-6
+
+→ Read README.md
+
+$ wc -l < README.md
+Here are the results:
+
+**First heading:** `# OpenCode Evaluation Project`
+
+**Exact line count:** 20 lines
+(2 intermediate text parts from tool-calls steps omitted)

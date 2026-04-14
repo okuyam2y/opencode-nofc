@@ -1,0 +1,35 @@
+
+> build · mistralai/mistral-large-2512
+
+✗ read failed
+Error: File not found: /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/example/demo/service/HotelService.java
+
+Did you mean one of these?
+/private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
+→ Read src/main/java/com/khoubyari/example/service/HotelService.java
+
+← Edit src/main/java/com/khoubyari/example/service/HotelService.java
+Index: /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
+===================================================================
+--- /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
++++ /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
+@@ -62,10 +62,12 @@
+ }
+ 
+ @SuppressWarnings("unchecked")
+ public List<Hotel> searchByCity(String city) {
+-    String query = "SELECT h FROM Hotel h WHERE h.city LIKE '%" + city + "%'";
+-    return entityManager.createQuery(query).getResultList();
++    String query = "SELECT h FROM Hotel h WHERE h.city LIKE :city";
++    return entityManager.createQuery(query)
++            .setParameter("city", "%" + city + "%")
++            .getResultList();
+ }
+ 
+ //http://goo.gl/7fxvVf
+ public Page<Hotel> getAllHotels(Integer page, Integer size) {
+
+
+→ Read src/main/java/com/khoubyari/example/service/HotelService.java [offset=64, limit=6]
+Fixed. The `searchByCity` method now uses a parameterized query with `setParameter` instead of string concatenation.
+(1 intermediate text part from tool-calls steps omitted)

@@ -1,0 +1,1 @@
+{"model": "openrouter/qwen/qwen3.6-plus", "date": "2026-04-14T00:40:17Z", "scenario_a": {"time_s": 7, "steps": 1, "exit": 0}, "scenario_b": {"time_s": 61, "steps": 1, "exit": 0}, "scenario_c": {"time_s": 20, "steps": 2, "exit": 0}}

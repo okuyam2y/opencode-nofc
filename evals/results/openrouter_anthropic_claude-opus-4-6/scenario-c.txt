@@ -1,0 +1,52 @@
+
+> build · anthropic/claude-opus-4-6
+
+→ Read src/main/java/com/khoubyari/example/service/HotelService.java
+✗ edit failed
+Error: Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.
+✗ read failed
+Error: Duplicate tool call deduplicated
+→ Read src/main/java/com/khoubyari/example/service/HotelService.java
+
+← Edit src/main/java/com/khoubyari/example/service/HotelService.java
+Index: /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
+===================================================================
+--- /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
++++ /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
+@@ -62,10 +62,12 @@
+ }
+ 
+ @SuppressWarnings("unchecked")
+ public List<Hotel> searchByCity(String city) {
+-    String query = "SELECT h FROM Hotel h WHERE h.city LIKE '%" + city + "%'";
+-    return entityManager.createQuery(query).getResultList();
++    String query = "SELECT h FROM Hotel h WHERE h.city LIKE :city";
++    return entityManager.createQuery(query)
++            .setParameter("city", "%" + city + "%")
++            .getResultList();
+ }
+ 
+ //http://goo.gl/7fxvVf
+ public Page<Hotel> getAllHotels(Integer page, Integer size) {
+
+
+The fix is applied and verified. Here's the summary:
+
+**File changed:** `src/main/java/com/khoubyari/example/service/HotelService.java:66-69`
+
+**Before (vulnerable)** — `city` concatenated directly into JPQL:
+```java
+String query = "SELECT h FROM Hotel h WHERE h.city LIKE '%" + city + "%'";
+return entityManager.createQuery(query).getResultList();
+```
+
+**After (fixed)** — uses a named parameter `:city` with `setParameter`:
+```java
+String query = "SELECT h FROM Hotel h WHERE h.city LIKE :city";
+return entityManager.createQuery(query)
+        .setParameter("city", "%" + city + "%")
+        .getResultList();
+```
+
+The `%` wildcards for the `LIKE` clause are included in the parameter value passed to `setParameter`, not in the query string itself. This ensures any malicious input (e.g., `' OR '1'='1`) is treated as a literal string value and never interpreted as JPQL syntax, eliminating the injection vulnerability.
+(6 intermediate text parts from tool-calls steps omitted)

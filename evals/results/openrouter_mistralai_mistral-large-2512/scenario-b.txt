@@ -1,0 +1,19 @@
+
+> build · mistralai/mistral-large-2512
+
+$ python3 /private/tmp/opencode-eval-workspace/hello.py
+Hello from OpenCode
+2026-04-14 09:39:13
+
+→ Read hello.py
+
+← Write hello.py
+Wrote file successfully.
+
+Output:
+```
+Hello from OpenCode
+2026-04-14 09:39:13
+```
+
+File contents confirmed.

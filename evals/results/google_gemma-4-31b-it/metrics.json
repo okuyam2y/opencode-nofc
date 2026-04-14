@@ -1,0 +1,1 @@
+{"model": "google/gemma-4-31b-it", "date": "2026-04-14T00:03:15Z", "scenario_a": {"time_s": 55, "steps": 1, "exit": 0}, "scenario_b": {"time_s": 118, "steps": 1, "exit": 0}, "scenario_c": {"skipped": true}}

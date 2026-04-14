@@ -1,0 +1,14 @@
+
+> build · meta-llama/llama-4-scout
+
+<tool_calls>
+{"name": "write", "arguments": {"content": "import datetime\n\nprint(\"Hello from OpenCode\")\nprint(datetime.datetime.now())\n", "filePath": "/private/tmp/opencode-eval-workspace/hello.py"}}
+</tool_calls>
+
+<tool_calls>
+{"name": "bash", "arguments": {"command": "python3 /private/tmp/opencode-eval-workspace/hello.py", "description": "Run hello.py with python3"}}
+</tool_calls>
+
+<tool_calls>
+{"name": "read", "arguments": {"filePath": "/private/tmp/opencode-eval-workspace/hello.py", "offset": 1, "limit": 2000}}
+</tool_calls>

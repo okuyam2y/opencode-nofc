@@ -1,0 +1,1 @@
+{"model": "openrouter/anthropic/claude-opus-4-6", "date": "2026-04-14T00:54:16Z", "scenario_a": {"time_s": 10, "steps": 1, "exit": 0}, "scenario_b": {"time_s": 55, "steps": 1, "exit": 0}, "scenario_c": {"time_s": 42, "steps": 2, "exit": 0}}

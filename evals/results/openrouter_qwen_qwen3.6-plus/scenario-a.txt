@@ -1,0 +1,10 @@
+
+> build · qwen/qwen3.6-plus
+
+→ Read README.md
+
+$ wc -l /private/tmp/opencode-eval-workspace/README.md
+20 /private/tmp/opencode-eval-workspace/README.md
+
+- **First heading:** `# OpenCode Evaluation Project`
+- **Line count:** `20`

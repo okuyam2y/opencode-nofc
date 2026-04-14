@@ -1,0 +1,46 @@
+
+> build · google/gemma-4-31b-it
+
+$ git log -n 10 --pretty=format:"%h %s"
+cee42fdd build(deps): bump com.google.protobuf:protobuf-java (#1527)
+1fc95a26 support zoom 16 (#1523)
+3d595b26 build(deps): bump geotools.version from 34.2 to 34.3 (#1526)
+7dbef041 Add STAC-based selective Overture download (#1509)
+1188df81 build(deps): bump jackson.version from 2.21.1 to 2.21.2 (#1524)
+e09e6dd5 build(deps): bump nick-fields/retry from 3.0.2 to 4.0.0 (#1525)
+333efb6a build(deps): bump org.roaringbitmap:RoaringBitmap from 1.6.12 to 1.6.13 (#1519)
+8d164c8d build(deps): bump dawidd6/action-download-artifact from 18 to 19 (#1520)
+cc943a97 Add ParksOverlay example profile with MapLibre style (#1514)
+2b7333b0 build(deps): bump org.xerial:sqlite-jdbc from 3.51.2.0 to 3.51.3.0 (#1516)
+
+$ git diff 2b7333b0..cee42fdd
+diff --git a/.github/workflows/maven.yml b/.github/workflows/maven.yml
+index 286f93d8..25dee844 100644
+--- a/.github/workflows/maven.yml
++++ b/.github/workflows/maven.yml
+@@ -110,14 +110,14 @@ jobs:
+         path: planetiler-dist/target/*with-deps.jar
+ 
+     - name: Download data (java)
+-      uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08
++      uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
+…
+
+I have reviewed the last 10 commits. Most changes are dependency updates or support for zoom level 16, which required migrating `TileCoord` encoding from `int` to `long`.
+
+### Findings
+
+**1. Potential Integer Overflow in `TiledGeometry.encode`**
+- **Severity:** High
+- **Location:** `planetiler-core/src/main/java/com/onthegomap/planetiler/render/TiledGeometry.java:781`
+- **Issue:** The `encode` method casts the result of `maxTilesAtThisZoom * x + y` to an `int`. With zoom 16, `maxTilesAtThisZoom` is $2^{16} = 65536$. For the maximum $x$ ($65535$) and $y$ ($65535$), the result is $\approx 4.29 \times 10^9$, which exceeds `Integer.MAX_VALUE` ($2.14 \times 10^9$), causing a wrap-around to negative values. This will likely lead to incorrect tile indexing or `ArrayIndexOutOfBoundsException` in `RoaringBitmap`.
+
+**2. Unbounded Resource Consumption in `OvertureStac`**
+- **Severity:** Medium
+- **Location:** `planetiler-core/src/main/java/com/onthegomap/planetiler/util/OvertureStac.java`
+- **Issue:** The `getParquetUrls` method fetches all STAC items for a collection in parallel using a virtual thread executor. While virtual threads are lightweight, there is no limit on the number of concurrent HTTP requests to the STAC API, which could lead to rate-limiting or socket exhaustion when processing large collections.
+
+**3. Design Problem: Mixed Parallelism Strategies**
+- **Severity:** Low
+- **Location:** `planetiler-core/src/main/java/com/onthegomap/planetiler/Planetiler.java`
+- **Issue:** The project is introducing `Executors.newVirtualThreadPerTaskExecutor()` for some tasks (Overture downloads) while continuing to use traditional `ExecutorService` or custom `WorkerPipeline` for others. This inconsistency makes resource monitoring and tuning more difficult.

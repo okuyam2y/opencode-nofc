@@ -1,0 +1,30 @@
+
+> build · qwen/qwen3.6-plus
+
+✱ Glob "**/HotelService.java" 1 match
+→ Read src/main/java/com/khoubyari/example/service/HotelService.java
+
+← Edit src/main/java/com/khoubyari/example/service/HotelService.java
+Index: /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
+===================================================================
+--- /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
++++ /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
+@@ -62,10 +62,12 @@
+ }
+ 
+ @SuppressWarnings("unchecked")
+ public List<Hotel> searchByCity(String city) {
+-    String query = "SELECT h FROM Hotel h WHERE h.city LIKE '%" + city + "%'";
+-    return entityManager.createQuery(query).getResultList();
++    String query = "SELECT h FROM Hotel h WHERE h.city LIKE :city";
++    return entityManager.createQuery(query)
++            .setParameter("city", "%" + city + "%")
++            .getResultList();
+ }
+ 
+ //http://goo.gl/7fxvVf
+ public Page<Hotel> getAllHotels(Integer page, Integer size) {
+
+
+→ Read src/main/java/com/khoubyari/example/service/HotelService.java
+Fixed. The `searchByCity` method at `HotelService.java:65-70` now uses a parameterized JPQL query with `:city` and `.setParameter()` instead of string concatenation, preventing JPQL injection.

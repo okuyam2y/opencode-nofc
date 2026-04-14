@@ -1,0 +1,29 @@
+
+> build · cohere/command-a-03-2025
+
+$ python3 hello.py
+Hello from OpenCode 
+
+2026-04-14 09:51:07.889902
+
+→ Read hello.py
+
+← Write hello.py
+Wrote file successfully.
+
+Here is the output after running the Python script with `python3`:
+
+```
+Hello from OpenCode
+
+2026-04-14 09:51:07.889902
+```
+
+Here is the content of `hello.py`:
+
+```python
+from datetime import datetime
+
+print("Hello from OpenCode \n")
+print(datetime.now())
+```

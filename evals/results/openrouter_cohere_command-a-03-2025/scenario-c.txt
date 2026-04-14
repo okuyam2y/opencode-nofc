@@ -1,0 +1,50 @@
+
+> build · cohere/command-a-03-2025
+
+✗ read failed
+Error: File not found: /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/example/service/HotelService.java
+
+Did you mean one of these?
+/private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
+→ Read src/main/java/com/khoubyari/example/service/HotelService.java
+
+← Edit src/main/java/com/khoubyari/example/service/HotelService.java
+Index: /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
+===================================================================
+--- /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
++++ /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
+@@ -62,9 +62,11 @@
+ }
+ 
+ @SuppressWarnings("unchecked")
+ public List<Hotel> searchByCity(String city) {
+-    String query = "SELECT h FROM Hotel h WHERE h.city LIKE '%" + city + "%'";
++    String query = "SELECT h FROM Hotel h WHERE h.city LIKE :city";
++    TypedQuery<Hotel> typedQuery = entityManager.createQuery(query, Hotel.class);
++    typedQuery.setParameter("city", "%" + city + "%");
+     return entityManager.createQuery(query).getResultList();
+ }
+ 
+ //http://goo.gl/7fxvVf
+
+
+← Edit src/main/java/com/khoubyari/example/service/HotelService.java
+Index: /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
+===================================================================
+--- /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
++++ /private/tmp/spring-boot-rest-example-buggy/src/main/java/com/khoubyari/example/service/HotelService.java
+@@ -0,0 +1,1 @@
++import javax.persistence.TypedQuery;
+
+
+✗ line_edit failed
+Error: endLine (16) exceeds file length (1 lines)
+✗ line_edit failed
+Error: endLine (15) exceeds file length (1 lines)
+✗ line_edit failed
+Error: endLine (16) exceeds file length (1 lines)
+✗ line_edit failed
+Error: endLine (16) exceeds file length (1 lines)
+→ Read src/main/java/com/khoubyari/example/service/HotelService.java
+It appears the file is truncated. I will write the correct version of the file with the parameterized query and necessary imports.
+(7 intermediate text parts from tool-calls steps omitted)

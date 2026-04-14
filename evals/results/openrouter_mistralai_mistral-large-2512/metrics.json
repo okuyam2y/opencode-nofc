@@ -1,0 +1,1 @@
+{"model": "openrouter/mistralai/mistral-large-2512", "date": "2026-04-14T00:39:00Z", "scenario_a": {"time_s": 7, "steps": 1, "exit": 0}, "scenario_b": {"time_s": 53, "steps": 1, "exit": 0}, "scenario_c": {"time_s": 17, "steps": 2, "exit": 0}}

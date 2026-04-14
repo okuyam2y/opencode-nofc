@@ -1,0 +1,97 @@
+
+> build · mistralai/mistral-large-2512
+
+$ git log -n 10 --pretty=format:"%h %s"
+cee42fdd build(deps): bump com.google.protobuf:protobuf-java (#1527)
+1fc95a26 support zoom 16 (#1523)
+3d595b26 build(deps): bump geotools.version from 34.2 to 34.3 (#1526)
+7dbef041 Add STAC-based selective Overture download (#1509)
+1188df81 build(deps): bump jackson.version from 2.21.1 to 2.21.2 (#1524)
+e09e6dd5 build(deps): bump nick-fields/retry from 3.0.2 to 4.0.0 (#1525)
+333efb6a build(deps): bump org.roaringbitmap:RoaringBitmap from 1.6.12 to 1.6.13 (#1519)
+8d164c8d build(deps): bump dawidd6/action-download-artifact from 18 to 19 (#1520)
+cc943a97 Add ParksOverlay example profile with MapLibre style (#1514)
+2b7333b0 build(deps): bump org.xerial:sqlite-jdbc from 3.51.2.0 to 3.51.3.0 (#1516)
+
+$ git log -n 10 --stat
+commit cee42fdd0e8b3754351557cbe41a8e97562c23aa
+Author: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>
+Date:   Wed Mar 25 21:36:54 2026 -0400
+
+    build(deps): bump com.google.protobuf:protobuf-java (#1527)
+    
+    Bumps [com.google.protobuf:protobuf-java](https://github.com/protocolbuffers/protobuf) from 4.34.0 to 4.34.1.
+    - [Release notes](https://github.com/protocolbuffers/protobuf/releases)
+    - [Commits](https://github.com/protocolbuffers/protobuf/commits)
+    
+…
+
+→ Read planetiler-core/src/main/java/com/onthegomap/planetiler/util/OvertureStac.java
+✗ read failed
+Error: offset must be greater than or equal to 1
+
+$ git diff 7dbef041f9ba74da8544a86222a2131ca59cf32b -- planetiler-core/src/main/java/com/onthegomap/planetiler/util/OvertureStac.java
+
+$ git diff 1fc95a26d7b85b8fe6393bd81fb8dbcbb355b6f4 -- planetiler-core/src/main/java/com/onthegomap/planetiler/geo/TileCoord.java
+→ Read planetiler-core/src/main/java/com/onthegomap/planetiler/Planetiler.java [offset=1, limit=100]
+
+$ git show 7dbef041f9ba74da8544a86222a2131ca59cf32b:planetiler-core/src/main/java/com/onthegomap/planetiler/util/OvertureStac.java
+package com.onthegomap.planetiler.util;
+
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.onthegomap.planetiler.config.Bounds;
+import com.onthegomap.planetiler.config.PlanetilerConfig;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.net.URI;
+…
+
+$ git show 1fc95a26d7b85b8fe6393bd81fb8dbcbb355b6f4:planetiler-core/src/main/java/com/onthegomap/planetiler/geo/TileCoord.java
+package com.onthegomap.planetiler.geo;
+
+import static com.onthegomap.planetiler.config.PlanetilerConfig.MAX_MAXZOOM;
+
+import com.onthegomap.planetiler.util.Hilbert;
+import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
+import java.util.Locale;
+import net.jcip.annotations.Immutable;
+import org.locationtech.jts.geom.Coordinate;
+…
+
+### Findings (Critical/High/Medium/Low)
+
+**High:**
+1. **STAC-based Overture download (#1509)** - `OvertureStac.java:141-159`
+   - **Issue:** Virtual thread executor (`Executors.newVirtualThreadPerTaskExecutor()`) is not closed if an exception occurs during stream processing, potentially leaking threads.
+   - **Impact:** Resource leak under error conditions.
+
+2. **STAC-based Overture download (#1509)** - `OvertureStac.java:269-273`
+   - **Issue:** `fetch()` method does not validate URLs before opening streams, risking SSRF if attacker-controlled input reaches `Downloader.openStream()`.
+   - **Impact:** Security vulnerability if `theme`/`type` parameters are user-controlled.
+
+3. **Zoom 16 support (#1523)** - `TileCoord.java`
+   - **Issue:** `MAX_MAXZOOM` increased to 16 without bounds checking in `ofXYZ()`/`encode()`. Hilbert curve calculations may overflow for edge tiles.
+   - **Impact:** Potential integer overflow or incorrect tile indexing at zoom 16.
+
+**Medium:**
+1. **STAC-based Overture download (#1509)** - `OvertureStac.java:145-147`
+   - **Issue:** No retry logic for failed STAC item fetches. Network errors cause entire batch to fail silently.
+   - **Impact:** Reduced reliability for large downloads.
+
+2. **Zoom 16 support (#1523)** - `TileCoord.java:static initializer`
+   - **Issue:** `ZOOM_START_INDEX` array size hardcoded to `MAX_MAXZOOM + 1`. If `MAX_MAXZOOM` increases further, this will silently fail.
+   - **Impact:** Future zoom level support may break unexpectedly.
+
+**Low:**
+1. **STAC-based Overture download (#1509)** - `OvertureStac.java:163`
+   - **Issue:** `future.join()` blocks indefinitely. No timeout for stalled downloads.
+   - **Impact:** Hangs if STAC server becomes unresponsive.
+
+---
+**Files examined:**
+- `planetiler-core/src/main/java/com/onthegomap/planetiler/util/OvertureStac.java`
+- `planetiler-core/src/main/java/com/onthegomap/planetiler/geo/TileCoord.java`
+- `planetiler-core/src/main/java/com/onthegomap/planetiler/Planetiler.java`

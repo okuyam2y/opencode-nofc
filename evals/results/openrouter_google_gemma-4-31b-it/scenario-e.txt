@@ -1,0 +1,82 @@
+
+> build · google/gemma-4-31b-it
+
+$ npm init -y && npm install -D @playwright/test && npx playwright install --with-deps
+Wrote to /private/tmp/playwright-eval-openrouter_google_gemma-4-31b-it/package.json:
+
+{
+  "name": "playwright-eval-openrouter_google_gemma-4-31b-it",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+…
+
+$ npx playwright install --with-deps
+
+← Write tests/todo.spec.ts
+Wrote file successfully.
+
+$ npx playwright test tests/todo.spec.ts
+Running 6 tests using 1 worker
+
+  ✓  1 tests/todo.spec.ts:10:7 › TodoMVC React E2E Tests › Add a TODO (617ms)
+  ✘  2 tests/todo.spec.ts:17:7 › TodoMVC React E2E Tests › Complete a TODO (5.2s)
+  ✓  3 tests/todo.spec.ts:25:7 › TodoMVC React E2E Tests › Delete a completed TODO (183ms)
+  ✘  4 tests/todo.spec.ts:34:7 › TodoMVC React E2E Tests › Edit a TODO text (30.0s)
+  ✘  5 tests/todo.spec.ts:45:7 › TodoMVC React E2E Tests › Complete all TODOs at once (5.2s)
+  ✓  6 tests/todo.spec.ts:58:7 › TodoMVC React E2E Tests › Active/Completed filters work (199ms)
+
+
+…
+
+← Write tests/todo.spec.ts
+Wrote file successfully.
+
+$ npx playwright test tests/todo.spec.ts
+Running 6 tests using 1 worker
+
+  ✓  1 tests/todo.spec.ts:10:7 › TodoMVC React E2E Tests › Add a TODO (147ms)
+  ✓  2 tests/todo.spec.ts:17:7 › TodoMVC React E2E Tests › Complete a TODO (137ms)
+  ✓  3 tests/todo.spec.ts:25:7 › TodoMVC React E2E Tests › Delete a completed TODO (153ms)
+  ✘  4 tests/todo.spec.ts:34:7 › TodoMVC React E2E Tests › Edit a TODO text (30.0s)
+  ✓  5 tests/todo.spec.ts:45:7 › TodoMVC React E2E Tests › Complete all TODOs at once (163ms)
+  ✓  6 tests/todo.spec.ts:58:7 › TodoMVC React E2E Tests › Active/Completed filters work (172ms)
+
+
+…
+
+← Write tests/todo.spec.ts
+Wrote file successfully.
+
+$ npx playwright test tests/todo.spec.ts
+Running 6 tests using 1 worker
+
+  ✓  1 tests/todo.spec.ts:10:7 › TodoMVC React E2E Tests › Add a TODO (143ms)
+  ✓  2 tests/todo.spec.ts:17:7 › TodoMVC React E2E Tests › Complete a TODO (128ms)
+  ✓  3 tests/todo.spec.ts:25:7 › TodoMVC React E2E Tests › Delete a completed TODO (146ms)
+  ✘  4 tests/todo.spec.ts:34:7 › TodoMVC React E2E Tests › Edit a TODO text (30.0s)
+  ✓  5 tests/todo.spec.ts:45:7 › TodoMVC React E2E Tests › Complete all TODOs at once (165ms)
+  ✓  6 tests/todo.spec.ts:58:7 › TodoMVC React E2E Tests › Active/Completed filters work (164ms)
+
+
+…
+
+← Write tests/todo.spec.ts
+Wrote file successfully.
+
+$ npx playwright test tests/todo.spec.ts
+Running 6 tests using 1 worker
+
+  ✓  1 tests/todo.spec.ts:10:7 › TodoMVC React E2E Tests › Add a TODO (160ms)
+  ✓  2 tests/todo.spec.ts:17:7 › TodoMVC React E2E Tests › Complete a TODO (137ms)
+  ✓  3 tests/todo.spec.ts:25:7 › TodoMVC React E2E Tests › Delete a completed TODO (155ms)
+  ✘  4 tests/todo.spec.ts:34:7 › TodoMVC React E2E Tests › Edit a TODO text (30.0s)
+  ✓  5 tests/todo.spec.ts:46:7 › TodoMVC React E2E Tests › Complete all TODOs at once (180ms)
+  ✓  6 tests/todo.spec.ts:59:7 › TodoMVC React E2E Tests › Active/Completed filters work (174ms)
+
+
+…
+

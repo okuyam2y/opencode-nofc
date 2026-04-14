@@ -1,0 +1,4 @@
+
+> build · google/gemini-3.1-pro
+
+Error: google/gemini-3.1-pro is not a valid model ID

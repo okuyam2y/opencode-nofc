@@ -1,0 +1,11 @@
+
+> build · qwen/qwen3.6-plus
+
+← Write hello.py
+Wrote file successfully.
+
+$ python3 /private/tmp/opencode-eval-workspace/hello.py
+Hello from OpenCode
+Current date/time: 2026-04-14 09:41:17.010083
+
+→ Read hello.py

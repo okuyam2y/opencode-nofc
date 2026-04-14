@@ -1,0 +1,10 @@
+
+> build · google/gemma-4-31b-it
+
+→ Read README.md
+
+$ wc -l < README.md
+20
+
+Heading: # OpenCode Evaluation Project
+Line count: 20

@@ -1,0 +1,22 @@
+
+> build · google/gemma-4-31b-it
+
+← Write hello.py
+Wrote file successfully.
+
+$ python3 hello.py
+Hello from OpenCode
+2026-04-14 09:05:46.589158
+
+→ Read hello.py
+Output:
+Hello from OpenCode
+2026-04-14 09:05:46.589158
+
+File contents confirmed:
+```python
+import datetime
+
+print("Hello from OpenCode")
+print(datetime.datetime.now())
+```

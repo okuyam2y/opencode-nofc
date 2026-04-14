@@ -1,0 +1,32 @@
+
+> build · anthropic/claude-opus-4-6
+
+$ python3 hello.py
+Hello from OpenCode
+2026-04-14 09:54:34.002111
+
+→ Read hello.py
+
+← Write hello.py
+Wrote file successfully.
+
+Everything works. Here's the summary:
+
+**Created** `hello.py` with the following contents:
+
+```python
+from datetime import datetime
+
+print("Hello from OpenCode")
+print(datetime.now())
+```
+
+**Output** from `python3 hello.py`:
+
+```
+Hello from OpenCode
+2026-04-14 09:54:34.002111
+```
+
+**File verification** — the read-back confirms the file contains exactly the 4 lines written: it imports `datetime`, prints the greeting `"Hello from OpenCode"`, and prints the current date/time.
+(3 intermediate text parts from tool-calls steps omitted)

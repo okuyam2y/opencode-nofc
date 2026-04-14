@@ -1,0 +1,11 @@
+
+> build · meta-llama/llama-4-scout
+
+<tool_calls>
+{"name": "read", "arguments": {"filePath": "/private/tmp/opencode-eval-workspace/README.md", "offset": 1, "limit": 2000}}
+</tool_calls>
+
+
+<tool_calls>
+{"name": "bash", "arguments": {"command": "wc -l README.md", "description": "Count lines in README.md"}}
+</tool_calls>

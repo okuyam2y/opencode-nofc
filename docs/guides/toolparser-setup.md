@@ -1,6 +1,6 @@
 # Tool Parser Setup Guide
 
-最終更新: 2026-04-07
+最終更新: 2026-04-14
 
 OpenCode fork for gateways that don't support native function calling.
 
@@ -66,6 +66,12 @@ You can also use toolParser with native providers like Google AI. This is useful
       "models": {
         "gemini-3.1-pro-preview": {
           "name": "Gemini 3.1 Pro",
+          "options": {
+            "thinkingConfig": {
+              "thinkingLevel": "medium",   // low/medium/high (minimal is NOT supported)
+              "includeThoughts": false      // hide thinking from stream
+            }
+          },
           "limit": { "context": 1000000, "output": 65536 }
         }
       }
@@ -73,6 +79,10 @@ You can also use toolParser with native providers like Google AI. This is useful
   }
 }
 ```
+
+**Important:** Gemini 3.x models have mandatory thinking — it cannot be disabled. Set `includeThoughts: false` to prevent thinking tokens from appearing in the text stream. Without this, thinking text will be visible in the TUI output (but tool calling still works either way).
+
+This only works with `@ai-sdk/google` (native SDK). The SDK separates thinking into `reasoning-delta` events, which hermes-strict ignores. OpenAI-compatible APIs (OpenRouter, etc.) mix thinking into the text stream, making hermes-strict incompatible.
 
 ## Per-model configuration
 
@@ -106,16 +116,25 @@ You can set `toolParser` at the provider level (applies to all models) or per-mo
 
 **Not all models work with hermes-strict.** The tool parser requires the model to generate valid `<tool_call>` JSON within its text output, which is harder than native function calling.
 
-Tested models (as of 2026-04):
+Tested models (as of 2026-04-14, via OpenRouter multi-provider evaluation):
 
-| Model | Reliability | Notes |
-|-------|------------|-------|
-| Claude Sonnet 4.5 | Stable | Best instruction following. Recommended for complex workflows |
-| GPT-5.4 | Stable | Requires provider base prompt for grounding. Deep analysis capability |
-| Gemini 3.1 Pro Preview | Stable | Model ID: `gemini-3.1-pro-preview`. Verified with code review tasks. Long thinking, deep analysis. Cost-effective |
-| GPT-5.1 | Borderline | Works for simple tasks, degrades on multi-step workflows |
-| Mistral Medium | Not usable | Output control breaks down (infinite loops, template token leakage) |
-| GLM-5 Turbo | Not usable | Cannot generate `<tool_call>` syntax despite strong native FC support |
+| Model | Company | Reliability | Notes |
+|-------|---------|------------|-------|
+| Claude Opus 4.6 | Anthropic | **Stable** | 22/23. Best overall. Deep code review (31 steps), Playwright 6/6 |
+| Claude Sonnet 4.5 | Anthropic | **Stable** | Best instruction following. Recommended for complex workflows |
+| GPT-5.4 | OpenAI | **Stable** | Requires provider base prompt for grounding. Deep analysis |
+| Mistral Large 3 | Mistral | **Stable** | 22/23. Clean bug fixes, thorough code review (5 issues) |
+| Gemma 4 31B | Google | **Stable** | 21/23. Remarkable for 31B. A-C perfect, D shallow but valid |
+| GPT-5.1 | OpenAI | Borderline | Works for simple tasks, degrades on multi-step workflows |
+| Qwen3.6 Plus | Alibaba | Borderline | 14/23. A-C solid, E (Playwright) failed, D loops |
+| Cohere Command A | Cohere | Borderline | 7/23. Basic tools work, edit corrupts files, E failed |
+| DeepSeek V3.2 | DeepSeek | **Not usable** | Responds with natural language instead of `<tool_call>` tags |
+| Llama 4 Scout | Meta | **Not usable** | Generates `<tool_calls>` (plural) instead of `<tool_call>` (singular) |
+| Gemini 3.1 Pro | Google | **Stable** (native SDK only) | Requires `@ai-sdk/google` + `includeThoughts: false`. Incompatible via OpenRouter/OpenAI-compatible |
+| Mistral Medium | Mistral | **Not usable** | Output control breaks down (infinite loops, template token leakage) |
+| GLM-5 Turbo | ZhipuAI | **Not usable** | Cannot generate `<tool_call>` syntax despite strong native FC support |
+
+**Key finding:** hermes-strict success depends on **instruction following precision**, not model size. Gemma 4 (31B) outperforms DeepSeek V3.2 (671B MoE).
 
 **Recommendation:** Validate your model on a representative multi-step workflow before relying on it. Passing simple tool calls does not guarantee reliability on longer runs.
 

@@ -1,5 +1,20 @@
 # Evaluation Prompts & Scoring Criteria
 
+## General Scoring Scale
+
+Each scenario is scored on individual criteria (0 or 1 per criterion). The total score maps to a 5-level quality grade:
+
+| Grade | Meaning | Criteria |
+|-------|---------|----------|
+| **5 — Perfect** | All criteria met, output is correct and complete | All points scored |
+| **4 — Good** | Minor issues that don't affect the result | 1 criterion missed (e.g. skipped verification step) |
+| **3 — Functional** | Task completed but with notable problems | Core task done, 2+ criteria missed |
+| **2 — Partial** | Some tool calls succeeded but task not completed | Tools called but wrong output or incomplete fix |
+| **1 — Minimal** | At least one valid tool call generated | `<tool_call>` tags parsed, but workflow failed |
+| **0 — Fail** | No valid tool calls | Model did not generate `<tool_call>` tags, or used wrong tag format |
+
+---
+
 ## Scenario A: Basic Tool Calling (4 points)
 
 **Prompt:**

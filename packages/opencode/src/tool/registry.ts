@@ -81,6 +81,7 @@ export namespace ToolRegistry {
     Service,
     never,
     | Config.Service
+    | Env.Service
     | Plugin.Service
     | Question.Service
     | Todo.Service
@@ -102,6 +103,7 @@ export namespace ToolRegistry {
     Service,
     Effect.gen(function* () {
       const config = yield* Config.Service
+      const env = yield* Env.Service
       const plugin = yield* Plugin.Service
       const agents = yield* Agent.Service
       const skill = yield* Skill.Service
@@ -279,6 +281,8 @@ export namespace ToolRegistry {
       })
 
       const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
+        const e2e = !!(yield* env.get("OPENCODE_E2E_LLM_URL"))
+        const cfg = yield* config.get()
         // When toolParser middleware is active, fall back to edit/write + line_edit.
         // E2E test environments force apply_patch regardless of toolParser.
         const isGptPatch =
@@ -296,7 +300,7 @@ export namespace ToolRegistry {
           const modelInfo = providerInfo.models[lookupKey]
           hasToolParser = !!(modelInfo?.options?.toolParser ?? providerInfo.options?.toolParser)
         }
-        const usePatch = !!Env.get("OPENCODE_E2E_LLM_URL") || (isGptPatch && !hasToolParser)
+        const usePatch = e2e || (isGptPatch && !hasToolParser)
 
         const filtered = (yield* all()).filter((tool) => {
           if (tool.id === CodeSearchTool.id || tool.id === WebSearchTool.id) {
@@ -349,6 +353,7 @@ export namespace ToolRegistry {
   export const defaultLayer = Layer.suspend(() =>
     layer.pipe(
       Layer.provide(Config.defaultLayer),
+      Layer.provide(Env.defaultLayer),
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Question.defaultLayer),
       Layer.provide(Todo.defaultLayer),

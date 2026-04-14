@@ -245,14 +245,19 @@ export namespace LLM {
             input.model.providerID.toLowerCase().includes("litellm") ||
             input.model.api.id.toLowerCase().includes("litellm")
 
-          // toolParser was already resolved above for system prompt selection
+          // toolParser is the raw config value; toolParserActive reflects whether
+          // the middleware is actually engaged for this request (disabled when
+          // toolChoice is "none").  _noop injection should check the latter so
+          // that LiteLLM/Bedrock compatibility isn't silently suppressed when a
+          // provider has toolParser configured but this particular call disables it.
           const toolParserMode = toolParser
+          const toolParserActive = !!(toolParserMode && input.toolChoice !== "none")
 
           // LiteLLM/Bedrock rejects requests where the message history contains tool
           // calls but no tools param is present. When there are no active tools (e.g.
           // during compaction), inject a stub tool to satisfy the validation requirement.
           // The stub description explicitly tells the model not to call it.
-          if (isLiteLLMProxy && !toolParserMode && Object.keys(tools).length === 0 && hasToolCalls(input.messages)) {
+          if (isLiteLLMProxy && !toolParserActive && Object.keys(tools).length === 0 && hasToolCalls(input.messages)) {
             tools["_noop"] = tool({
               description: "Do not call this tool. It exists only for API compatibility and must never be invoked.",
               inputSchema: jsonSchema({
@@ -383,7 +388,7 @@ export namespace LLM {
               const err = (error as any)?.error ?? error
               l.error("stream error", {
                 error: typeof err === "object" && err !== null && "message" in err ? (err as any).message : err,
-                raw: typeof err === "object" ? JSON.stringify(err, null, 0) : undefined,
+                raw: typeof err === "object" ? (() => { try { return JSON.stringify(err, null, 0) } catch { return "[unserializable]" } })() : undefined,
               })
             },
             async experimental_repairToolCall(failed) {
@@ -479,17 +484,19 @@ export namespace LLM {
                       args.params.maxOutputTokens = undefined
                     }
                     // Debug: log final prompt size after all middleware transforms
-                    const promptChars = args.params.prompt?.reduce((acc: number, msg: any) => {
-                      if (typeof msg.content === "string") return acc + msg.content.length
-                      if (Array.isArray(msg.content)) return acc + msg.content.reduce((a: number, c: any) => a + (c.text?.length ?? 0), 0)
-                      return acc
-                    }, 0) ?? 0
-                    log.info("transform-debug", {
-                      promptChars,
-                      promptMsgCount: args.params.prompt?.length ?? 0,
-                      activeToolCount: args.params.tools?.length ?? 0,
-                      hasToolParser: !!toolParserMode,
-                    })
+                    if (Flag.OPENCODE_DEBUG_LLM) {
+                      const promptChars = args.params.prompt?.reduce((acc: number, msg: any) => {
+                        if (typeof msg.content === "string") return acc + msg.content.length
+                        if (Array.isArray(msg.content)) return acc + msg.content.reduce((a: number, c: any) => a + (c.text?.length ?? 0), 0)
+                        return acc
+                      }, 0) ?? 0
+                      log.info("transform-debug", {
+                        promptChars,
+                        promptMsgCount: args.params.prompt?.length ?? 0,
+                        activeToolCount: args.params.tools?.length ?? 0,
+                        hasToolParser: !!toolParserMode,
+                      })
+                    }
                     return args.params
                   },
                 })

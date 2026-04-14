@@ -10,7 +10,7 @@ npm error code 1
 npm error path /private/tmp/playwright-eval-openrouter_mistralai_mistral-large-2512
 npm error command failed
 npm error command sh -c "create-playwright" --quiet --yes --install
-npm error A complete log of this run can be found in: /Users/okuyama/.npm/_logs/2026-04-14T01_21_50_750Z-debug-0.log
+npm error A complete log of this run can be found in: $HOME/.npm/_logs/2026-04-14T01_21_50_750Z-debug-0.log
 
 $ npm install @playwright/test
 added 3 packages in 718ms

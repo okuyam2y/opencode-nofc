@@ -55,7 +55,7 @@ export const ReadTool = Tool.define(
 
       if (items.length > 0) {
         return yield* Effect.fail(
-          new Error(`File not found: ${filepath}\n\nDid you mean one of these?\n${items.join("\n")}`),
+          new Error(`File not found: ${filepath}\nDid you mean one of these?\n${items.join("\n")}\nRetry with the correct path or use glob to find it.`),
         )
       }
 
@@ -67,7 +67,7 @@ export const ReadTool = Tool.define(
 
       if (repoHits.length > 0) {
         return yield* Effect.fail(
-          new Error(`File not found: ${filepath}\n\nDid you mean one of these?\n${repoHits.join("\n")}`),
+          new Error(`File not found: ${filepath}\nDid you mean one of these?\n${repoHits.join("\n")}\nRetry with the correct path or use glob to find it.`),
         )
       }
 

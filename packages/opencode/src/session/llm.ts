@@ -23,6 +23,8 @@ import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
 import { Installation } from "@/installation"
 import { makeRuntime } from "@/effect/run-service"
+import * as Option from "effect/Option"
+import * as OtelTracer from "@effect/opentelemetry/Tracer"
 
 // Custom hermes middleware with explicit examples for models that don't follow the standard format
 const hermesStrictMiddleware = createToolMiddleware({
@@ -246,18 +248,23 @@ export namespace LLM {
             input.model.api.id.toLowerCase().includes("litellm")
 
           // toolParser is the raw config value; toolParserActive reflects whether
-          // the middleware is actually engaged for this request (disabled when
-          // toolChoice is "none").  _noop injection should check the latter so
-          // that LiteLLM/Bedrock compatibility isn't silently suppressed when a
-          // provider has toolParser configured but this particular call disables it.
+          // the middleware is actually engaged for this request.  Disabled when:
+          //   - toolChoice is "none" (no tool calls expected)
+          //   - tools is empty (e.g. compaction — parser has nothing to convert,
+          //     and stripping _noop would break LiteLLM/copilot gateway compat)
           const toolParserMode = toolParser
-          const toolParserActive = !!(toolParserMode && input.toolChoice !== "none")
+          const toolParserActive = !!(toolParserMode && input.toolChoice !== "none" && Object.keys(tools).length > 0)
 
           // LiteLLM/Bedrock rejects requests where the message history contains tool
           // calls but no tools param is present. When there are no active tools (e.g.
           // during compaction), inject a stub tool to satisfy the validation requirement.
           // The stub description explicitly tells the model not to call it.
-          if (isLiteLLMProxy && !toolParserActive && Object.keys(tools).length === 0 && hasToolCalls(input.messages)) {
+          if (
+            (isLiteLLMProxy || input.model.providerID.includes("github-copilot")) &&
+            !toolParserActive &&
+            Object.keys(tools).length === 0 &&
+            hasToolCalls(input.messages)
+          ) {
             tools["_noop"] = tool({
               description: "Do not call this tool. It exists only for API compatibility and must never be invoked.",
               inputSchema: jsonSchema({
@@ -359,6 +366,10 @@ export namespace LLM {
               }
             })
           }
+
+          const tracer = cfg.experimental?.openTelemetry
+            ? Option.getOrUndefined(yield* Effect.serviceOption(OtelTracer.OtelTracer))
+            : undefined
 
           // Debug: log LLM stream parameters for diagnosing tool-call instability
           if (Flag.OPENCODE_DEBUG_LLM) {
@@ -536,6 +547,8 @@ export namespace LLM {
             }),
             experimental_telemetry: {
               isEnabled: cfg.experimental?.openTelemetry,
+              functionId: "session.llm",
+              tracer,
               metadata: {
                 userId: cfg.username ?? "unknown",
                 sessionId: input.sessionID,

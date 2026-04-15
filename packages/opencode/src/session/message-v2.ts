@@ -975,7 +975,7 @@ export namespace MessageV2 {
   /** Extract HTTP status code from heterogeneous error shapes (plain objects, Error subclasses, JSON-encoded messages). */
   export function extractStatusCode(e: unknown): number | undefined {
     if (typeof e !== "object" || e === null) return undefined
-    const direct = (e as any).status ?? (e as any).statusCode ?? (e as any).response?.statusCode
+    const direct = (e as any).status ?? (e as any).statusCode ?? (e as any).code ?? (e as any).response?.statusCode
     if (typeof direct === "number") return direct
     // Try JSON-encoded message
     const msg = (e as any).message
@@ -983,7 +983,7 @@ export namespace MessageV2 {
       try {
         const parsed = JSON.parse(msg)
         if (typeof parsed === "object" && parsed !== null) {
-          const code = parsed.status ?? parsed.statusCode
+          const code = parsed.status ?? parsed.statusCode ?? parsed.code
           if (typeof code === "number") return code
         }
       } catch {}

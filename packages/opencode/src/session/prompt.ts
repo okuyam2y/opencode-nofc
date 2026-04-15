@@ -46,7 +46,6 @@ import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Layer, Option, Scope, Context } from "effect"
 import { EffectLogger } from "@/effect/logger"
 import { InstanceState } from "@/effect/instance-state"
-import { attach } from "@/effect/run-service"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
 
@@ -140,12 +139,21 @@ export namespace SessionPrompt {
       const summary = yield* SessionSummary.Service
       const sys = yield* SystemPrompt.Service
       const llm = yield* LLM.Service
-
-      const run = {
-        promise: <A, E>(effect: Effect.Effect<A, E>) =>
-          Effect.runPromise(attach(effect).pipe(Effect.provide(EffectLogger.layer))),
-        fork: <A, E>(effect: Effect.Effect<A, E>) => Effect.runFork(attach(effect).pipe(Effect.provide(EffectLogger.layer))),
-      }
+      const runner = Effect.fn("SessionPrompt.runner")(function* () {
+        const ctx = yield* Effect.context()
+        return {
+          promise: <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromiseWith(ctx)(effect),
+          fork: <A, E>(effect: Effect.Effect<A, E>) => Effect.runForkWith(ctx)(effect),
+        }
+      })
+      const ops = Effect.fn("SessionPrompt.ops")(function* () {
+        const run = yield* runner()
+        return {
+          cancel: (sessionID: SessionID) => run.fork(cancel(sessionID)),
+          resolvePromptParts: (template: string) => resolvePromptParts(template),
+          prompt: (input: PromptInput) => prompt(input),
+        } satisfies TaskPromptOps
+      })
 
       /** Highest confirmed inputTokens (input + cache.read) per session.
        *  Persists across runLoop invocations (which are recreated on each user turn)
@@ -156,6 +164,7 @@ export namespace SessionPrompt {
 
       const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
         log.info("cancel", { sessionID })
+        confirmedInputs.delete(sessionID)
         yield* state.cancel(sessionID)
       })
 
@@ -402,6 +411,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       }) {
         using _ = log.time("resolveTools")
         const tools: Record<string, AITool> = {}
+        const run = yield* runner()
+        const promptOps = yield* ops()
 
         const context = (args: any, options: ToolExecutionOptions): Tool.Context => ({
           sessionID: input.session.id,
@@ -572,6 +583,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       }) {
         const { task, model, lastUser, sessionID, session, msgs } = input
         const ctx = yield* InstanceState.context
+        const promptOps = yield* ops()
         const { task: taskTool } = yield* registry.named()
         const taskModel = task.model ? yield* getModel(task.model.providerID, task.model.modelID, sessionID) : model
         const assistantMessage: MessageV2.Assistant = yield* sessions.updateMessage({
@@ -756,6 +768,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
       const shellImpl = Effect.fn("SessionPrompt.shellImpl")(function* (input: ShellInput) {
         const ctx = yield* InstanceState.context
+        const run = yield* runner()
         const session = yield* sessions.get(input.sessionID)
         if (session.revert) {
           yield* revert.cleanup(session)
@@ -1620,8 +1633,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 // Post-step validation: execute-time check only sees the pre-step
                 // msgs snapshot.  Re-validate against current step's actual parts
                 // so a batched bash(exit!=0) + complete in one step is caught.
+                // Also check assistant-level errors (provider/content-filter/stream).
                 const currentParts = MessageV2.parts(handle.message.id)
-                const postReject = validateCompleteFromParts(currentParts)
+                const postReject = handle.message.error
+                  ? `Cannot complete: current step has an error — ${typeof handle.message.error === "string" ? handle.message.error : JSON.stringify(handle.message.error)}`
+                  : validateCompleteFromParts(currentParts)
                 if (postReject) {
                   log.warn("complete overridden by post-step validation", {
                     sessionID,
@@ -1813,12 +1829,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         })
         return result
       })
-
-      const promptOps: TaskPromptOps = {
-        cancel: (sessionID) => run.fork(cancel(sessionID)),
-        resolvePromptParts: (template) => resolvePromptParts(template),
-        prompt: (input) => prompt(input),
-      }
 
       return Service.of({
         cancel,
@@ -2037,20 +2047,23 @@ NOTE: At any point in time through this workflow you should feel free to ask the
    * are caught by the post-step check in the break判定.
    */
   export function validateComplete(msgs: MessageV2.WithParts[]): string | undefined {
+    // Scan ALL assistant messages (not just the last) because a failure in an
+    // earlier step may not have been resolved yet.  Walk backwards and stop at
+    // the last user message (everything after it is the current turn).
     for (let i = msgs.length - 1; i >= 0; i--) {
       const msg = msgs[i]
+      if (msg.info.role === "user") break
+
       if (msg.info.role !== "assistant") continue
 
       // 1. Assistant-level error (e.g. content filter, stream failure)
       if (msg.info.error) {
-        return `Cannot complete: the last assistant response has an error — ${typeof msg.info.error === "string" ? msg.info.error : JSON.stringify(msg.info.error)}`
+        return `Cannot complete: assistant response has an unresolved error — ${typeof msg.info.error === "string" ? msg.info.error : JSON.stringify(msg.info.error)}`
       }
 
       // 2. Scan tool parts for failures
       const partReject = validateCompleteFromParts(msg.parts)
       if (partReject) return partReject
-
-      break // only check last assistant
     }
     return undefined
   }

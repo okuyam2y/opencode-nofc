@@ -133,6 +133,7 @@ Tested models (as of 2026-04-14, via OpenRouter multi-provider evaluation):
 | Gemini 3.1 Pro | Google | **Stable** (native SDK only) | Requires `@ai-sdk/google` + `includeThoughts: false`. Incompatible via OpenRouter/OpenAI-compatible |
 | Mistral Medium | Mistral | **Not usable** | Output control breaks down (infinite loops, template token leakage) |
 | GLM-5 Turbo | ZhipuAI | **Not usable** | Cannot generate `<tool_call>` syntax despite strong native FC support |
+| GLM-5.1 | ZhipuAI | **Not usable** | Mandatory thinking. Reasons about tools but emits no `<tool_call>` tags (z.ai direct, 2026-04-15) |
 
 **Key finding:** hermes-strict success depends on **instruction following precision**, not model size. Gemma 4 (31B) outperforms DeepSeek V3.2 (671B MoE).
 

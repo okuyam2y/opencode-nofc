@@ -1,0 +1,29 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "zai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "env": ["ZHIPUAI_API_KEY"],
+      "options": {
+        "baseURL": "https://api.z.ai/api/coding/paas/v4",
+        "toolParser": "hermes-strict"
+      },
+      "models": {
+        "glm-5.1": {
+          "name": "GLM-5.1",
+          "limit": { "context": 200000, "output": 32768 }
+        },
+        "glm-5-turbo": {
+          "name": "GLM-5 Turbo",
+          "limit": { "context": 200000, "output": 32768 }
+        }
+      }
+    }
+  },
+  "disabled_providers": [
+    "anthropic", "openai", "amazon-bedrock", "azure",
+    "google-vertex", "github-copilot", "xai", "mistral", "groq",
+    "deepinfra", "cerebras", "cohere", "togetherai", "perplexity",
+    "openrouter", "google"
+  ]
+}

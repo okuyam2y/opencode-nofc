@@ -17,6 +17,8 @@ Infrastructure: OpenRouter API + Google AI Studio (direct)
 | deepseek-v3.2 | DeepSeek | 0 | 0* | 0 | — | — | **0** | Fail |
 | llama-4-scout | Meta | 0 | 0 | 0 | — | — | **0** | Fail |
 | gemini-3.1-pro | Google (direct) | — | — | — | — | — | — | Incompatible |
+| glm-5.1 | ZhipuAI (z.ai direct) | 0 | — | — | — | — | **0** | Fail |
+| glm-5-turbo | ZhipuAI (z.ai direct) | 0 | — | — | — | — | **0** | Fail |
 
 \* DeepSeek V3.2 succeeded on Scenario B after 2 retries but failed all others.
 
@@ -81,6 +83,18 @@ Infrastructure: OpenRouter API + Google AI Studio (direct)
 - Simple tasks may work with manual "continue" intervention.
 - Incompatible with hermes-strict architecture, not a model quality issue.
 
+### GLM-5.1 (0/23) — Fail (z.ai direct, 2026-04-15)
+- Tested via z.ai Coding Plan API (`/api/coding/paas/v4`), not OpenRouter.
+- Mandatory thinking model (`reasoning_content` field). Reasoning correctly identifies the need to call tools ("Let me read the file") but emits empty content — no `<tool_call>` tags generated.
+- `glm-5` API ID now redirects to `glm-5.1` on z.ai.
+- Despite strong native function calling support, hermes-strict text-based tool calling is not compatible.
+
+### GLM-5 Turbo (0/23) — Fail (z.ai direct, 2026-04-15)
+- Confirms prior OpenRouter evaluation result with z.ai direct API.
+- Same pattern as GLM-5.1: reasoning present ("The user wants me to read the file"), content empty, finish=stop.
+- Output tokens: 21 (all reasoning, 0 content). Input: 15,023 tokens (hermes-strict system prompt + tool definitions).
+- Root cause: GLM series models are trained for native function calling (OpenClaw agent framework) and do not generate `<tool_call>` text tags even when explicitly instructed in the system prompt.
+
 ## Evaluation Axes
 
 | Axis | What it measures | How |
@@ -104,9 +118,10 @@ Infrastructure: OpenRouter API + Google AI Studio (direct)
 
 - OpenRouter models tested with `toolParser: "hermes-strict"` at provider level
 - Gemini tested via Google AI Studio direct API (thinking model incompatibility discovered)
-- 8 models from 7 companies, latest/flagship versions
+- 10 models from 8 companies, latest/flagship versions
 - 5 scenarios covering basic tool calling through complex agentic tasks
 - Up to 3 retries per scenario for failed models
+- ZhipuAI GLM models tested via z.ai Coding Plan API direct (not OpenRouter)
 - Raw outputs preserved in `results/` subdirectories
 - Scoring criteria defined in [prompts.md](prompts.md)
 

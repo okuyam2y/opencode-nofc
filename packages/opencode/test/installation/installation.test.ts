@@ -3,6 +3,7 @@ import { Effect, Layer, Stream } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Installation } from "../../src/installation"
+import { InstallationVersion } from "../../src/installation/version"
 
 const encoder = new TextEncoder()
 
@@ -58,7 +59,7 @@ describe("installation", () => {
       const result = await Effect.runPromise(
         Installation.Service.use((svc) => svc.latest("unknown")).pipe(Effect.provide(layer)),
       )
-      expect(result).toBe(Installation.VERSION)
+      expect(result).toBe(InstallationVersion)
     })
 
     test("returns VERSION for curl install method (fork: no GitHub API)", async () => {
@@ -67,7 +68,7 @@ describe("installation", () => {
       const result = await Effect.runPromise(
         Installation.Service.use((svc) => svc.latest("curl")).pipe(Effect.provide(layer)),
       )
-      expect(result).toBe(Installation.VERSION)
+      expect(result).toBe(InstallationVersion)
     })
 
     test("reads npm registry versions", async () => {

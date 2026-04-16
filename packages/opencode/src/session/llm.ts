@@ -7,7 +7,7 @@ import type { LanguageModelV3Middleware } from "@ai-sdk/provider"
 import { hermesToolMiddleware, morphXmlToolMiddleware, createToolMiddleware, jsonMixProtocol } from "@ai-sdk-tool/parser"
 import { mergeDeep, pipe } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
-import { ProviderTransform } from "@/provider/transform"
+import { ProviderTransform } from "@/provider"
 import { Config } from "@/config"
 import { Instance } from "@/project/instance"
 import type { Agent } from "@/agent/agent"
@@ -22,7 +22,8 @@ import { Wildcard } from "@/util"
 import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
 import { Installation } from "@/installation"
-import { makeRuntime } from "@/effect/run-service"
+import { InstallationVersion } from "@/installation/version"
+import { EffectBridge } from "@/effect"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
 
@@ -64,7 +65,7 @@ Available tools: <tools>${tools}</tools>`
 
 export namespace LLM {
   const log = Log.create({ service: "llm" })
-  const perms = makeRuntime(Permission.Service, Permission.defaultLayer)
+  
   export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
   type Result = Awaited<ReturnType<typeof streamText>>
 
@@ -99,7 +100,7 @@ export namespace LLM {
 
   export class Service extends Context.Service<Service, Interface>()("@opencode/LLM") {}
 
-  export const layer: Layer.Layer<Service, never, Auth.Service | Config.Service | Provider.Service | Plugin.Service> =
+  export const layer: Layer.Layer<Service, never, Auth.Service | Config.Service | Provider.Service | Plugin.Service | Permission.Service> =
     Layer.effect(
       Service,
       Effect.gen(function* () {
@@ -107,6 +108,7 @@ export namespace LLM {
         const config = yield* Config.Service
         const provider = yield* Provider.Service
         const plugin = yield* Plugin.Service
+        const perm = yield* Permission.Service
 
         // Per-session storage for tool calls dropped by the parser.
         // Keyed by sessionID to prevent cross-session interference.
@@ -331,6 +333,7 @@ export namespace LLM {
             })
 
             const approvedToolsForSession = new Set<string>()
+            const bridge = yield* EffectBridge.make()
             workflowModel.approvalHandler = Instance.bind(async (approvalTools) => {
               const uniqueNames = [...new Set(approvalTools.map((t: { name: string }) => t.name))] as string[]
               // Auto-approve tools that were already approved in this session
@@ -356,8 +359,8 @@ export namespace LLM {
                   }
                 })
                 const uniquePatterns = [...new Set(toolPatterns)] as string[]
-                await perms.runPromise((svc) =>
-                  svc.ask({
+                await bridge.promise(
+                  perm.ask({
                     id,
                     sessionID: SessionID.make(input.sessionID),
                     permission: "workflow_tool_approval",
@@ -488,7 +491,7 @@ export namespace LLM {
                 : {
                     "x-session-affinity": input.sessionID,
                     ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
-                    "User-Agent": `opencode/${Installation.VERSION}`,
+                    "User-Agent": `opencode/${InstallationVersion}`,
                   }),
               ...input.model.headers,
               ...headers,
@@ -622,6 +625,7 @@ export namespace LLM {
       Layer.provide(Config.defaultLayer),
       Layer.provide(Provider.defaultLayer),
       Layer.provide(Plugin.defaultLayer),
+      Layer.provide(Permission.defaultLayer),
     ),
   )
 

@@ -6,16 +6,16 @@ import { APICallError, convertToModelMessages, LoadAPIKeyError, type ModelMessag
 import { LSP } from "../lsp"
 import { Snapshot } from "@/snapshot"
 import { SyncEvent } from "../sync"
-import { Database, NotFoundError, and, desc, eq, inArray, lt, or } from "@/storage/db"
+import { Database, NotFoundError, and, desc, eq, inArray, lt, or } from "@/storage"
 import { MessageTable, PartTable, SessionTable } from "./session.sql"
 import { ProviderError } from "@/provider/error"
 import { iife } from "@/util/iife"
 import { errorMessage } from "@/util/error"
 import type { SystemError } from "bun"
-import type { Provider } from "@/provider/provider"
+import type { Provider } from "@/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { Effect } from "effect"
-import { EffectLogger } from "@/effect/logger"
+import { EffectLogger } from "@/effect"
 
 /** Error shape thrown by Bun's fetch() when gzip/br decompression fails mid-stream */
 interface FetchDecompressionError extends Error {
@@ -722,6 +722,21 @@ export namespace MessageV2 {
               type: "step-start",
             })
           if (part.type === "tool") {
+            // hermes: replace File-not-found results with a minimal message
+            // to prevent hallucination from candidate paths. Keep a glob hint
+            // so the model can self-correct. The notFound flag is only set when
+            // toolParser is active (processor.ts), so native FC is never affected.
+            if (part.metadata?.notFound === true) {
+              toolNames.add(part.tool)
+              assistantMessage.parts.push({
+                type: ("tool-" + part.tool) as `tool-${string}`,
+                state: "output-error",
+                toolCallId: part.callID,
+                input: {},
+                errorText: "[File does not exist — use glob to search for the correct path]",
+              })
+              continue
+            }
             toolNames.add(part.tool)
             if (part.state.status === "completed") {
               let outputText = part.state.time.compacted ? "[Old tool result content cleared]" : part.state.output

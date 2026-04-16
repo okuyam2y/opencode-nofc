@@ -1,14 +1,15 @@
 import { NodeFileSystem } from "@effect/platform-node"
 import { expect } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer } from "effect"
+import { tool as aiTool, jsonSchema } from "ai"
 import path from "path"
 import type { Agent } from "../../src/agent/agent"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { Bus } from "../../src/bus"
-import { Config } from "../../src/config/config"
+import { Config } from "../../src/config"
 import { Permission } from "../../src/permission"
 import { Plugin } from "../../src/plugin"
-import { Provider } from "../../src/provider/provider"
+import { Provider } from "../../src/provider"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { Session } from "../../src/session"
 import { LLM } from "../../src/session/llm"
@@ -18,13 +19,13 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
 import { Snapshot } from "../../src/snapshot"
-import { Log } from "../../src/util/log"
+import { Log } from "../../src/util"
 import * as CrossSpawnSpawner from "../../src/effect/cross-spawn-spawner"
 import { provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { raw, reply, TestLLMServer } from "../lib/llm-server"
 
-Log.init({ print: false })
+void Log.init({ print: false })
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -1215,6 +1216,151 @@ it.live("session.processor effect tests mark interruptions aborted without manua
           expect(stored.info.error?.name).toBe("MessageAbortedError")
         }
         expect(state).toMatchObject({ type: "idle" })
+      }),
+    { git: true, config: (url) => providerCfg(url) },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// Dedup integration tests — duplicate tool calls get synthetic "completed"
+// ---------------------------------------------------------------------------
+
+/** Build a mock AI SDK tool that records calls and resolves with given output. */
+function mockTool(output: string) {
+  const calls: unknown[] = []
+  return {
+    calls,
+    tool: aiTool({
+      description: "test tool",
+      inputSchema: jsonSchema({ type: "object", properties: { command: { type: "string" } } }),
+      execute: async (args) => {
+        calls.push(args)
+        return { output, title: "mock", metadata: {} }
+      },
+    }),
+  }
+}
+
+/** SSE chunks for two identical tool calls (same name + same args) in one step. */
+function dupToolChunks(name: string, args: Record<string, unknown>) {
+  const argsJson = JSON.stringify(args)
+  return [
+    // role
+    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: { role: "assistant" } }] },
+    // tool call 1
+    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: { tool_calls: [{ index: 0, id: "call-A", type: "function", function: { name, arguments: "" } }] } }] },
+    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: argsJson } }] } }] },
+    // tool call 2 (identical name + args, different id)
+    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: { tool_calls: [{ index: 1, id: "call-B", type: "function", function: { name, arguments: "" } }] } }] },
+    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: { tool_calls: [{ index: 1, function: { arguments: argsJson } }] } }] },
+    // finish
+    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 } },
+  ]
+}
+
+// NOTE: In native FC, the AI SDK executes tools directly before processor
+// sees tool-call events. Dedup in processor only affects hermes flow where
+// the processor controls tool execution (tool-call without tool-input-start).
+// These tests verify the native FC path: both calls execute, no error parts.
+
+it.live("dedup: native FC duplicate bash — both execute (SDK handles execution)", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const mock = mockTool("10 commits listed")
+
+        yield* llm.push(raw({ chunks: dupToolChunks("bash", { command: "git log --oneline -10" }) }))
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "review")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const result = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "review" }],
+          tools: { bash: mock.tool },
+        })
+
+        // Native FC: SDK runs both calls directly
+        expect(mock.calls.length).toBe(2)
+        // Result should be continue (tool calls detected)
+        expect(result).toBe("continue")
+
+        // No error parts — both complete normally
+        const parts = MessageV2.parts(msg.id)
+        const errorParts = parts.filter(
+          (p): p is MessageV2.ToolPart => p.type === "tool" && p.state.status === "error",
+        )
+        expect(errorParts.length).toBe(0)
+      }),
+    { git: true, config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("dedup: native FC duplicate glob — both execute (read-only, no dedup)", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const mock = mockTool("*.ts files")
+
+        yield* llm.push(raw({ chunks: dupToolChunks("glob", { pattern: "**/*.ts" }) }))
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "find")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "find" }],
+          tools: { glob: mock.tool },
+        })
+
+        // Both calls should execute
+        expect(mock.calls.length).toBe(2)
+
+        // No dedup metadata
+        const parts = MessageV2.parts(msg.id)
+        const dedupedParts = parts.filter(
+          (p): p is MessageV2.ToolPart =>
+            p.type === "tool" && p.state.status === "completed" && !!p.state.metadata?.deduplicated,
+        )
+        expect(dedupedParts.length).toBe(0)
       }),
     { git: true, config: (url) => providerCfg(url) },
   ),

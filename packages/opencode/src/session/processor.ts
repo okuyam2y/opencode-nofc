@@ -3,11 +3,11 @@ import { Cause, Deferred, Effect, Layer, Context, Scope } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Bus } from "@/bus"
-import { Config } from "@/config/config"
+import { Config } from "@/config"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { Snapshot } from "@/snapshot"
-import { Session } from "."
+import * as Session from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
 import { isOverflow } from "./overflow"
@@ -16,13 +16,18 @@ import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
-import type { Provider } from "@/provider/provider"
+import type { Provider } from "@/provider"
 import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
-import { Log } from "@/util/log"
+import { Log } from "@/util"
 import { isRecord } from "@/util/record"
 import { containsSpamInValues, stripSpam } from "@/util/spam-filter"
 import { Flag } from "@/flag/flag"
+
+/** Tools exempt from same-step dedup (Stage 4).
+ *  Only truly read-only, side-effect-free tools belong here.
+ *  question (prompts user) and skill (injects context) are NOT exempt. */
+const DEDUP_SKIP_TOOLS = new Set(["read", "glob", "grep", "webfetch", "websearch", "codesearch", "invalid"])
 
 /**
  * Strip tool response/result tags that models echo from conversation history.
@@ -290,11 +295,11 @@ export namespace SessionProcessor {
   export const _stripToolTags = stripToolTags
 
   export function isDuplicate(
-    acceptedKeys: Set<string>,
+    acceptedKeys: Map<string, string>,
     toolName: string,
     input: Record<string, unknown>,
-  ): boolean {
-    return acceptedKeys.has(dedupKey(toolName, input))
+  ): string | undefined {
+    return acceptedKeys.get(dedupKey(toolName, input))
   }
 
   /**
@@ -381,10 +386,10 @@ export namespace SessionProcessor {
      *  Unlike ctx.toolcalls (which entries are deleted on completion),
      *  this flag persists until the next step so finishReason override works. */
     hasToolCalls: boolean
-    /** Keys of accepted (non-deduped) tool calls: "toolName\0" + JSON.stringify(input).
+    /** Maps dedupKey → first toolCallId for accepted (non-deduped) tool calls.
      *  Persists across tool-result deletions from ctx.toolcalls so that dedup
      *  still detects duplicates even after the first call completes. */
-    acceptedToolKeys: Set<string>
+    acceptedToolKeys: Map<string, string>
     /** Tracks write tool filePaths within the current step for near-duplicate
      *  detection.  Maps filePath → { toolCallId, contentLength }. */
     writeFilePaths: Map<string, { toolCallId: string; contentLength: number }>
@@ -446,7 +451,7 @@ export namespace SessionProcessor {
           model: input.model,
           toolcalls: {},
           hasToolCalls: false,
-          acceptedToolKeys: new Set(),
+          acceptedToolKeys: new Map(),
           writeFilePaths: new Map(),
           shouldBreak: false,
           snapshot: initialSnapshot,
@@ -538,14 +543,19 @@ export namespace SessionProcessor {
         const failToolCall = Effect.fn("SessionProcessor.failToolCall")(function* (toolCallID: string, error: unknown) {
           const match = yield* readToolCall(toolCallID)
           if (!match || match.part.state.status !== "running") return false
+          const errMsg = errorMessage(error)
+          const isNotFound = match.part.tool === "read"
+            && errMsg.startsWith("File not found:")
+            && !!(ctx.lastStreamInput?.toolParserActive)
           yield* session.updatePart({
             ...match.part,
             state: {
               status: "error",
               input: match.part.state.input,
-              error: errorMessage(error),
+              error: errMsg,
               time: { start: match.part.state.time.start, end: Date.now() },
             },
+            ...(isNotFound ? { metadata: { ...match.part.metadata, notFound: true } } : {}),
           })
           if (error instanceof Permission.RejectedError || error instanceof Question.RejectedError) {
             ctx.blocked = ctx.shouldBreak
@@ -680,10 +690,23 @@ export namespace SessionProcessor {
                 return
               }
               // Stage 4: deduplicate identical tool calls within the same step.
-              if (isDuplicate(ctx.acceptedToolKeys, value.toolName, value.input)) {
+              // Hermes parser boundary errors can emit the same call twice, but
+              // models also legitimately send parallel identical read-only calls
+              // (e.g. two globs with the same pattern).  Skip dedup for read-only
+              // tools where duplicates are harmless; keep it for side-effecting
+              // tools (bash, write, edit, question, skill, task, todo_write).
+              //
+              // Duplicates are returned as synthetic "completed" (not "error") so
+              // the model doesn't see a failure and can continue normally.  The
+              // actual execution only happens once (the first accepted call).
+              const firstCallId = !DEDUP_SKIP_TOOLS.has(value.toolName)
+                ? isDuplicate(ctx.acceptedToolKeys, value.toolName, value.input)
+                : undefined
+              if (firstCallId) {
                 log.warn("tool-call deduplicated", {
                   toolCallId: value.toolCallId,
                   toolName: value.toolName,
+                  firstCallId,
                   input: JSON.stringify(value.input).slice(0, 200),
                 })
                 const dupMatch = yield* readToolCall(value.toolCallId)
@@ -692,9 +715,11 @@ export namespace SessionProcessor {
                     ...dupMatch.part,
                     tool: value.toolName,
                     state: {
-                      status: "error",
+                      status: "completed",
                       input: value.input,
-                      error: "Duplicate tool call deduplicated",
+                      output: "[Duplicate tool call skipped; an identical call already ran in this step. Use that result.]",
+                      title: "deduplicated",
+                      metadata: { deduplicated: true, dedupOf: firstCallId },
                       time: { start: Date.now(), end: Date.now() },
                     },
                   })
@@ -702,14 +727,16 @@ export namespace SessionProcessor {
                 }
                 return
               }
-              ctx.acceptedToolKeys.add(dedupKey(value.toolName, value.input))
+              ctx.acceptedToolKeys.set(dedupKey(value.toolName, value.input), value.toolCallId)
               // Stage 5: near-duplicate write detection (same filePath, different content).
               // hermes can split one write into incomplete + complete pair.
               // The second (longer) write overwrites the first, so allow execution
               // but log for monitoring.  Shorter duplicates are skipped.
               // Map is only updated for allowed writes so skipped calls never
               // become the comparison baseline.
-              const nearDup = checkNearDuplicateWrite(ctx.writeFilePaths, value.toolName, value.input)
+              const nearDup = ctx.lastStreamInput?.toolParserActive
+                ? checkNearDuplicateWrite(ctx.writeFilePaths, value.toolName, value.input)
+                : undefined
               if (nearDup) {
                 if (nearDup.newContentLength <= nearDup.prevContentLength) {
                   log.warn("near-duplicate write skipped (shorter or equal content)", {

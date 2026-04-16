@@ -1,5 +1,5 @@
-import { Provider } from "@/provider/provider"
-import { Log } from "@/util/log"
+import { Provider } from "@/provider"
+import { Log } from "@/util"
 import { Context, Effect, Layer, Record } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
@@ -8,7 +8,7 @@ import { hermesToolMiddleware, morphXmlToolMiddleware, createToolMiddleware, jso
 import { mergeDeep, pipe } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
-import { Config } from "@/config/config"
+import { Config } from "@/config"
 import { Instance } from "@/project/instance"
 import type { Agent } from "@/agent/agent"
 import { MessageV2 } from "./message-v2"
@@ -18,7 +18,7 @@ import { Flag } from "@/flag/flag"
 import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
 import { Bus } from "@/bus"
-import { Wildcard } from "@/util/wildcard"
+import { Wildcard } from "@/util"
 import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
 import { Installation } from "@/installation"
@@ -81,6 +81,7 @@ export namespace LLM {
     tools: Record<string, Tool>
     retries?: number
     toolChoice?: "auto" | "required" | "none"
+    toolParserActive?: boolean
   }
 
   export type StreamRequest = StreamInput & {
@@ -109,10 +110,15 @@ export namespace LLM {
 
         // Per-session storage for tool calls dropped by the parser.
         // Keyed by sessionID to prevent cross-session interference.
+        // Uses get-or-create (not overwrite) so concurrent runs on the
+        // same session (e.g. title generation in step 1) don't wipe
+        // drops accumulated by the main stream.
         const droppedToolCallsMap = new Map<string, DroppedToolCall[]>()
 
         const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
-          droppedToolCallsMap.set(input.sessionID, [])
+          if (!droppedToolCallsMap.has(input.sessionID)) {
+            droppedToolCallsMap.set(input.sessionID, [])
+          }
           const l = log
             .clone()
             .tag("providerID", input.model.providerID)
@@ -411,23 +417,26 @@ export namespace LLM {
               })
             },
             async experimental_repairToolCall(failed) {
-              const lower = failed.toolCall.toolName.toLowerCase()
-              if (lower !== failed.toolCall.toolName && tools[lower]) {
-                l.info("repairing tool call", {
-                  tool: failed.toolCall.toolName,
-                  repaired: lower,
+              const name = failed.toolCall?.toolName
+              if (!name) {
+                l.warn("repairToolCall: missing toolName", {
+                  error: failed.error?.message,
                 })
                 return {
                   ...failed.toolCall,
-                  toolName: lower,
+                  toolCallId: failed.toolCall?.toolCallId ?? "unknown",
+                  input: JSON.stringify({ tool: "unknown", error: failed.error?.message ?? "unknown" }),
+                  toolName: "invalid",
                 }
+              }
+              const lower = name.toLowerCase()
+              if (lower !== name && tools[lower]) {
+                l.info("repairing tool call", { tool: name, repaired: lower })
+                return { ...failed.toolCall, toolName: lower }
               }
               return {
                 ...failed.toolCall,
-                input: JSON.stringify({
-                  tool: failed.toolCall.toolName,
-                  error: failed.error.message,
-                }),
+                input: JSON.stringify({ tool: name, error: failed.error?.message }),
                 toolName: "invalid",
               }
             },

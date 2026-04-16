@@ -11,7 +11,7 @@ import { AppFileSystem } from "@opencode-ai/shared/filesystem"
 import { Format } from "../../src/format"
 import { Agent } from "../../src/agent/agent"
 import { Bus } from "../../src/bus"
-import { Truncate } from "../../src/tool/truncate"
+import * as Truncate from "../../src/tool/truncate"
 import { SessionID, MessageID } from "../../src/session/schema"
 
 const testLayer = Layer.mergeAll(

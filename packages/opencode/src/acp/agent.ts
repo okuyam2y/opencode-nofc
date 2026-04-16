@@ -31,19 +31,19 @@ import {
   type Usage,
 } from "@agentclientprotocol/sdk"
 
-import { Log } from "../util/log"
+import { Log } from "../util"
 import { pathToFileURL } from "url"
-import { Filesystem } from "../util/filesystem"
-import { Hash } from "../util/hash"
+import { Filesystem } from "../util"
+import { Hash } from "@opencode-ai/shared/util/hash"
 import { ACPSessionManager } from "./session"
 import type { ACPConfig } from "./types"
-import { Provider } from "../provider/provider"
+import { Provider } from "../provider"
 import { ModelID, ProviderID } from "../provider/schema"
 import { Agent as AgentModule } from "../agent/agent"
 import { AppRuntime } from "@/effect/app-runtime"
 import { Installation } from "@/installation"
 import { MessageV2 } from "@/session/message-v2"
-import { Config } from "@/config/config"
+import { Config } from "@/config"
 import { Todo } from "@/session/todo"
 import { z } from "zod"
 import { LoadAPIKeyError } from "ai"
@@ -242,7 +242,7 @@ export namespace ACP {
                 const newContent = getNewContent(content, diff)
 
                 if (newContent) {
-                  this.connection.writeTextFile({
+                  void this.connection.writeTextFile({
                     sessionId: session.id,
                     path: filepath,
                     content: newContent,
@@ -1253,7 +1253,7 @@ export namespace ACP {
       )
 
       setTimeout(() => {
-        this.connection.sessionUpdate({
+        void this.connection.sessionUpdate({
           sessionId,
           update: {
             sessionUpdate: "available_commands_update",
@@ -1566,7 +1566,6 @@ export namespace ACP {
       case "context7_get_library_docs":
         return "search"
 
-      case "list":
       case "read":
         return "read"
 
@@ -1587,8 +1586,6 @@ export namespace ACP {
         return input["path"] ? [{ path: input["path"] }] : []
       case "bash":
         return []
-      case "list":
-        return input["path"] ? [{ path: input["path"] }] : []
       default:
         return []
     }

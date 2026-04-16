@@ -2,7 +2,7 @@ import type { ModelMessage } from "ai"
 import { mergeDeep, unique } from "remeda"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import type { JSONSchema } from "zod/v4/core"
-import type { Provider } from "./provider"
+import type * as Provider from "./provider"
 import type { ModelsDev } from "./models"
 import { iife } from "@/util/iife"
 import { Flag } from "@/flag/flag"
@@ -49,7 +49,7 @@ export namespace ProviderTransform {
   function normalizeMessages(
     msgs: ModelMessage[],
     model: Provider.Model,
-    options: Record<string, unknown>,
+    _options: Record<string, unknown>,
   ): ModelMessage[] {
     // Anthropic rejects messages with empty content - filter out empty string messages
     // and remove empty text/reasoning parts from array content
@@ -75,7 +75,7 @@ export namespace ProviderTransform {
 
     if (model.api.id.includes("claude")) {
       const scrub = (id: string) => id.replace(/[^a-zA-Z0-9_-]/g, "_")
-      return msgs.map((msg) => {
+      msgs = msgs.map((msg) => {
         if (msg.role === "assistant" && Array.isArray(msg.content)) {
           return {
             ...msg,
@@ -99,6 +99,31 @@ export namespace ProviderTransform {
           }
         }
         return msg
+      })
+    }
+    if (["@ai-sdk/anthropic", "@ai-sdk/google-vertex/anthropic"].includes(model.api.npm)) {
+      // Anthropic rejects assistant turns where tool_use blocks are followed by non-tool
+      // content, e.g. [tool_use, tool_use, text], with:
+      // `tool_use` ids were found without `tool_result` blocks immediately after...
+      //
+      // Reorder that invalid shape into [text] + [tool_use, tool_use]. Consecutive
+      // assistant messages are later merged by the provider/SDK, so preserving the
+      // original [tool_use...] then [text] order still produces the invalid payload.
+      //
+      // The root cause appears to be somewhere upstream where the stream is originally
+      // processed. We were unable to locate an exact narrower reproduction elsewhere,
+      // so we keep this transform in place for the time being.
+      msgs = msgs.flatMap((msg) => {
+        if (msg.role !== "assistant" || !Array.isArray(msg.content)) return [msg]
+
+        const parts = msg.content
+        const first = parts.findIndex((part) => part.type === "tool-call")
+        if (first === -1) return [msg]
+        if (!parts.slice(first).some((part) => part.type !== "tool-call")) return [msg]
+        return [
+          { ...msg, content: parts.filter((part) => part.type !== "tool-call") },
+          { ...msg, content: parts.filter((part) => part.type === "tool-call") },
+        ]
       })
     }
     if (
@@ -249,7 +274,7 @@ export namespace ProviderTransform {
 
         // Check for empty base64 image data
         if (part.type === "image") {
-          const imageStr = part.image.toString()
+          const imageStr = String(part.image)
           if (imageStr.startsWith("data:")) {
             const match = imageStr.match(/^data:([^;]+);base64,(.*)$/)
             if (match && (!match[2] || match[2].length === 0)) {
@@ -261,7 +286,7 @@ export namespace ProviderTransform {
           }
         }
 
-        const mime = part.type === "image" ? part.image.toString().split(";")[0].replace("data:", "") : part.mediaType
+        const mime = part.type === "image" ? String(part.image).split(";")[0].replace("data:", "") : part.mediaType
         const filename = part.type === "file" ? part.filename : undefined
         const modality = mimeToModality(mime)
         if (!modality) return part

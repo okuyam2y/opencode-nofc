@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { APICallError } from "ai"
 import { MessageV2 } from "../../src/session/message-v2"
-import type { Provider } from "../../src/provider/provider"
+import type { Provider } from "../../src/provider"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { SessionID, MessageID, PartID } from "../../src/session/schema"
 import { Question } from "../../src/question"
@@ -1145,5 +1145,92 @@ describe("session.message-v2.fromError", () => {
     const result = MessageV2.fromError(zlibError, { providerID, aborted: true })
 
     expect(result.name).toBe("MessageAbortedError")
+  })
+
+  test("skips tool parts with metadata.notFound in toModelMessages", async () => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          {
+            ...basePart(userID, "u1"),
+            type: "text",
+            text: "read file",
+          },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "a1"),
+            type: "tool",
+            callID: "call-1",
+            tool: "read",
+            state: {
+              status: "error",
+              input: { file_path: "/nonexistent.ts" },
+              error: "File not found: /nonexistent.ts",
+              time: { start: 0, end: 1 },
+            },
+            metadata: { notFound: true },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model)
+    // The tool result should be replaced with a minimal "[File does not exist]"
+    // message — no file path, no details to fabricate from.
+    const toolMsg = result.find((m) => m.role === "tool")
+    expect(toolMsg).toBeDefined()
+    const toolResult = (toolMsg as any).content[0]
+    expect(toolResult.output.value).toBe("[File does not exist — use glob to search for the correct path]")
+    // Input should be empty or absent (path stripped)
+    expect(toolResult.input ?? {}).toStrictEqual({})
+  })
+
+  test("does NOT skip tool error parts without notFound metadata", async () => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          {
+            ...basePart(userID, "u1"),
+            type: "text",
+            text: "read file",
+          },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "a1"),
+            type: "tool",
+            callID: "call-1",
+            tool: "read",
+            state: {
+              status: "error",
+              input: { file_path: "/nonexistent.ts" },
+              error: "File not found: /nonexistent.ts",
+              time: { start: 0, end: 1 },
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model)
+    // Without notFound metadata, the error tool result should be present
+    const toolMsg = result.find((m) => m.role === "tool")
+    expect(toolMsg).toBeDefined()
+    expect((toolMsg as any).content[0].output.value).toBe("File not found: /nonexistent.ts")
   })
 })

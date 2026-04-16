@@ -32,14 +32,14 @@ import { Command } from "../command"
 import { pathToFileURL, fileURLToPath } from "url"
 import { ConfigMarkdown } from "../config/markdown"
 import { SessionSummary } from "./summary"
-import { NamedError } from "@opencode-ai/util/error"
+import { NamedError } from "@opencode-ai/shared/util/error"
 import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { SessionStatus } from "./status"
 import { LLM } from "./llm"
 import { Shell } from "@/shell/shell"
-import { AppFileSystem } from "@/filesystem"
+import { AppFileSystem } from "@opencode-ai/shared/filesystem"
 import { Truncate } from "@/tool/truncate"
 import { decodeDataUrl } from "@/util/data-url"
 import { Process } from "@/util/process"
@@ -1366,6 +1366,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           let lastModel: Provider.Model | undefined
           let autoContinueCount = 0
           const MAX_AUTO_CONTINUE = 3
+          let dropRecoveryCount = 0
+          const MAX_DROP_RECOVERY = 3
           const session = yield* sessions.get(sessionID)
 
           while (true) {
@@ -1399,6 +1401,22 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             // provider's stream (e.g. DWS Agent Platform) and don't need a re-loop.
             const hasToolCalls =
               lastAssistantMsg?.parts.some((part) => part.type === "tool" && !part.metadata?.providerExecuted) ?? false
+
+            // Track hermes drop recovery to prevent infinite retry loops.
+            // When processor creates synthetic error tool parts for dropped
+            // tool calls, they are marked with metadata.dropRecovery = true.
+            const hasDropRecovery = lastAssistantMsg?.parts.some(
+              (p) => p.type === "tool" && p.metadata?.dropRecovery === true,
+            ) ?? false
+            if (hasDropRecovery) {
+              dropRecoveryCount++
+              if (dropRecoveryCount > MAX_DROP_RECOVERY) {
+                log.warn("drop-recovery-limit", { count: dropRecoveryCount, sessionID })
+                break
+              }
+            } else if (hasToolCalls) {
+              dropRecoveryCount = 0
+            }
 
             if (
               lastAssistant?.finish &&

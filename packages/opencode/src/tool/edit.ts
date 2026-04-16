@@ -19,7 +19,7 @@ import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
 import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
-import { AppFileSystem } from "../filesystem"
+import { AppFileSystem } from "@opencode-ai/shared/filesystem"
 import { containsSpam } from "@/util/spam-filter"
 
 function normalizeLineEndings(text: string): string {

@@ -1,3 +1,4 @@
+import { generateId } from "ai"
 import { Cause, Deferred, Effect, Layer, Context, Scope } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
@@ -28,16 +29,22 @@ import { Flag } from "@/flag/flag"
  */
 function stripToolTags(text: string): string {
   return text
+    // 1. Remove complete tag pairs (open...close)
     .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
     .replace(/<tool_result>[\s\S]*?<\/tool_result>/g, "")
     .replace(/<tool_response>[\s\S]*?<\/tool_response>/g, "")
     .replace(/<commentary>[\s\S]*?<\/commentary>/g, "")
     .replace(/<multi_tool_use\.parallel>[\s\S]*?<\/multi_tool_use\.parallel>/g, "")
+    // 2. Remove unclosed open tag through end of string — must run BEFORE
+    //    standalone tag removal (step 3), otherwise step 3 strips the open tag
+    //    but leaves the content (JSON body, etc.) intact.
+    .replace(/<(?:tool_call|tool_result|tool_response|commentary|multi_tool_use\.parallel)>[\s\S]*$/g, "")
+    // 3. Remove orphaned standalone open/close tags
     .replace(/<\/?tool_call>/g, "")
+    .replace(/<\/?tool_response>/g, "")
+    .replace(/<\/?tool_result>/g, "")
     .replace(/<\/?commentary>/g, "")
     .replace(/<\/?multi_tool_use\.parallel>/g, "")
-    // Strip incomplete tags at end of stream (no closing tag)
-    .replace(/<(?:tool_call|tool_result|tool_response|commentary|multi_tool_use\.parallel)>[\s\S]*$/g, "")
     .replace(trailingPartialTagRe, "")
     .trimEnd()
 }
@@ -279,6 +286,9 @@ export namespace SessionProcessor {
    *
    * Exported for unit testing.
    */
+  /** Re-export for unit testing. */
+  export const _stripToolTags = stripToolTags
+
   export function isDuplicate(
     acceptedKeys: Set<string>,
     toolName: string,
@@ -862,6 +872,33 @@ export namespace SessionProcessor {
                 usage.tokens.cache.read = 0
                 usage.tokens.total =
                   estimatedInput + usage.tokens.output + usage.tokens.cache.write
+              }
+              // Recover from hermes tool call drops: when the model omits
+              // </tool_call>, the parser drops the call and reports it via
+              // onError(reason: "unfinished").  Create synthetic error tool
+              // parts so the model sees the failure and can retry.
+              const dropped = yield* llm.consumeDroppedToolCalls(ctx.sessionID)
+              if (dropped.length > 0) {
+                for (const entry of dropped) {
+                  const toolName = entry.toolName ?? "unknown"
+                  log.info("hermes-drop-recovery", { toolName, rawLength: entry.raw.length })
+                  yield* session.updatePart({
+                    id: PartID.ascending(),
+                    messageID: ctx.assistantMessage.id,
+                    sessionID: ctx.sessionID,
+                    type: "tool",
+                    tool: toolName,
+                    callID: generateId(),
+                    state: {
+                      status: "error",
+                      input: {},
+                      error: `Tool call was incomplete (closing tag missing). Tool: ${toolName}. Please retry this tool call.`,
+                      time: { start: Date.now(), end: Date.now() },
+                    },
+                    metadata: { dropRecovery: true },
+                  } satisfies MessageV2.ToolPart)
+                }
+                ctx.hasToolCalls = true
               }
               // tool-parser middleware doesn't rewrite finishReason in streaming
               // mode, so the provider's original reason passes through.  Override

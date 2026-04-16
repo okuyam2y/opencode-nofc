@@ -15,7 +15,7 @@ import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { containsSpam } from "@/util/spam-filter"
 import { trimDiff } from "./edit"
-import { AppFileSystem } from "../filesystem"
+import { AppFileSystem } from "@opencode-ai/shared/filesystem"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
 
@@ -161,7 +161,7 @@ export const LineEditTool = Tool.define(
               // Do NOT update the read stamp after line_edit.
               // This forces the model to Read the file again before the next edit,
               // preventing stale line numbers when prior edits shift line counts.
-            }),
+            }).pipe(Effect.orDie),
           )
 
           const filediff: Snapshot.FileDiff = {

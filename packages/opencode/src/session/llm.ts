@@ -89,8 +89,11 @@ export namespace LLM {
 
   export type Event = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
 
+  export type DroppedToolCall = { toolName?: string; raw: string }
+
   export interface Interface {
     readonly stream: (input: StreamInput) => Stream.Stream<Event, unknown>
+    readonly consumeDroppedToolCalls: (sessionID: string) => Effect.Effect<DroppedToolCall[]>
   }
 
   export class Service extends Context.Service<Service, Interface>()("@opencode/LLM") {}
@@ -104,7 +107,12 @@ export namespace LLM {
         const provider = yield* Provider.Service
         const plugin = yield* Plugin.Service
 
+        // Per-session storage for tool calls dropped by the parser.
+        // Keyed by sessionID to prevent cross-session interference.
+        const droppedToolCallsMap = new Map<string, DroppedToolCall[]>()
+
         const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
+          droppedToolCallsMap.set(input.sessionID, [])
           const l = log
             .clone()
             .tag("providerID", input.model.providerID)
@@ -437,6 +445,17 @@ export namespace LLM {
                   ...existing,
                   onError: (message: string, context?: Record<string, unknown>) => {
                     existingOnError?.(message, context)
+                    // Detect dropped tool calls — structured reason (patched parser)
+                    // or message-based fallback (unpatched parser).
+                    const isUnfinished = (context as any)?.reason === "unfinished"
+                      || message.includes("dropping malformed tool call")
+                    if (isUnfinished) {
+                      const raw = String((context as any)?.toolCall ?? "")
+                      const nameFromCtx = (context as any)?.toolName as string | undefined
+                      const nameFromRaw = nameFromCtx ?? raw.match(/"name"\s*:\s*"([^"]+)"/)?.[1]
+                      const arr = droppedToolCallsMap.get(input.sessionID)
+                      if (arr) arr.push({ toolName: nameFromRaw, raw })
+                    }
                     let ctx: string | undefined
                     try { ctx = context ? JSON.stringify(context).slice(0, 200) : undefined } catch { ctx = "[unserializable]" }
                     l.warn("tool-parser", { message, ...(ctx && { context: ctx }) })
@@ -472,7 +491,9 @@ export namespace LLM {
               middleware: (() => {
                 const mw: LanguageModelV3Middleware[] = []
                 // Tool parser middleware for gateways that don't support function calling.
-                if (toolParserMode && input.toolChoice !== "none") {
+                // Disabled during compaction (tools empty) — parser has nothing to
+                // convert, and would interfere with summary-only responses.
+                if (toolParserActive) {
                   // @ai-sdk-tool/parser uses @ai-sdk/provider@2.x types while upstream
                   // uses @3.x.  The runtime interface is compatible; cast to satisfy TS.
                   if (toolParserMode === "hermes") {
@@ -575,7 +596,14 @@ export namespace LLM {
             ),
           )
 
-        return Service.of({ stream })
+        const consumeDroppedToolCalls = (sessionID: string) =>
+          Effect.sync(() => {
+            const result = [...(droppedToolCallsMap.get(sessionID) ?? [])]
+            droppedToolCallsMap.delete(sessionID)
+            return result
+          })
+
+        return Service.of({ stream, consumeDroppedToolCalls })
       }),
     )
 

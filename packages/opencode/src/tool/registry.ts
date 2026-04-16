@@ -27,7 +27,7 @@ import { LspTool } from "./lsp"
 import { Truncate } from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
 import { LineEditTool } from "./line_edit"
-import { Glob } from "../util/glob"
+import { Glob } from "@opencode-ai/shared/util/glob"
 import path from "path"
 import { pathToFileURL } from "url"
 import { Effect, Layer, Context } from "effect"
@@ -37,13 +37,12 @@ import * as CrossSpawnSpawner from "@/effect/cross-spawn-spawner"
 import { Ripgrep } from "../file/ripgrep"
 import { Format } from "../format"
 import { InstanceState } from "@/effect/instance-state"
-import { Env } from "../env"
 import { Question } from "../question"
 import { Todo } from "../session/todo"
 import { LSP } from "../lsp"
 import { FileTime } from "../file/time"
 import { Instruction } from "../session/instruction"
-import { AppFileSystem } from "../filesystem"
+import { AppFileSystem } from "@opencode-ai/shared/filesystem"
 import { Bus } from "../bus"
 import { Agent } from "../agent/agent"
 import { Skill } from "../skill"
@@ -81,7 +80,6 @@ export namespace ToolRegistry {
     Service,
     never,
     | Config.Service
-    | Env.Service
     | Plugin.Service
     | Question.Service
     | Todo.Service
@@ -103,7 +101,6 @@ export namespace ToolRegistry {
     Service,
     Effect.gen(function* () {
       const config = yield* Config.Service
-      const env = yield* Env.Service
       const plugin = yield* Plugin.Service
       const agents = yield* Agent.Service
       const skill = yield* Skill.Service
@@ -281,10 +278,7 @@ export namespace ToolRegistry {
       })
 
       const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
-        const e2e = !!(yield* env.get("OPENCODE_E2E_LLM_URL"))
-        const cfg = yield* config.get()
         // When toolParser middleware is active, fall back to edit/write + line_edit.
-        // E2E test environments force apply_patch regardless of toolParser.
         const isGptPatch =
           input.modelID.includes("gpt-") && !input.modelID.includes("oss") && !input.modelID.includes("gpt-4")
         // Resolve toolParser the same way llm.ts does:
@@ -300,7 +294,7 @@ export namespace ToolRegistry {
           const modelInfo = providerInfo.models[lookupKey]
           hasToolParser = !!(modelInfo?.options?.toolParser ?? providerInfo.options?.toolParser)
         }
-        const usePatch = e2e || (isGptPatch && !hasToolParser)
+        const usePatch = isGptPatch && !hasToolParser
 
         const filtered = (yield* all()).filter((tool) => {
           if (tool.id === CodeSearchTool.id || tool.id === WebSearchTool.id) {
@@ -353,7 +347,6 @@ export namespace ToolRegistry {
   export const defaultLayer = Layer.suspend(() =>
     layer.pipe(
       Layer.provide(Config.defaultLayer),
-      Layer.provide(Env.defaultLayer),
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Question.defaultLayer),
       Layer.provide(Todo.defaultLayer),

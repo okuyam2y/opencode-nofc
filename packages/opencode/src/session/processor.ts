@@ -31,25 +31,28 @@ const DEDUP_SKIP_TOOLS = new Set(["read", "glob", "grep", "webfetch", "websearch
 
 /**
  * Strip tool response/result tags that models echo from conversation history.
+ * Matches both literal tags and ZWS-escaped variants (<\u200btag>, </\u200btag>)
+ * that can appear when the model copies user input that was escaped by the
+ * hermes escape middleware (see llm.ts escapeHermesTagsInMessage).
  */
 function stripToolTags(text: string): string {
   return text
     // 1. Remove complete tag pairs (open...close)
-    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
-    .replace(/<tool_result>[\s\S]*?<\/tool_result>/g, "")
-    .replace(/<tool_response>[\s\S]*?<\/tool_response>/g, "")
-    .replace(/<commentary>[\s\S]*?<\/commentary>/g, "")
-    .replace(/<multi_tool_use\.parallel>[\s\S]*?<\/multi_tool_use\.parallel>/g, "")
+    .replace(/<\u200b?tool_call>[\s\S]*?<\/\u200b?tool_call>/g, "")
+    .replace(/<\u200b?tool_result>[\s\S]*?<\/\u200b?tool_result>/g, "")
+    .replace(/<\u200b?tool_response>[\s\S]*?<\/\u200b?tool_response>/g, "")
+    .replace(/<\u200b?commentary>[\s\S]*?<\/\u200b?commentary>/g, "")
+    .replace(/<\u200b?multi_tool_use\.parallel>[\s\S]*?<\/\u200b?multi_tool_use\.parallel>/g, "")
     // 2. Remove unclosed open tag through end of string — must run BEFORE
     //    standalone tag removal (step 3), otherwise step 3 strips the open tag
     //    but leaves the content (JSON body, etc.) intact.
-    .replace(/<(?:tool_call|tool_result|tool_response|commentary|multi_tool_use\.parallel)>[\s\S]*$/g, "")
+    .replace(/<\u200b?(?:tool_call|tool_result|tool_response|commentary|multi_tool_use\.parallel)>[\s\S]*$/g, "")
     // 3. Remove orphaned standalone open/close tags
-    .replace(/<\/?tool_call>/g, "")
-    .replace(/<\/?tool_response>/g, "")
-    .replace(/<\/?tool_result>/g, "")
-    .replace(/<\/?commentary>/g, "")
-    .replace(/<\/?multi_tool_use\.parallel>/g, "")
+    .replace(/<\/?\u200b?tool_call>/g, "")
+    .replace(/<\/?\u200b?tool_response>/g, "")
+    .replace(/<\/?\u200b?tool_result>/g, "")
+    .replace(/<\/?\u200b?commentary>/g, "")
+    .replace(/<\/?\u200b?multi_tool_use\.parallel>/g, "")
     .replace(trailingPartialTagRe, "")
     .trimEnd()
 }
@@ -60,12 +63,25 @@ function stripToolTags(text: string): string {
  */
 const STRIP_TAG_NAMES = ["tool_call", "tool_response", "tool_result", "commentary", "multi_tool_use.parallel"]
 const escapeForRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-const STRIP_OPEN_RE = new RegExp(`<(?:${STRIP_TAG_NAMES.map(escapeForRegex).join("|")})>`)
-const STRIP_CLOSE_RE = new RegExp(`</(?:${STRIP_TAG_NAMES.map(escapeForRegex).join("|")})>`)
+// Both literal <tag> and escaped <\u200btag> variants are matched.  The
+// escape middleware inserts ZWS after <, </, so we accept optional ZWS in
+// both open and close forms.
+const STRIP_OPEN_RE = new RegExp(`<\\u200b?(?:${STRIP_TAG_NAMES.map(escapeForRegex).join("|")})>`)
+const STRIP_CLOSE_RE = new RegExp(`</\\u200b?(?:${STRIP_TAG_NAMES.map(escapeForRegex).join("|")})>`)
+
+// Full-tag forms used for partial-prefix detection. Enumerate all 4 variants
+// per tag: <tag>, <\u200btag>, </tag>, </\u200btag>.
+const STRIP_TAG_FORMS = STRIP_TAG_NAMES.flatMap((t) => [
+  `<${t}>`,
+  `<\u200b${t}>`,
+  `</${t}>`,
+  `</\u200b${t}>`,
+])
 
 // Builds a regex that matches a trailing partial tag (open or close) at end of string.
 // For tag "tool_call", generates open: <(?:t(?:o(...)?)?)?$ and close: <(?:/(?:t(?:o(...)?)?)?)?$
 // This catches any prefix of "<tool_call>" or "</tool_call>" that got cut off mid-stream.
+// Also covers ZWS-escaped variants: "<\u200btool_call>" / "</\u200btool_call>".
 function buildPartialTagRe(names: string[]): RegExp {
   const alts: string[] = []
   for (const name of names) {
@@ -75,12 +91,16 @@ function buildPartialTagRe(names: string[]): RegExp {
       open = escapeForRegex(name[i - 1]) + "(?:" + open + ")?"
     }
     alts.push(open)
+    // Open tag with ZWS: <\u200btag_name> — match \u200b then optional tag prefix
+    alts.push(`\\u200b(?:${open})?`)
     // Close tag: </tag_name>
     let close = ""
     for (let i = name.length; i >= 1; i--) {
       close = escapeForRegex(name[i - 1]) + "(?:" + close + ")?"
     }
     alts.push(`/(?:${close})?`)
+    // Close tag with ZWS: </\u200btag_name>
+    alts.push(`/\\u200b(?:${close})?`)
   }
   return new RegExp(`<(?:${alts.join("|")})$`)
 }
@@ -162,19 +182,14 @@ function createStreamingTagFilter() {
 }
 
 function partialOpenTagIndex(text: string): number {
-  const tail = text.slice(-30)
+  // +1 to account for optional ZWS (U+200B) after `<` or `</`.
+  const tail = text.slice(-31)
   const offset = text.length - tail.length
   for (let i = tail.length - 1; i >= 0; i--) {
     if (tail[i] !== "<") continue
     const candidate = tail.slice(i)
-    for (const tag of STRIP_TAG_NAMES) {
-      // Check both open tag `<tag>` and close tag `</tag>` prefixes
-      const open = `<${tag}>`
-      if (candidate.length < open.length && open.startsWith(candidate)) {
-        return offset + i
-      }
-      const close = `</${tag}>`
-      if (candidate.length < close.length && close.startsWith(candidate)) {
+    for (const full of STRIP_TAG_FORMS) {
+      if (candidate.length < full.length && full.startsWith(candidate)) {
         return offset + i
       }
     }
@@ -184,34 +199,30 @@ function partialOpenTagIndex(text: string): number {
 
 /** Check whether `buf` (which starts with a previously-valid partial tag)
  *  could still resolve normally — either it's still an incomplete prefix that
- *  could complete into `<tag_name>` or `</tag_name>`, or it already contains a
- *  complete tag (which STRIP_OPEN_RE/STRIP_CLOSE_RE will handle).  Returns
- *  false only when buf has diverged from all tag names. */
+ *  could complete into `<tag_name>` or `</tag_name>` (with or without ZWS),
+ *  or it already contains a complete tag (which STRIP_OPEN_RE/STRIP_CLOSE_RE
+ *  will handle).  Returns false only when buf has diverged from all forms. */
 function isStillValidPartial(buf: string): boolean {
-  for (const tag of STRIP_TAG_NAMES) {
-    for (const full of [`<${tag}>`, `</${tag}>`]) {
-      const checkLen = Math.min(buf.length, full.length)
-      if (full.slice(0, checkLen) === buf.slice(0, checkLen)) return true
-    }
+  for (const full of STRIP_TAG_FORMS) {
+    const checkLen = Math.min(buf.length, full.length)
+    if (full.slice(0, checkLen) === buf.slice(0, checkLen)) return true
   }
   return false
 }
 
 /** Return the length of the longest prefix of `text` that is also a prefix
- *  of some tag (open or close) in STRIP_TAG_NAMES.  Used to determine how
- *  many characters to drop when a previously-valid partial tag becomes invalid
- *  (e.g. "<tool" was valid, then " match" arrived making "<tool match" invalid;
- *  longestValidPrefixLen returns 5 for "<tool"). */
+ *  of some tag form (open or close, literal or ZWS-escaped) in STRIP_TAG_FORMS.
+ *  Used to determine how many characters to drop when a previously-valid
+ *  partial tag becomes invalid (e.g. "<tool" was valid, then " match" arrived
+ *  making "<tool match" invalid; longestValidPrefixLen returns 5 for "<tool"). */
 function longestValidPrefixLen(text: string): number {
   let maxLen = 0
-  for (const tag of STRIP_TAG_NAMES) {
-    for (const full of [`<${tag}>`, `</${tag}>`]) {
-      let len = 0
-      while (len < text.length && len < full.length && text[len] === full[len]) {
-        len++
-      }
-      if (len > maxLen) maxLen = len
+  for (const full of STRIP_TAG_FORMS) {
+    let len = 0
+    while (len < text.length && len < full.length && text[len] === full[len]) {
+      len++
     }
+    if (len > maxLen) maxLen = len
   }
   return maxLen
 }
@@ -292,6 +303,8 @@ const log = Log.create({ service: "session.processor" })
    */
   /** Re-export for unit testing. */
   export const _stripToolTags = stripToolTags
+  /** Re-export for unit testing. */
+  export const _createStreamingTagFilter = createStreamingTagFilter
 
   export function isDuplicate(
     acceptedKeys: Map<string, string>,
@@ -563,7 +576,7 @@ const log = Log.create({ service: "session.processor" })
           return true
         })
 
-        const handleEvent = Effect.fn("SessionProcessor.handleEvent")(function* (value: StreamEvent) {
+        const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
           switch (value.type) {
             case "start":
               yield* status.set(ctx.sessionID, { type: "busy" })

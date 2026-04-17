@@ -69,6 +69,38 @@ Available tools: <tools>${toolsJson}</tools>`
   },
 })
 
+// Escape hermes tag strings in user/system message content by inserting a
+// zero-width space (U+200B) so the tool-parser's literal matching does not
+// trigger on user-provided text.  Without this, user input containing
+// "<tool_call>" causes the hermes pipeline to hang (middleware or gateway
+// interprets the user text as a protocol tag).  See
+// docs/designs/user-message-tag-escape.md.
+const HERMES_TAG_REGEX = /<(\/?)(tool_call|tool_response)>/g
+
+/** Exported for unit testing. */
+export function _escapeHermesTagsInText(text: string): string {
+  return text.replace(HERMES_TAG_REGEX, (_m, slash: string, name: string) => `<${slash}\u200b${name}>`)
+}
+
+/** Exported for unit testing. */
+export function _escapeHermesTagsInMessage<M extends { role: string; content: any }>(message: M): M {
+  if (message.role !== "user" && message.role !== "system") return message
+  if (typeof message.content === "string") {
+    return { ...message, content: _escapeHermesTagsInText(message.content) }
+  }
+  if (Array.isArray(message.content)) {
+    return {
+      ...message,
+      content: message.content.map((part: any) =>
+        part && part.type === "text" && typeof part.text === "string"
+          ? { ...part, text: _escapeHermesTagsInText(part.text) }
+          : part,
+      ),
+    }
+  }
+  return message
+}
+
   const log = Log.create({ service: "llm" })
   
   export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
@@ -507,6 +539,23 @@ Available tools: <tools>${toolsJson}</tools>`
               model: language,
               middleware: (() => {
                 const mw: LanguageModelV3Middleware[] = []
+                // Escape hermes tag strings in user/system messages BEFORE
+                // the tool-parser middleware runs.  The parser converts
+                // tool-role messages to user text containing <tool_response>
+                // and injects the hermes-strict system prompt with literal
+                // <tool_call> examples; escaping after it would break those.
+                // xml (morphXml) uses dynamic tag names and is out of scope.
+                if (toolParserActive && (toolParserMode === "hermes" || toolParserMode === "hermes-strict")) {
+                  mw.push({
+                    specificationVersion: "v3" as const,
+                    async transformParams(args) {
+                      if (args.type === "stream" && Array.isArray(args.params.prompt)) {
+                        args.params.prompt = args.params.prompt.map(_escapeHermesTagsInMessage)
+                      }
+                      return args.params
+                    },
+                  })
+                }
                 // Tool parser middleware for gateways that don't support function calling.
                 // Disabled during compaction (tools empty) — parser has nothing to
                 // convert, and would interfere with summary-only responses.

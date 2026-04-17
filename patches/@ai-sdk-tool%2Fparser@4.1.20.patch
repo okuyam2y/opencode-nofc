@@ -1,0 +1,442 @@
+diff --git a/dist/chunk-AELRIRO2.js b/dist/chunk-AELRIRO2.js
+index 742c615..651002f 100644
+--- a/dist/chunk-AELRIRO2.js
++++ b/dist/chunk-AELRIRO2.js
+@@ -482,13 +482,204 @@ function shouldEmitRawToolCallTextOnError(options) {
+ }
+ 
+ // src/core/protocols/hermes-protocol.ts
++function isInsideJsonString(json) {
++  let inStr = false;
++  let esc = false;
++  for (let i = 0; i < json.length; i++) {
++    if (esc) { esc = false; continue; }
++    if (json[i] === "\\") { esc = true; continue; }
++    if (json[i] === '"') { inStr = !inStr; }
++  }
++  return inStr;
++}
+ function canonicalizeToolInput(argumentsValue) {
+   return JSON.stringify(argumentsValue != null ? argumentsValue : {});
+ }
+-function processToolCallJson(toolCallJson, fullMatch, processedElements, options) {
++function normalizeJsonStringCtrl(json) {
++  let result = "";
++  let inStr = false;
++  let esc = false;
++  for (let i = 0; i < json.length; i += 1) {
++    const ch = json[i];
++    if (esc) {
++      esc = false;
++      if (ch.charCodeAt(0) < 0x20) {
++        switch (ch) {
++          case "\n": result += "n"; continue;
++          case "\r": result += "r"; continue;
++          case "\t": result += "t"; continue;
++          default:
++            result = result.slice(0, -1) + `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
++            continue;
++        }
++      }
++      result += ch;
++      continue;
++    }
++    if (ch === "\\" && inStr) { esc = true; result += ch; continue; }
++    if (ch === '"') { inStr = !inStr; result += ch; continue; }
++    if (inStr && ch.charCodeAt(0) < 0x20) {
++      switch (ch) {
++        case "\n": result += "\\n"; continue;
++        case "\r": result += "\\r"; continue;
++        case "\t": result += "\\t"; continue;
++        default:
++          result += `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`;
++          continue;
++      }
++    }
++    result += ch;
++  }
++  return result;
++}
++var REPAIR_MAX_ARGS_BODY_SIZE = 102400;
++function isAtTopLevel(argsBody, position) {
++  let depth = 0;
++  let inStr = false;
++  let esc = false;
++  for (let i = 0; i < position; i++) {
++    const ch = argsBody[i];
++    if (esc) { esc = false; continue; }
++    if (ch === "\\" && inStr) { esc = true; continue; }
++    if (ch === '"') { inStr = !inStr; continue; }
++    if (!inStr) {
++      if (ch === "{" || ch === "[") depth++;
++      if (ch === "}" || ch === "]") depth--;
++    }
++  }
++  return depth === 0;
++}
++function extractKnownArgKeys(tools, toolCallJson) {
++  const toolName = extractTopLevelStringProperty(toolCallJson, "name");
++  if (!toolName) return void 0;
++  const tool = (tools || []).find((t) => t.name === toolName);
++  if (!tool || !tool.inputSchema || !tool.inputSchema.properties) return void 0;
++  return Object.keys(tool.inputSchema.properties);
++}
++function repairToolCallJson(raw, knownArgKeys) {
++  const toolName = extractTopLevelStringProperty(raw, "name");
++  if (!toolName) return null;
++  const argsValueStart = findTopLevelPropertyValueStart(raw, "arguments");
++  if (argsValueStart == null || raw.charAt(argsValueStart) !== "{") return null;
++  const argsStart = argsValueStart + 1;
++  let outerClose = -1;
++  for (let i = raw.length - 1; i >= argsStart; i--) {
++    if (raw.charAt(i) === "}") { outerClose = i; break; }
++    if (!/\s/.test(raw.charAt(i))) break;
++  }
++  if (outerClose === -1) return null;
++  let argsClose = -1;
++  for (let j = outerClose - 1; j >= argsStart; j--) {
++    if (raw.charAt(j) === "}") { argsClose = j; break; }
++    if (!/\s/.test(raw.charAt(j))) break;
++  }
++  if (argsClose === -1) return null;
++  const argsBody = raw.substring(argsStart, argsClose);
++  if (argsBody.length > REPAIR_MAX_ARGS_BODY_SIZE) return null;
++  try {
++    return {
++      name: toolName,
++      arguments: JSON.parse(`{${argsBody}}`)
++    };
++  } catch (e) { /* fall through to repair */ }
++  const firstKeyMatch = argsBody.match(/^\s*"([^"]+)"\s*:\s*/);
++  if (!firstKeyMatch) return null;
++  let allKeys = [{
++    key: firstKeyMatch[1],
++    matchStart: 0,
++    valueStart: firstKeyMatch[0].length
++  }];
++  const kvPattern = /,\s*"([^"]+)"\s*:\s*/g;
++  let m;
++  while ((m = kvPattern.exec(argsBody)) !== null) {
++    allKeys.push({
++      key: m[1],
++      matchStart: m.index,
++      valueStart: m.index + m[0].length
++    });
++  }
++  const knownKeySet = (knownArgKeys && knownArgKeys.length > 0) ? new Set(knownArgKeys) : null;
++  if (knownKeySet) {
++    allKeys = allKeys.filter((entry) => knownKeySet.has(entry.key));
++  } else {
++    allKeys = allKeys.filter((entry) => entry.matchStart === 0 || isAtTopLevel(argsBody, entry.matchStart));
++  }
++  const firstByKey = {};
++  const lastByKey = {};
++  for (let idx = 0; idx < allKeys.length; idx++) {
++    if (!(allKeys[idx].key in firstByKey)) firstByKey[allKeys[idx].key] = idx;
++    lastByKey[allKeys[idx].key] = idx;
++  }
++  const firstPositions = allKeys.filter((_, i) => firstByKey[allKeys[i].key] === i);
++  const lastPositions = allKeys.filter((_, i) => lastByKey[allKeys[i].key] === i);
++  let keyPositions;
++  if (firstPositions.length === lastPositions.length &&
++      firstPositions.every((fp, i) => fp.matchStart === lastPositions[i].matchStart)) {
++    keyPositions = firstPositions;
++  } else {
++    const scorePositions = (positions) => {
++      let rawOk = 0;
++      let repaired = 0;
++      for (let si = 0; si < positions.length; si++) {
++        const svs = positions[si].valueStart;
++        const sve = (si + 1 < positions.length) ? positions[si + 1].matchStart : argsBody.length;
++        const srv = argsBody.substring(svs, sve).replace(/,\s*$/, "");
++        try { JSON.parse(srv); rawOk++; continue; } catch (_) {}
++        if (srv.charAt(0) === '"') {
++          let seq = srv.length - 1;
++          while (seq > 0 && srv.charAt(seq) !== '"') seq--;
++          if (seq > 0) {
++            const sinner = srv.substring(1, seq);
++            let sesc = "";
++            let sbs = 0;
++            for (const sch of sinner) {
++              if (sch === "\\") { sbs++; sesc += sch; }
++              else if (sch === '"' && sbs % 2 === 0) { sbs = 0; sesc += '\\"'; }
++              else { sbs = 0; sesc += sch; }
++            }
++            sesc = sesc.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
++            try { JSON.parse(`"${sesc}"`); repaired++; } catch (_) {}
++          }
++        }
++      }
++      return [rawOk, repaired];
++    };
++    const fs2 = scorePositions(firstPositions);
++    const ls = scorePositions(lastPositions);
++    keyPositions = (ls[0] > fs2[0] || (ls[0] === fs2[0] && ls[1] > fs2[1])) ? lastPositions : firstPositions;
++  }
++  allKeys = keyPositions;
++  if (allKeys.length === 0) return null;
++  const args = {};
++  for (let i = 0; i < allKeys.length; i++) {
++    const kp = allKeys[i];
++    const vs = kp.valueStart;
++    const ve = (i + 1 < allKeys.length) ? allKeys[i + 1].matchStart : argsBody.length;
++    const rv = argsBody.substring(vs, ve).replace(/,\s*$/, "");
++    try { args[kp.key] = JSON.parse(rv); continue; } catch (e) { /* needs repair */ }
++    if (rv.charAt(0) === '"') {
++      let eq = rv.length - 1;
++      while (eq > 0 && rv.charAt(eq) !== '"') eq--;
++      if (eq <= 0) return null;
++      const inner = rv.substring(1, eq);
++      let esc = "";
++      let bs = 0;
++      for (const ch of inner) {
++        if (ch === "\\") { bs++; esc += ch; }
++        else if (ch === '"' && bs % 2 === 0) { bs = 0; esc += '\\"'; }
++        else { bs = 0; esc += ch; }
++      }
++      esc = esc.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
++      try { args[kp.key] = JSON.parse(`"${esc}"`); }
++      catch (e) { return null; }
++    } else { return null; }
++  }
++  return { name: toolName, arguments: args };
++}
++function processToolCallJson(toolCallJson, fullMatch, processedElements, tools, options) {
+   var _a;
+   try {
+-    const parsedToolCall = parse(toolCallJson);
++    const parsedToolCall = parse(normalizeJsonStringCtrl(toolCallJson));
+     processedElements.push({
+       type: "tool-call",
+       toolCallId: generateToolCallId(),
+@@ -496,6 +687,19 @@ function processToolCallJson(toolCallJson, fullMatch, processedElements, options
+       input: canonicalizeToolInput(parsedToolCall.arguments)
+     });
+   } catch (error) {
++    const repaired = repairToolCallJson(
++      toolCallJson,
++      extractKnownArgKeys(tools, toolCallJson)
++    );
++    if (repaired) {
++      processedElements.push({
++        type: "tool-call",
++        toolCallId: generateToolCallId(),
++        toolName: repaired.name,
++        input: canonicalizeToolInput(repaired.arguments)
++      });
++      return;
++    }
+     logParseFailure({
+       phase: "generated-text",
+       reason: "Failed to parse tool call JSON segment",
+@@ -511,7 +715,7 @@ function processToolCallJson(toolCallJson, fullMatch, processedElements, options
+   }
+ }
+ function processMatchedToolCall(context) {
+-  const { match, text, currentIndex, processedElements, options } = context;
++  const { match, text, currentIndex, processedElements, tools, options } = context;
+   const startIndex = match.index;
+   const toolCallJson = match[1];
+   if (startIndex > currentIndex) {
+@@ -519,7 +723,7 @@ function processMatchedToolCall(context) {
+     addTextSegment(textSegment, processedElements);
+   }
+   if (toolCallJson) {
+-    processToolCallJson(toolCallJson, match[0], processedElements, options);
++    processToolCallJson(toolCallJson, match[0], processedElements, tools, options);
+   }
+   return startIndex + match[0].length;
+ }
+@@ -789,7 +993,7 @@ function canonicalizeArgumentsProgressInput(progress, toolName, tools) {
+     return void 0;
+   }
+   try {
+-    const parsedArguments = parse(progress.argumentsText);
++    const parsedArguments = parse(normalizeJsonStringCtrl(progress.argumentsText));
+     return stringifyToolInputWithSchema({
+       toolName,
+       args: parsedArguments,
+@@ -856,7 +1060,7 @@ function emitIncompleteToolCall(state, controller, toolCallStart, trailingBuffer
+   }
+   if (state.currentToolCallJson) {
+     try {
+-      const parsedToolCall = parse(state.currentToolCallJson);
++      const parsedToolCall = parse(normalizeJsonStringCtrl(state.currentToolCallJson));
+       emitToolCallFromParsed(state, controller, parsedToolCall, tools);
+       state.currentToolCallJson = "";
+       state.isInsideToolCall = false;
+@@ -940,9 +1144,17 @@ function emitToolCall(context) {
+   var _a;
+   const { state, controller, toolCallStart, toolCallEnd, options, tools } = context;
+   try {
+-    const parsedToolCall = parse(state.currentToolCallJson);
++    const parsedToolCall = parse(normalizeJsonStringCtrl(state.currentToolCallJson));
+     emitToolCallFromParsed(state, controller, parsedToolCall, tools);
+   } catch (error) {
++    const repaired = repairToolCallJson(
++      state.currentToolCallJson,
++      extractKnownArgKeys(tools, state.currentToolCallJson)
++    );
++    if (repaired) {
++      emitToolCallFromParsed(state, controller, repaired, tools);
++      return;
++    }
+     const errorContent = `${toolCallStart}${state.currentToolCallJson}${toolCallEnd}`;
+     const shouldEmitRawFallback = shouldEmitRawToolCallTextOnError(options);
+     logParseFailure({
+@@ -1000,6 +1212,19 @@ function processBufferTags(context) {
+     if (startIndex + tag.length > state.buffer.length) {
+       break;
+     }
++    if (state.isInsideToolCall) {
++      const jsonSoFar = state.currentToolCallJson + state.buffer.slice(0, startIndex);
++      if (isInsideJsonString(jsonSoFar)) {
++        const consumeEnd = startIndex + tag.length;
++        publishText(state.buffer.slice(0, consumeEnd), state, controller, tools);
++        state.buffer = state.buffer.slice(consumeEnd);
++        startIndex = getPotentialStartIndex(
++          state.buffer,
++          state.isInsideToolCall ? toolCallEnd : toolCallStart
++        );
++        continue;
++      }
++    }
+     publishText(state.buffer.slice(0, startIndex), state, controller, tools);
+     state.buffer = state.buffer.slice(startIndex + tag.length);
+     processTagMatch(context);
+@@ -1066,26 +1291,63 @@ var hermesProtocol = ({
+   },
+   parseGeneratedText({
+     text,
++    tools,
+     options
+   }) {
+-    const startEsc = escapeRegExp(toolCallStart);
+-    const endEsc = escapeRegExp(toolCallEnd);
+-    const toolCallRegex = new RegExp(
+-      `${startEsc}([\0-\uFFFF]*?)${endEsc}`,
+-      "gs"
+-    );
+     const processedElements = [];
+     let currentIndex = 0;
+-    let match = toolCallRegex.exec(text);
+-    while (match !== null) {
+-      currentIndex = processMatchedToolCall({
+-        match,
+-        text,
+-        currentIndex,
+-        processedElements,
+-        options
+-      });
+-      match = toolCallRegex.exec(text);
++    let searchFrom = 0;
++    while (searchFrom < text.length) {
++      const startIdx = text.indexOf(toolCallStart, searchFrom);
++      if (startIdx === -1) {
++        break;
++      }
++      const jsonStart = startIdx + toolCallStart.length;
++      let endIdx = jsonStart;
++      let found = false;
++      while (endIdx < text.length) {
++        endIdx = text.indexOf(toolCallEnd, endIdx);
++        if (endIdx === -1) {
++          break;
++        }
++        const jsonSegment = text.slice(jsonStart, endIdx);
++        if (!isInsideJsonString(jsonSegment)) {
++          let hasOuterInner = false;
++          let isp = 0;
++          while (isp < jsonSegment.length) {
++            const pos = jsonSegment.indexOf(toolCallStart, isp);
++            if (pos === -1) break;
++            if (!isInsideJsonString(jsonSegment.slice(0, pos))) {
++              hasOuterInner = true;
++              break;
++            }
++            isp = pos + 1;
++          }
++          if (!hasOuterInner) {
++            found = true;
++            break;
++          }
++          break;
++        }
++        endIdx += 1;
++      }
++      if (!found) {
++        const skipTo = startIdx + toolCallStart.length;
++        if (skipTo > currentIndex) {
++          addTextSegment(text.slice(currentIndex, skipTo), processedElements);
++          currentIndex = skipTo;
++        }
++        searchFrom = skipTo;
++        continue;
++      }
++      const toolCallJson = text.slice(jsonStart, endIdx);
++      const fullMatch = text.slice(startIdx, endIdx + toolCallEnd.length);
++      if (startIdx > currentIndex) {
++        addTextSegment(text.slice(currentIndex, startIdx), processedElements);
++      }
++      processToolCallJson(toolCallJson, fullMatch, processedElements, tools, options);
++      currentIndex = endIdx + toolCallEnd.length;
++      searchFrom = currentIndex;
+     }
+     if (currentIndex < text.length) {
+       const remainingText = text.slice(currentIndex);
+@@ -1138,14 +1400,48 @@ var hermesProtocol = ({
+     });
+   },
+   extractToolCallSegments({ text }) {
+-    const startEsc = escapeRegExp(toolCallStart);
+-    const endEsc = escapeRegExp(toolCallEnd);
+-    const regex = new RegExp(`${startEsc}([\0-\uFFFF]*?)${endEsc}`, "gs");
+     const segments = [];
+-    let m = regex.exec(text);
+-    while (m != null) {
+-      segments.push(m[0]);
+-      m = regex.exec(text);
++    let searchFrom = 0;
++    while (searchFrom < text.length) {
++      const startIdx = text.indexOf(toolCallStart, searchFrom);
++      if (startIdx === -1) {
++        break;
++      }
++      const jsonStart = startIdx + toolCallStart.length;
++      let endIdx = jsonStart;
++      let found = false;
++      while (endIdx < text.length) {
++        endIdx = text.indexOf(toolCallEnd, endIdx);
++        if (endIdx === -1) {
++          break;
++        }
++        const jsonSegment = text.slice(jsonStart, endIdx);
++        if (!isInsideJsonString(jsonSegment)) {
++          let hasOuterInner2 = false;
++          let isp2 = 0;
++          while (isp2 < jsonSegment.length) {
++            const pos = jsonSegment.indexOf(toolCallStart, isp2);
++            if (pos === -1) break;
++            if (!isInsideJsonString(jsonSegment.slice(0, pos))) {
++              hasOuterInner2 = true;
++              break;
++            }
++            isp2 = pos + 1;
++          }
++          if (!hasOuterInner2) {
++            found = true;
++            break;
++          }
++          break;
++        }
++        endIdx += 1;
++      }
++      if (!found) {
++        searchFrom = startIdx + toolCallStart.length;
++        continue;
++      }
++      segments.push(text.slice(startIdx, endIdx + toolCallEnd.length));
++      searchFrom = endIdx + toolCallEnd.length;
+     }
+     return segments;
+   }

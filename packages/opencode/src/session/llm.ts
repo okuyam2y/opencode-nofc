@@ -4,7 +4,7 @@ import { Context, Effect, Layer, Record } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
 import type { LanguageModelV3Middleware } from "@ai-sdk/provider"
-import { hermesToolMiddleware, morphXmlToolMiddleware, createToolMiddleware, jsonMixProtocol } from "@ai-sdk-tool/parser"
+import { hermesToolMiddleware, morphXmlToolMiddleware, createToolMiddleware, hermesProtocol } from "@ai-sdk-tool/parser"
 import { mergeDeep, pipe } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider"
@@ -29,8 +29,14 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 
 // Custom hermes middleware with explicit examples for models that don't follow the standard format
 const hermesStrictMiddleware = createToolMiddleware({
-  protocol: jsonMixProtocol(),
+  protocol: hermesProtocol(),
+  toolResponsePromptTemplate: (toolResult) =>
+    `<tool_response>${JSON.stringify({ name: toolResult.toolName, content: toolResult.output })}</tool_response>`,
   toolSystemPromptTemplate(tools) {
+    const toolsJson = JSON.stringify(tools.map((t) => ({
+      type: "function",
+      function: { name: t.name, description: t.description, parameters: t.inputSchema },
+    })))
     return `You have access to tools. To call a tool, you MUST use EXACTLY this format:
 
 <tool_call>
@@ -59,7 +65,7 @@ WRONG — extra brace after JSON:
 }
 </tool_call>
 
-Available tools: <tools>${tools}</tools>`
+Available tools: <tools>${toolsJson}</tools>`
   },
 })
 
@@ -506,14 +512,12 @@ export namespace LLM {
                 // Disabled during compaction (tools empty) — parser has nothing to
                 // convert, and would interfere with summary-only responses.
                 if (toolParserActive) {
-                  // @ai-sdk-tool/parser uses @ai-sdk/provider@2.x types while upstream
-                  // uses @3.x.  The runtime interface is compatible; cast to satisfy TS.
                   if (toolParserMode === "hermes") {
-                    mw.push(hermesToolMiddleware as unknown as LanguageModelV3Middleware)
+                    mw.push(hermesToolMiddleware)
                   } else if (toolParserMode === "hermes-strict") {
-                    mw.push(hermesStrictMiddleware as unknown as LanguageModelV3Middleware)
+                    mw.push(hermesStrictMiddleware)
                   } else if (toolParserMode === "xml") {
-                    mw.push(morphXmlToolMiddleware as unknown as LanguageModelV3Middleware)
+                    mw.push(morphXmlToolMiddleware)
                   }
                 }
                 mw.push({

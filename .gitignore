@@ -57,4 +57,10 @@ tsconfig.tsbuildinfo
 docs/evaluations/
 docs/investigations/tag-in-prompt-hang/*.txt
 dev-tools/
+
+# Husky local hook stubs (only pre-push is tracked; others tend to get
+# generated as broken wrappers that cause infinite loops)
+.husky/*
+!.husky/_/
+!.husky/pre-push
 .npmrc

@@ -125,8 +125,8 @@
     "@types/node": "catalog:"
   },
   "patchedDependencies": {
+    "@ai-sdk-tool/parser@4.1.20": "patches/@ai-sdk-tool%2Fparser@4.1.20.patch",
     "@standard-community/standard-openapi@0.2.9": "patches/@standard-community%2Fstandard-openapi@0.2.9.patch",
-    "solid-js@1.9.10": "patches/solid-js@1.9.10.patch",
-    "@ai-sdk-tool/parser@2.1.7": "patches/@ai-sdk-tool%2Fparser@2.1.7.patch"
+    "solid-js@1.9.10": "patches/solid-js@1.9.10.patch"
   }
 }

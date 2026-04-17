@@ -151,5 +151,120 @@ describe("installation", () => {
       )
       expect(result).toBe("2.1.0")
     })
+
+    test("queries npm registry at opencode-ai-nofc path (fork-specific package name)", async () => {
+      const requestedUrls: string[] = []
+      const layer = testLayer(
+        (request) => {
+          requestedUrls.push(request.url)
+          return jsonResponse({ version: "1.7.0" })
+        },
+        (cmd, args) => {
+          if (cmd === "npm" && args.includes("registry")) return "https://registry.npmjs.org\n"
+          return ""
+        },
+      )
+
+      await Effect.runPromise(Installation.Service.use((svc) => svc.latest("npm")).pipe(Effect.provide(layer)))
+      expect(requestedUrls.some((u) => u.includes("/opencode-ai-nofc/"))).toBe(true)
+    })
+  })
+
+  describe("method", () => {
+    // Fork detects both the new fork package name and the legacy upstream name
+    // so users who migrated from `opencode-ai` still get update detection.
+    test("detects npm install with opencode-ai-nofc", async () => {
+      const layer = testLayer(
+        () => jsonResponse({}),
+        (cmd, args) => {
+          if (cmd === "npm" && args.includes("list")) return "├── opencode-ai-nofc@1.4.7\n"
+          if (cmd === "npm" && args.includes("config")) return "https://registry.npmjs.org\n"
+          return ""
+        },
+      )
+      const result = await Effect.runPromise(
+        Installation.Service.use((svc) => svc.method()).pipe(Effect.provide(layer)),
+      )
+      expect(result).toBe("npm")
+    })
+
+    test("detects npm install with legacy opencode-ai (migration compatibility)", async () => {
+      const layer = testLayer(
+        () => jsonResponse({}),
+        (cmd, args) => {
+          if (cmd === "npm" && args.includes("list")) return "├── opencode-ai@1.4.6\n"
+          if (cmd === "npm" && args.includes("config")) return "https://registry.npmjs.org\n"
+          return ""
+        },
+      )
+      const result = await Effect.runPromise(
+        Installation.Service.use((svc) => svc.method()).pipe(Effect.provide(layer)),
+      )
+      expect(result).toBe("npm")
+    })
+
+    test("returns 'unknown' when no package manager reports the fork or legacy package", async () => {
+      const layer = testLayer(
+        () => jsonResponse({}),
+        () => "",
+      )
+      const result = await Effect.runPromise(
+        Installation.Service.use((svc) => svc.method()).pipe(Effect.provide(layer)),
+      )
+      expect(result).toBe("unknown")
+    })
+  })
+
+  describe("upgrade", () => {
+    test("npm upgrade invokes opencode-ai-nofc package (fork)", async () => {
+      const spawnCalls: Array<{ cmd: string; args: readonly string[] }> = []
+      const layer = testLayer(
+        () => jsonResponse({}),
+        (cmd, args) => {
+          spawnCalls.push({ cmd, args })
+          return ""
+        },
+      )
+      await Effect.runPromise(
+        Installation.Service.use((svc) => svc.upgrade("npm", "1.5.0")).pipe(Effect.provide(layer)),
+      )
+      const npmInstall = spawnCalls.find((c) => c.cmd === "npm" && c.args.includes("install"))
+      expect(npmInstall).toBeDefined()
+      expect(npmInstall!.args).toContain("opencode-ai-nofc@1.5.0")
+    })
+
+    test("pnpm upgrade invokes opencode-ai-nofc package (fork)", async () => {
+      const spawnCalls: Array<{ cmd: string; args: readonly string[] }> = []
+      const layer = testLayer(
+        () => jsonResponse({}),
+        (cmd, args) => {
+          spawnCalls.push({ cmd, args })
+          return ""
+        },
+      )
+      await Effect.runPromise(
+        Installation.Service.use((svc) => svc.upgrade("pnpm", "1.5.0")).pipe(Effect.provide(layer)),
+      )
+      const pnpmInstall = spawnCalls.find((c) => c.cmd === "pnpm" && c.args.includes("install"))
+      expect(pnpmInstall).toBeDefined()
+      expect(pnpmInstall!.args).toContain("opencode-ai-nofc@1.5.0")
+    })
+
+    test("bun upgrade invokes opencode-ai-nofc package (fork)", async () => {
+      const spawnCalls: Array<{ cmd: string; args: readonly string[] }> = []
+      const layer = testLayer(
+        () => jsonResponse({}),
+        (cmd, args) => {
+          spawnCalls.push({ cmd, args })
+          return ""
+        },
+      )
+      await Effect.runPromise(
+        Installation.Service.use((svc) => svc.upgrade("bun", "1.5.0")).pipe(Effect.provide(layer)),
+      )
+      const bunInstall = spawnCalls.find((c) => c.cmd === "bun" && c.args.includes("install"))
+      expect(bunInstall).toBeDefined()
+      expect(bunInstall!.args).toContain("opencode-ai-nofc@1.5.0")
+    })
   })
 })

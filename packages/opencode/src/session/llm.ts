@@ -69,7 +69,6 @@ Available tools: <tools>${toolsJson}</tools>`
   },
 })
 
-export namespace LLM {
   const log = Log.create({ service: "llm" })
   
   export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
@@ -652,4 +651,5 @@ export namespace LLM {
     }
     return false
   }
-}
+
+export * as LLM from "./llm"

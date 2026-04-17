@@ -5,7 +5,6 @@ import { Effect, Layer, ManagedRuntime } from "effect"
 import { LineEditTool } from "../../src/tool/line_edit"
 import { Instance } from "../../src/project/instance"
 import { tmpdir } from "../fixture/fixture"
-import { FileTime } from "../../src/file/time"
 import { LSP } from "../../src/lsp"
 import { AppFileSystem } from "@opencode-ai/shared/filesystem"
 import { Format } from "../../src/format"
@@ -16,7 +15,6 @@ import { SessionID, MessageID } from "../../src/session/schema"
 
 const testLayer = Layer.mergeAll(
   LSP.defaultLayer,
-  FileTime.defaultLayer,
   AppFileSystem.defaultLayer,
   Format.defaultLayer,
   Bus.layer,
@@ -52,9 +50,6 @@ const resolve = () =>
     }),
   )
 
-const readFileTime = (sessionID: SessionID, filepath: string) =>
-  runtime.runPromise(FileTime.Service.use((ft) => ft.read(sessionID, filepath)))
-
 afterEach(async () => {
   await Instance.disposeAll()
 })
@@ -64,15 +59,6 @@ describe("tool.line_edit", () => {
     const filepath = path.join(tmp.path, "test.txt")
     await fs.writeFile(filepath, content, "utf-8")
     const tool = await resolve()
-
-    // Register the file read time so FileTime.assert passes
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        await readFileTime(ctx.sessionID, filepath)
-      },
-    })
-
     return { filepath, tool }
   }
 

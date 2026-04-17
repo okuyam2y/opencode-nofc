@@ -10,6 +10,7 @@ import { Agent } from "../agent/agent"
 import { Provider } from "../provider"
 import { ModelID, ProviderID } from "../provider/schema"
 import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema } from "ai"
+import type { JSONSchema7 } from "@ai-sdk/provider"
 import { SessionCompaction } from "./compaction"
 import { Bus } from "../bus"
 import { ProviderTransform } from "../provider"
@@ -22,7 +23,6 @@ import MAX_STEPS from "../session/prompt/max-steps.txt"
 import { ToolRegistry } from "../tool"
 import { MCP } from "../mcp"
 import { LSP } from "../lsp"
-import { FileTime } from "../file/time"
 import { Flag } from "../flag/flag"
 import { ulid } from "ulid"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -98,9 +98,8 @@ function looksIncomplete(text: string): { incomplete: boolean; reason?: string }
   return { incomplete: false }
 }
 
-export namespace SessionPrompt {
-  const log = Log.create({ service: "session.prompt" })
-  const elog = EffectLogger.create({ service: "session.prompt" })
+const log = Log.create({ service: "session.prompt" })
+const elog = EffectLogger.create({ service: "session.prompt" })
 
   export interface Interface {
     readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
@@ -113,44 +112,43 @@ export namespace SessionPrompt {
 
   export class Service extends Context.Service<Service, Interface>()("@opencode/SessionPrompt") {}
 
-  export const layer = Layer.effect(
-    Service,
-    Effect.gen(function* () {
-      const bus = yield* Bus.Service
-      const status = yield* SessionStatus.Service
-      const sessions = yield* Session.Service
-      const agents = yield* Agent.Service
-      const provider = yield* Provider.Service
-      const processor = yield* SessionProcessor.Service
-      const compaction = yield* SessionCompaction.Service
-      const plugin = yield* Plugin.Service
-      const commands = yield* Command.Service
-      const permission = yield* Permission.Service
-      const fsys = yield* AppFileSystem.Service
-      const mcp = yield* MCP.Service
-      const lsp = yield* LSP.Service
-      const filetime = yield* FileTime.Service
-      const registry = yield* ToolRegistry.Service
-      const truncate = yield* Truncate.Service
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-      const scope = yield* Scope.Scope
-      const instruction = yield* Instruction.Service
-      const state = yield* SessionRunState.Service
-      const revert = yield* SessionRevert.Service
-      const summary = yield* SessionSummary.Service
-      const sys = yield* SystemPrompt.Service
-      const llm = yield* LLM.Service
-      const runner = Effect.fn("SessionPrompt.runner")(function* () {
-        return yield* EffectBridge.make()
-      })
-      const ops = Effect.fn("SessionPrompt.ops")(function* () {
-        const run = yield* runner()
-        return {
-          cancel: (sessionID: SessionID) => run.fork(cancel(sessionID)),
-          resolvePromptParts: (template: string) => resolvePromptParts(template),
-          prompt: (input: PromptInput) => prompt(input),
-        } satisfies TaskPromptOps
-      })
+export const layer = Layer.effect(
+  Service,
+  Effect.gen(function* () {
+    const bus = yield* Bus.Service
+    const status = yield* SessionStatus.Service
+    const sessions = yield* Session.Service
+    const agents = yield* Agent.Service
+    const provider = yield* Provider.Service
+    const processor = yield* SessionProcessor.Service
+    const compaction = yield* SessionCompaction.Service
+    const plugin = yield* Plugin.Service
+    const commands = yield* Command.Service
+    const permission = yield* Permission.Service
+    const fsys = yield* AppFileSystem.Service
+    const mcp = yield* MCP.Service
+    const lsp = yield* LSP.Service
+    const registry = yield* ToolRegistry.Service
+    const truncate = yield* Truncate.Service
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
+    const scope = yield* Scope.Scope
+    const instruction = yield* Instruction.Service
+    const state = yield* SessionRunState.Service
+    const revert = yield* SessionRevert.Service
+    const summary = yield* SessionSummary.Service
+    const sys = yield* SystemPrompt.Service
+    const llm = yield* LLM.Service
+    const runner = Effect.fn("SessionPrompt.runner")(function* () {
+      return yield* EffectBridge.make()
+    })
+    const ops = Effect.fn("SessionPrompt.ops")(function* () {
+      const run = yield* runner()
+      return {
+        cancel: (sessionID: SessionID) => run.fork(cancel(sessionID)),
+        resolvePromptParts: (template: string) => resolvePromptParts(template),
+        prompt: (input: PromptInput) => prompt(input),
+      } satisfies TaskPromptOps
+    })
 
       /** Highest confirmed inputTokens (input + cache.read) per session.
        *  Persists across runLoop invocations (which are recreated on each user turn)
@@ -451,9 +449,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         })) {
           const schema = ProviderTransform.schema(input.model, z.toJSONSchema(item.parameters))
           tools[item.id] = tool({
-            id: item.id as any,
             description: item.description,
-            inputSchema: jsonSchema(schema as any),
+            inputSchema: jsonSchema(schema),
             execute(args, options) {
               return run.promise(
                 Effect.gen(function* () {
@@ -1230,7 +1227,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   ]
                 }
 
-                yield* filetime.read(input.sessionID, filepath)
                 return [
                   {
                     messageID: info.id,
@@ -1860,37 +1856,36 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     }),
   )
 
-  export const defaultLayer = Layer.suspend(() =>
-    layer.pipe(
-      Layer.provide(SessionRunState.defaultLayer),
-      Layer.provide(SessionStatus.defaultLayer),
-      Layer.provide(SessionCompaction.defaultLayer),
-      Layer.provide(SessionProcessor.defaultLayer),
-      Layer.provide(Command.defaultLayer),
-      Layer.provide(Permission.defaultLayer),
-      Layer.provide(MCP.defaultLayer),
-      Layer.provide(LSP.defaultLayer),
-      Layer.provide(FileTime.defaultLayer),
-      Layer.provide(ToolRegistry.defaultLayer),
-      Layer.provide(Truncate.defaultLayer),
-      Layer.provide(Provider.defaultLayer),
-      Layer.provide(Instruction.defaultLayer),
-      Layer.provide(AppFileSystem.defaultLayer),
-      Layer.provide(Plugin.defaultLayer),
-      Layer.provide(Session.defaultLayer),
-      Layer.provide(SessionRevert.defaultLayer),
-      Layer.provide(SessionSummary.defaultLayer),
-      Layer.provide(
-        Layer.mergeAll(
-          Agent.defaultLayer,
-          SystemPrompt.defaultLayer,
-          LLM.defaultLayer,
-          Bus.layer,
-          CrossSpawnSpawner.defaultLayer,
-        ),
+export const defaultLayer = Layer.suspend(() =>
+  layer.pipe(
+    Layer.provide(SessionRunState.defaultLayer),
+    Layer.provide(SessionStatus.defaultLayer),
+    Layer.provide(SessionCompaction.defaultLayer),
+    Layer.provide(SessionProcessor.defaultLayer),
+    Layer.provide(Command.defaultLayer),
+    Layer.provide(Permission.defaultLayer),
+    Layer.provide(MCP.defaultLayer),
+    Layer.provide(LSP.defaultLayer),
+    Layer.provide(ToolRegistry.defaultLayer),
+    Layer.provide(Truncate.defaultLayer),
+    Layer.provide(Provider.defaultLayer),
+    Layer.provide(Instruction.defaultLayer),
+    Layer.provide(AppFileSystem.defaultLayer),
+    Layer.provide(Plugin.defaultLayer),
+    Layer.provide(Session.defaultLayer),
+    Layer.provide(SessionRevert.defaultLayer),
+    Layer.provide(SessionSummary.defaultLayer),
+    Layer.provide(
+      Layer.mergeAll(
+        Agent.defaultLayer,
+        SystemPrompt.defaultLayer,
+        LLM.defaultLayer,
+        Bus.layer,
+        CrossSpawnSpawner.defaultLayer,
       ),
     ),
-  )
+  ),
+)
   export const PromptInput = z.object({
     sessionID: SessionID.zod,
     messageID: MessageID.zod.optional(),
@@ -2008,9 +2003,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const { $schema: _, ...toolSchema } = input.schema
 
     return tool({
-      id: "StructuredOutput" as any,
       description: STRUCTURED_OUTPUT_DESCRIPTION,
-      inputSchema: jsonSchema(toolSchema as any),
+      inputSchema: jsonSchema(toolSchema as JSONSchema7),
       async execute(args) {
         // AI SDK validates args against inputSchema before calling execute()
         input.onSuccess(args)
@@ -2092,7 +2086,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     messages: () => MessageV2.WithParts[]
   }): AITool {
     return tool({
-      id: "complete" as any,
       description: COMPLETE_DESCRIPTION,
       inputSchema: jsonSchema({
         type: "object",
@@ -2100,7 +2093,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           summary: { type: "string", description: "A concise plain-text summary: what was done, which files changed (exact paths only), and verification results" },
         },
         required: ["summary"],
-      } as any),
+      } as JSONSchema7),
       async execute(args) {
         const rejection = validateComplete(input.messages())
         if (rejection) {
@@ -2125,9 +2118,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       },
     })
   }
-  const bashRegex = /!`([^`]+)`/g
-  // Match [Image N] as single token, quoted strings, or non-space sequences
-  const argsRegex = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi
-  const placeholderRegex = /\$(\d+)/g
-  const quoteTrimRegex = /^["']|["']$/g
-}
+const bashRegex = /!`([^`]+)`/g
+// Match [Image N] as single token, quoted strings, or non-space sequences
+const argsRegex = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi
+const placeholderRegex = /\$(\d+)/g
+const quoteTrimRegex = /^["']|["']$/g
+
+export * as SessionPrompt from "./prompt"

@@ -7,7 +7,6 @@ import { createInterface } from "readline"
 import * as Tool from "./tool"
 import { AppFileSystem } from "@opencode-ai/shared/filesystem"
 import { LSP } from "../lsp"
-import { FileTime } from "../file/time"
 import DESCRIPTION from "./read.txt"
 import { Instance } from "../project/instance"
 import { assertExternalDirectoryEffect } from "./external-directory"
@@ -34,44 +33,72 @@ export const ReadTool = Tool.define(
     const fs = yield* AppFileSystem.Service
     const instruction = yield* Instruction.Service
     const lsp = yield* LSP.Service
-    const time = yield* FileTime.Service
     const scope = yield* Scope.Scope
 
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
       const dir = path.dirname(filepath)
       const base = path.basename(filepath)
-      const items = yield* fs.readDirectory(dir).pipe(
-        Effect.map((items) =>
-          items
-            .filter(
-              (item) =>
-                item.toLowerCase().includes(base.toLowerCase()) || base.toLowerCase().includes(item.toLowerCase()),
-            )
-            .map((item) => path.join(dir, item))
-            .slice(0, 3),
+      const baseLower = base.toLowerCase()
+      // Parent-dir similar names — restrict to files so directory siblings like
+      // `geo/` or `util/` aren't offered when the caller asked for a file.
+      // These are substring matches, not basename matches, so they go in a
+      // separate bucket with a weaker label.
+      const parentSimilar = yield* fs.readDirectoryEntries(dir).pipe(
+        Effect.map((entries) =>
+          entries
+            .filter((e) => e.type === "file")
+            .map((e) => e.name)
+            .filter((name) => {
+              const nameLower = name.toLowerCase()
+              if (nameLower === baseLower) return false
+              return nameLower.includes(baseLower) || baseLower.includes(nameLower)
+            })
+            .map((name) => path.join(dir, name)),
         ),
         Effect.catch(() => Effect.succeed([] as string[])),
       )
-
-      if (items.length > 0) {
-        return yield* Effect.fail(
-          new Error(`File not found: ${filepath}\nDid you mean one of these?\n${items.join("\n")}\nRetry with the correct path or use glob to find it.`),
-        )
-      }
-
-      // Parent dir search found nothing — search the repo for files with the same basename.
       const root = Instance.directory
-      const repoHits = yield* Effect.tryPromise(() =>
+      const repoExact = yield* Effect.tryPromise(() =>
         findByBasename(root, base),
       ).pipe(Effect.catch(() => Effect.succeed([] as string[])))
 
-      if (repoHits.length > 0) {
+      if (repoExact.length > 0) {
         return yield* Effect.fail(
-          new Error(`File not found: ${filepath}\nDid you mean one of these?\n${repoHits.join("\n")}\nRetry with the correct path or use glob to find it.`),
+          new Error(
+            `File not found: ${filepath}
+
+Do NOT retry the same path. A file with this basename exists at:
+${repoExact.slice(0, 5).join("\n")}
+
+Use one of the paths above, or run a glob (e.g., \`**/${base}\`) before the next Read.`,
+          ),
         )
       }
 
-      return yield* Effect.fail(new Error(`File not found: ${filepath}\n\nWorking directory: ${Instance.directory}`))
+      if (parentSimilar.length > 0) {
+        return yield* Effect.fail(
+          new Error(
+            `File not found: ${filepath}
+
+No file named "${base}" exists. Files with similar names in the same directory (contents may be unrelated):
+${parentSimilar.slice(0, 5).join("\n")}
+
+Do NOT retry the same path. Confirm the correct filename with glob or grep before the next Read — do not assume a similar name is the intended file.`,
+          ),
+        )
+      }
+
+      return yield* Effect.fail(
+        new Error(
+          `File not found: ${filepath}
+
+No file named "${base}" exists anywhere in the repository — this file may not exist at all.
+
+Working directory: ${Instance.directory}
+
+Do NOT retry the same path. Run glob or grep to locate the correct file before the next Read. If no such file exists, do not reference it in subsequent output.`,
+        ),
+      )
     })
 
     const list = Effect.fn("ReadTool.list")(function* (filepath: string) {
@@ -90,9 +117,8 @@ export const ReadTool = Tool.define(
       ).pipe(Effect.map((items: string[]) => items.sort((a, b) => a.localeCompare(b))))
     })
 
-    const warm = Effect.fn("ReadTool.warm")(function* (filepath: string, sessionID: Tool.Context["sessionID"]) {
+    const warm = Effect.fn("ReadTool.warm")(function* (filepath: string) {
       yield* lsp.touchFile(filepath, false).pipe(Effect.ignore, Effect.forkIn(scope))
-      yield* time.read(sessionID, filepath)
     })
 
     const run = Effect.fn("ReadTool.execute")(function* (params: z.infer<typeof parameters>, ctx: Tool.Context) {
@@ -314,7 +340,7 @@ export const ReadTool = Tool.define(
       }
       output += "\n</content>"
 
-      yield* warm(filepath, ctx.sessionID)
+      yield* warm(filepath)
 
       if (loaded.length > 0) {
         output += `\n\n<system-reminder>\n${loaded.map((item) => item.content).join("\n\n")}\n</system-reminder>`

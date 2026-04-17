@@ -4,7 +4,6 @@ import path from "path"
 import { Agent } from "../../src/agent/agent"
 import * as CrossSpawnSpawner from "../../src/effect/cross-spawn-spawner"
 import { AppFileSystem } from "@opencode-ai/shared/filesystem"
-import { FileTime } from "../../src/file/time"
 import { LSP } from "../../src/lsp"
 import { Permission } from "../../src/permission"
 import { Instance } from "../../src/project/instance"
@@ -40,7 +39,6 @@ const it = testEffect(
     Agent.defaultLayer,
     AppFileSystem.defaultLayer,
     CrossSpawnSpawner.defaultLayer,
-    FileTime.defaultLayer,
     Instruction.defaultLayer,
     LSP.defaultLayer,
     Truncate.defaultLayer,
@@ -445,6 +443,72 @@ describe("tool.read loaded instructions", () => {
       expect(result.output).toContain("Test Instructions")
       expect(result.metadata.loaded).toBeDefined()
       expect(result.metadata.loaded).toContain(path.join(dir, "subdir", "AGENTS.md"))
+    }),
+  )
+})
+
+describe("tool.read miss guidance", () => {
+  it.live("points to actual file when basename exists elsewhere in repo", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      // File lives at planetiler/geo/GeoUtils.java but caller asked for planetiler/GeoUtils.java
+      yield* put(path.join(dir, "planetiler", "geo", "GeoUtils.java"), "class GeoUtils {}")
+      yield* put(path.join(dir, "planetiler", "util", "other.java"), "placeholder")
+
+      const err = yield* fail(dir, { filePath: path.join(dir, "planetiler", "GeoUtils.java") })
+      expect(err.message).toContain("File not found")
+      expect(err.message).toContain(path.join(dir, "planetiler", "geo", "GeoUtils.java"))
+      expect(err.message).toContain("Do NOT retry")
+    }),
+  )
+
+  it.live("does not suggest sibling directories as candidates for a file lookup", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      // Parent dir contains `geo/` and `util/` directories (substring of basename)
+      // but no actual file — we must NOT suggest the directories themselves.
+      yield* put(path.join(dir, "planetiler", "geo", "SomethingElse.java"), "x")
+      yield* put(path.join(dir, "planetiler", "util", "SomethingElse.java"), "x")
+
+      const err = yield* fail(dir, { filePath: path.join(dir, "planetiler", "GeoUtils.java") })
+      expect(err.message).toContain("File not found")
+      expect(err.message).toContain("may not exist at all")
+      expect(err.message).not.toMatch(/planetiler[\\/]+geo$/m)
+      expect(err.message).not.toMatch(/planetiler[\\/]+util$/m)
+    }),
+  )
+
+  it.live("distinguishes substring-similar neighbors from exact-basename matches", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      // Parent dir has files whose names contain the requested basename as a
+      // substring, but no file with the exact basename exists anywhere.
+      yield* put(path.join(dir, "archive", "ReadableTileArchive.java"), "x")
+      yield* put(path.join(dir, "archive", "WriteableTileArchive.java"), "x")
+
+      const err = yield* fail(dir, { filePath: path.join(dir, "archive", "TileArchive.java") })
+      expect(err.message).toContain("File not found")
+      expect(err.message).toContain('No file named "TileArchive.java" exists')
+      expect(err.message).toContain("similar names in the same directory")
+      expect(err.message).toContain("ReadableTileArchive.java")
+      expect(err.message).toContain("WriteableTileArchive.java")
+      // Must NOT falsely claim these are basename matches.
+      expect(err.message).not.toContain("A file with this basename exists at")
+    }),
+  )
+
+  it.live("tells the caller a hallucinated basename does not exist", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      yield* put(path.join(dir, "real.java"), "x")
+
+      const err = yield* fail(dir, {
+        filePath: path.join(dir, "collection", "FeatureGroupIterator.java"),
+      })
+      expect(err.message).toContain("No file named")
+      expect(err.message).toContain("FeatureGroupIterator.java")
+      expect(err.message).toContain("may not exist at all")
+      expect(err.message).toContain("Do NOT retry")
     }),
   )
 })

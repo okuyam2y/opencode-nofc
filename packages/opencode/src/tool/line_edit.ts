@@ -9,7 +9,6 @@ import { File } from "../file"
 import { FileWatcher } from "../file/watcher"
 import { Bus } from "../bus"
 import { Format } from "../format"
-import { FileTime } from "../file/time"
 import { Instance } from "../project/instance"
 import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
@@ -40,7 +39,6 @@ export const LineEditTool = Tool.define(
   "line_edit",
   Effect.gen(function* () {
     const lsp = yield* LSP.Service
-    const filetime = yield* FileTime.Service
     const afs = yield* AppFileSystem.Service
     const format = yield* Format.Service
     const bus = yield* Bus.Service
@@ -81,88 +79,78 @@ export const LineEditTool = Tool.define(
           let diff = ""
           let contentOld = ""
           let contentNew = ""
-          yield* filetime.withLock(filePath, () =>
-            Effect.gen(function* () {
-              const stats = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
-              if (!stats) throw new Error(`File ${filePath} not found`)
-              if (stats.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
-              yield* filetime.assert(ctx.sessionID, filePath)
+          yield* Effect.gen(function* () {
+            const stats = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
+            if (!stats) throw new Error(`File ${filePath} not found`)
+            if (stats.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
 
-              contentOld = yield* afs.readFileString(filePath).pipe(Effect.orDie)
-              const normalizedOld = normalizeLineEndings(contentOld)
-              const lines = normalizedOld.split("\n")
+            contentOld = yield* afs.readFileString(filePath).pipe(Effect.orDie)
+            const normalizedOld = normalizeLineEndings(contentOld)
+            const lines = normalizedOld.split("\n")
 
-              // Drop trailing empty element from trailing newline so line count
-              // matches what the Read tool displays (cat -n style).
-              const hadTrailingNewline = lines.length > 0 && lines[lines.length - 1] === ""
-              if (hadTrailingNewline) {
-                lines.pop()
+            const hadTrailingNewline = lines.length > 0 && lines[lines.length - 1] === ""
+            if (hadTrailingNewline) {
+              lines.pop()
+            }
+
+            if (params.endLine > lines.length) {
+              throw new Error(`endLine (${params.endLine}) exceeds file length (${lines.length} lines)`)
+            }
+
+            if (params.oldText != null) {
+              const actual = lines.slice(params.startLine - 1, params.endLine).join("\n")
+              const expected = normalizeLineEndings(params.oldText)
+
+              if (actual !== expected) {
+                throw new Error(
+                  `Content mismatch at lines ${params.startLine}-${params.endLine}. Expected:\n${params.oldText}\n\nActual:\n${actual}\n\nThe file may have changed. Use the Read tool to get the current content.`,
+                )
               }
+            }
 
-              if (params.endLine > lines.length) {
-                throw new Error(`endLine (${params.endLine}) exceeds file length (${lines.length} lines)`)
-              }
+            const newLines = params.newText === "" ? [] : normalizeLineEndings(params.newText).split("\n")
+            lines.splice(params.startLine - 1, params.endLine - params.startLine + 1, ...newLines)
+            contentNew = lines.length > 0 ? lines.join("\n") + (hadTrailingNewline ? "\n" : "") : ""
 
-              if (params.oldText != null) {
-                const actual = lines.slice(params.startLine - 1, params.endLine).join("\n")
-                const expected = normalizeLineEndings(params.oldText)
+            if (contentOld.includes("\r\n")) {
+              contentNew = contentNew.replaceAll("\n", "\r\n")
+            }
 
-                if (actual !== expected) {
-                  throw new Error(
-                    `Content mismatch at lines ${params.startLine}-${params.endLine}. Expected:\n${params.oldText}\n\nActual:\n${actual}\n\nThe file may have changed. Use the Read tool to get the current content.`,
-                  )
-                }
-              }
+            diff = trimDiff(
+              createTwoFilesPatch(
+                filePath,
+                filePath,
+                normalizeLineEndings(contentOld),
+                normalizeLineEndings(contentNew),
+              ),
+            )
+            yield* ctx.ask({
+              permission: "edit",
+              patterns: [path.relative(Instance.worktree, filePath)],
+              always: ["*"],
+              metadata: {
+                filepath: filePath,
+                diff,
+              },
+            })
 
-              const newLines = params.newText === "" ? [] : normalizeLineEndings(params.newText).split("\n")
-              lines.splice(params.startLine - 1, params.endLine - params.startLine + 1, ...newLines)
-              // Restore trailing newline if the original file had one, but not for empty result
-              contentNew = lines.length > 0 ? lines.join("\n") + (hadTrailingNewline ? "\n" : "") : ""
-
-              // Restore original line ending style if the file used CRLF
-              if (contentOld.includes("\r\n")) {
-                contentNew = contentNew.replaceAll("\n", "\r\n")
-              }
-
-              diff = trimDiff(
-                createTwoFilesPatch(
-                  filePath,
-                  filePath,
-                  normalizeLineEndings(contentOld),
-                  normalizeLineEndings(contentNew),
-                ),
-              )
-              yield* ctx.ask({
-                permission: "edit",
-                patterns: [path.relative(Instance.worktree, filePath)],
-                always: ["*"],
-                metadata: {
-                  filepath: filePath,
-                  diff,
-                },
-              })
-
-              yield* afs.writeWithDirs(filePath, contentNew).pipe(Effect.orDie)
-              yield* format.file(filePath)
-              yield* bus.publish(File.Event.Edited, { file: filePath })
-              yield* bus.publish(FileWatcher.Event.Updated, {
-                file: filePath,
-                event: "change",
-              })
-              contentNew = yield* afs.readFileString(filePath).pipe(Effect.orDie)
-              diff = trimDiff(
-                createTwoFilesPatch(
-                  filePath,
-                  filePath,
-                  normalizeLineEndings(contentOld),
-                  normalizeLineEndings(contentNew),
-                ),
-              )
-              // Do NOT update the read stamp after line_edit.
-              // This forces the model to Read the file again before the next edit,
-              // preventing stale line numbers when prior edits shift line counts.
-            }).pipe(Effect.orDie),
-          )
+            yield* afs.writeWithDirs(filePath, contentNew).pipe(Effect.orDie)
+            yield* format.file(filePath)
+            yield* bus.publish(File.Event.Edited, { file: filePath })
+            yield* bus.publish(FileWatcher.Event.Updated, {
+              file: filePath,
+              event: "change",
+            })
+            contentNew = yield* afs.readFileString(filePath).pipe(Effect.orDie)
+            diff = trimDiff(
+              createTwoFilesPatch(
+                filePath,
+                filePath,
+                normalizeLineEndings(contentOld),
+                normalizeLineEndings(contentNew),
+              ),
+            )
+          }).pipe(Effect.orDie)
 
           const filediff: Snapshot.FileDiff = {
             file: filePath,

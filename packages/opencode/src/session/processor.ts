@@ -272,9 +272,8 @@ function estimateTokensFromInput(input: { messages: unknown[]; system: string[];
   return Math.ceil(chars / 3)
 }
 
-export namespace SessionProcessor {
-  const DOOM_LOOP_THRESHOLD = 3
-  const log = Log.create({ service: "session.processor" })
+const DOOM_LOOP_THRESHOLD = 3
+const log = Log.create({ service: "session.processor" })
 
   /**
    * Build a dedup key from tool name and input.
@@ -1326,4 +1325,5 @@ export namespace SessionProcessor {
       Layer.provide(Config.defaultLayer),
     ),
   )
-}
+
+export * as SessionProcessor from "./processor"

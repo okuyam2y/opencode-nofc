@@ -1234,3 +1234,97 @@ describe("session.message-v2.fromError", () => {
     expect((toolMsg as any).content[0].output.value).toBe("File not found: /nonexistent.ts")
   })
 })
+
+describe("MessageV2.StreamRetryableError dispatch", () => {
+  test("fromError wraps StreamRetryableError as retryable APIError", () => {
+    const e = new MessageV2.StreamRetryableError(502, "gateway 5xx")
+    const result = MessageV2.fromError(e, { providerID })
+
+    expect(MessageV2.APIError.isInstance(result)).toBe(true)
+    if (MessageV2.APIError.isInstance(result)) {
+      expect(result.data.isRetryable).toBe(true)
+      expect(result.data.statusCode).toBe(502)
+      expect(result.data.message).toBe("gateway 5xx")
+    }
+  })
+
+  test("fromError with forceNonRetryable overrides isRetryable to false on APIError", () => {
+    // A 5xx error that would normally be retryable, but because a tool already
+    // executed in this attempt we must not retry (to avoid re-executing side
+    // effects). The forceNonRetryable flag is the veto path.
+    const e = new MessageV2.StreamRetryableError(503, "service unavailable")
+    const result = MessageV2.fromError(e, { providerID, forceNonRetryable: true })
+
+    expect(MessageV2.APIError.isInstance(result)).toBe(true)
+    if (MessageV2.APIError.isInstance(result)) {
+      expect(result.data.isRetryable).toBe(false)
+      expect(result.data.statusCode).toBe(503)
+    }
+  })
+
+  test("fromError without forceNonRetryable keeps isRetryable=true on APIError", () => {
+    const e = new MessageV2.StreamRetryableError(500, "internal error")
+    const result = MessageV2.fromError(e, { providerID, forceNonRetryable: false })
+
+    expect(MessageV2.APIError.isInstance(result)).toBe(true)
+    if (MessageV2.APIError.isInstance(result)) {
+      expect(result.data.isRetryable).toBe(true)
+    }
+  })
+
+  test("forceNonRetryable does not convert non-APIError results", () => {
+    // An APICallError that ProviderError.parseAPICallError classifies as non-retryable
+    // should stay non-retryable without any wrapper interference.
+    const abortErr = new DOMException("aborted", "AbortError")
+    const result = MessageV2.fromError(abortErr, { providerID, forceNonRetryable: true })
+
+    // AbortError maps to AbortedError, not APIError — forceNonRetryable must pass through.
+    expect(MessageV2.AbortedError.isInstance(result)).toBe(true)
+  })
+})
+
+describe("MessageV2.extractStatusCode", () => {
+  test("reads status from top-level error object", () => {
+    expect(MessageV2.extractStatusCode({ status: 429 })).toBe(429)
+    expect(MessageV2.extractStatusCode({ statusCode: 500 })).toBe(500)
+  })
+
+  test("reads status from JSON-encoded message", () => {
+    const err = { message: JSON.stringify({ status: 502 }) }
+    expect(MessageV2.extractStatusCode(err)).toBe(502)
+  })
+
+  test("returns undefined for non-object", () => {
+    expect(MessageV2.extractStatusCode(null)).toBeUndefined()
+    expect(MessageV2.extractStatusCode("oops")).toBeUndefined()
+    expect(MessageV2.extractStatusCode(undefined)).toBeUndefined()
+  })
+
+  test("returns undefined for plain object without status", () => {
+    expect(MessageV2.extractStatusCode({ message: "no code here" })).toBeUndefined()
+  })
+})
+
+describe("MessageV2.isContentFilter", () => {
+  test("detects content filter markers in direct message", () => {
+    expect(MessageV2.isContentFilter({ message: "content management policy violated" })).toBe(true)
+    expect(MessageV2.isContentFilter({ message: "response was filtered by Azure" })).toBe(true)
+    expect(MessageV2.isContentFilter({ message: "content_filter: policy" })).toBe(true)
+  })
+
+  test("detects content filter markers in nested error", () => {
+    const err = { error: { message: "content filtering triggered" } }
+    expect(MessageV2.isContentFilter(err)).toBe(true)
+  })
+
+  test("returns false for unrelated errors", () => {
+    expect(MessageV2.isContentFilter({ message: "internal server error" })).toBe(false)
+    expect(MessageV2.isContentFilter({ message: "connection refused" })).toBe(false)
+  })
+
+  test("handles strings and non-objects", () => {
+    expect(MessageV2.isContentFilter("content_filter hit")).toBe(true)
+    expect(MessageV2.isContentFilter("plain network failure")).toBe(false)
+    expect(MessageV2.isContentFilter(null)).toBe(false)
+  })
+})

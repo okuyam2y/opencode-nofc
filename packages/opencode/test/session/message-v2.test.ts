@@ -1248,27 +1248,30 @@ describe("MessageV2.StreamRetryableError dispatch", () => {
     }
   })
 
-  test("fromError with forceNonRetryable overrides isRetryable to false on APIError", () => {
+  test("fromError with forceNonRetryable stamps both isRetryable=false and nonRetryable=true on APIError", () => {
     // A 5xx error that would normally be retryable, but because a tool already
     // executed in this attempt we must not retry (to avoid re-executing side
-    // effects). The forceNonRetryable flag is the veto path.
+    // effects). nonRetryable is the hard veto that wins over retry.ts's 5xx
+    // force-retry escape hatch (which would otherwise retry on isRetryable=false alone).
     const e = new MessageV2.StreamRetryableError(503, "service unavailable")
     const result = MessageV2.fromError(e, { providerID, forceNonRetryable: true })
 
     expect(MessageV2.APIError.isInstance(result)).toBe(true)
     if (MessageV2.APIError.isInstance(result)) {
       expect(result.data.isRetryable).toBe(false)
+      expect(result.data.nonRetryable).toBe(true)
       expect(result.data.statusCode).toBe(503)
     }
   })
 
-  test("fromError without forceNonRetryable keeps isRetryable=true on APIError", () => {
+  test("fromError without forceNonRetryable keeps isRetryable=true and leaves nonRetryable unset", () => {
     const e = new MessageV2.StreamRetryableError(500, "internal error")
     const result = MessageV2.fromError(e, { providerID, forceNonRetryable: false })
 
     expect(MessageV2.APIError.isInstance(result)).toBe(true)
     if (MessageV2.APIError.isInstance(result)) {
       expect(result.data.isRetryable).toBe(true)
+      expect(result.data.nonRetryable).toBeUndefined()
     }
   })
 
@@ -1326,5 +1329,133 @@ describe("MessageV2.isContentFilter", () => {
     expect(MessageV2.isContentFilter("content_filter hit")).toBe(true)
     expect(MessageV2.isContentFilter("plain network failure")).toBe(false)
     expect(MessageV2.isContentFilter(null)).toBe(false)
+  })
+})
+
+describe("MessageV2.extractConnectionErrorCode", () => {
+  test("reads code from data.metadata.code (AI SDK APIError JSON shape)", () => {
+    // Real shape captured in stress-test (docs/investigations/stress-test/logs/A/run-1.out)
+    const part = {
+      name: "APIError",
+      data: {
+        message: "Connection reset by server",
+        isRetryable: false,
+        metadata: { code: "ECONNRESET", syscall: "", message: "The socket connection was closed unexpectedly" },
+      },
+    }
+    expect(MessageV2.extractConnectionErrorCode(part)).toBe("ECONNRESET")
+  })
+
+  test("reads code from metadata.code, top-level code, and cause.code", () => {
+    expect(MessageV2.extractConnectionErrorCode({ metadata: { code: "EPIPE" } })).toBe("EPIPE")
+    expect(MessageV2.extractConnectionErrorCode({ code: "ETIMEDOUT" })).toBe("ETIMEDOUT")
+    expect(MessageV2.extractConnectionErrorCode({ cause: { code: "UND_ERR_SOCKET" } })).toBe("UND_ERR_SOCKET")
+  })
+
+  test("returns undefined for non-connection codes (ECONNREFUSED is intentional)", () => {
+    // ECONNREFUSED is permanent (gateway unreachable), not transient — must not be auto-retried.
+    expect(MessageV2.extractConnectionErrorCode({ code: "ECONNREFUSED" })).toBeUndefined()
+    expect(MessageV2.extractConnectionErrorCode({ data: { metadata: { code: "ENOTFOUND" } } })).toBeUndefined()
+    expect(MessageV2.extractConnectionErrorCode({ code: 500 })).toBeUndefined() // numeric, not a code
+    expect(MessageV2.extractConnectionErrorCode(null)).toBeUndefined()
+    expect(MessageV2.extractConnectionErrorCode("ECONNRESET")).toBeUndefined() // string, not object
+  })
+})
+
+describe("MessageV2.StreamRetryableError without statusCode (connection errors)", () => {
+  test("fromError accepts undefined statusCode and produces retryable APIError", () => {
+    const e = new MessageV2.StreamRetryableError(undefined, "Connection reset by server")
+    const result = MessageV2.fromError(e, { providerID })
+
+    expect(MessageV2.APIError.isInstance(result)).toBe(true)
+    if (MessageV2.APIError.isInstance(result)) {
+      expect(result.data.isRetryable).toBe(true)
+      expect(result.data.statusCode).toBeUndefined()
+      expect(result.data.message).toBe("Connection reset by server")
+    }
+  })
+
+  test("forceNonRetryable stamps the veto on connection-error APIError too", () => {
+    // After tool execution, even a transient ECONNRESET must not retry — it would
+    // re-execute side effects. nonRetryable=true is the hard veto.
+    const e = new MessageV2.StreamRetryableError(undefined, "ECONNRESET")
+    const result = MessageV2.fromError(e, { providerID, forceNonRetryable: true })
+
+    expect(MessageV2.APIError.isInstance(result)).toBe(true)
+    if (MessageV2.APIError.isInstance(result)) {
+      expect(result.data.isRetryable).toBe(false)
+      expect(result.data.nonRetryable).toBe(true)
+      expect(result.data.statusCode).toBeUndefined()
+    }
+  })
+})
+
+describe("MessageV2.tryEscalateStreamError", () => {
+  test("escalates ECONNRESET error part with the real observed payload", () => {
+    // Captured from docs/investigations/stress-test/logs/A/run-1.out:32 — the exact
+    // shape the AI SDK emits when the gateway resets the socket mid-stream.
+    const part = {
+      type: "error" as const,
+      error: {
+        name: "APIError",
+        data: {
+          message: "Connection reset by server",
+          isRetryable: false,
+          metadata: {
+            code: "ECONNRESET",
+            syscall: "",
+            message: "The socket connection was closed unexpectedly",
+          },
+        },
+      },
+    }
+    const escalated = MessageV2.tryEscalateStreamError(part)
+    expect(escalated).toBeInstanceOf(MessageV2.StreamRetryableError)
+    expect(escalated?.statusCode).toBeUndefined()
+    expect(escalated?.message).toBe("Connection reset by server")
+    expect(escalated?.cause).toBe(part.error)
+  })
+
+  test("escalates 5xx error parts (preserves prior 5xx behavior)", () => {
+    const part = { type: "error" as const, error: { statusCode: 503, message: "service unavailable" } }
+    const escalated = MessageV2.tryEscalateStreamError(part)
+    expect(escalated).toBeInstanceOf(MessageV2.StreamRetryableError)
+    expect(escalated?.statusCode).toBe(503)
+  })
+
+  test("does NOT escalate non-error parts, unknown codes, or content-filter errors", () => {
+    // Non-error part: text-delta passes through.
+    expect(MessageV2.tryEscalateStreamError({ type: "text-delta", text: "hi" })).toBeUndefined()
+
+    // Unknown / non-transient code: ECONNREFUSED, ENOTFOUND.
+    expect(
+      MessageV2.tryEscalateStreamError({
+        type: "error",
+        error: { data: { metadata: { code: "ECONNREFUSED" } } },
+      }),
+    ).toBeUndefined()
+
+    // 4xx (client error) is not escalated.
+    expect(MessageV2.tryEscalateStreamError({ type: "error", error: { statusCode: 400 } })).toBeUndefined()
+
+    // 5xx + content_filter must not retry — content-filter check wins.
+    expect(
+      MessageV2.tryEscalateStreamError({
+        type: "error",
+        error: { statusCode: 500, message: "response was filtered by Azure content management policy" },
+      }),
+    ).toBeUndefined()
+
+    // Connection-coded error message that's actually a content filter must also be skipped.
+    expect(
+      MessageV2.tryEscalateStreamError({
+        type: "error",
+        error: { code: "ECONNRESET", message: "content_filter triggered" },
+      }),
+    ).toBeUndefined()
+
+    // Null / non-object input.
+    expect(MessageV2.tryEscalateStreamError(null)).toBeUndefined()
+    expect(MessageV2.tryEscalateStreamError(undefined)).toBeUndefined()
   })
 })

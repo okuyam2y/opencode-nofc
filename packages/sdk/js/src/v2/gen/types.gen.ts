@@ -205,6 +205,7 @@ export type ApiError = {
     message: string
     statusCode?: number
     isRetryable: boolean
+    nonRetryable?: boolean
     responseHeaders?: {
       [key: string]: string
     }
@@ -1321,7 +1322,11 @@ export type ProviderConfig = {
      * Timeout in milliseconds between streamed SSE chunks for this provider. If no chunk arrives within this window, the request is aborted.
      */
     chunkTimeout?: number
-    [key: string]: unknown | string | boolean | number | false | number | undefined
+    /**
+     * Enable tool parser middleware for gateways that don't support function calling. 'hermes' uses JSON in <tool_call> tags, 'hermes-strict' adds explicit examples for models that need them, 'xml' uses pure XML format.
+     */
+    toolParser?: "hermes" | "hermes-strict" | "xml"
+    [key: string]: unknown | string | boolean | number | false | number | "hermes" | "hermes-strict" | "xml" | undefined
   }
   models?: {
     [key: string]: {

@@ -88,6 +88,8 @@ import { TuiPluginRuntime } from "../../plugin"
 import { DialogGoUpsell } from "../../component/dialog-go-upsell"
 import { SessionRetry } from "@/session/retry"
 import { getRevertDiffFiles } from "../../util/revert-diff"
+import { createCollapser } from "./intermediate-text-collapse"
+import { IntermediateTextPart } from "./intermediate-text-part"
 
 addDefaultParsers(parsers.parsers)
 
@@ -1344,10 +1346,11 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   })
 
   const keybind = useKeybind()
+  const collapse = createCollapser()
 
   return (
     <>
-      <For each={props.parts}>
+      <For each={collapse(props.parts)}>
         {(part, index) => {
           const component = createMemo(() => PART_MAPPING[part.type as keyof typeof PART_MAPPING])
           return (
@@ -1357,6 +1360,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
                 component={component()}
                 part={part as any}
                 message={props.message}
+                conceal={ctx.conceal()}
               />
             </Show>
           )
@@ -1416,6 +1420,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
 
 const PART_MAPPING = {
   text: TextPart,
+  "text-intermediate": IntermediateTextPart,
   tool: ToolPart,
   reasoning: ReasoningPart,
 }

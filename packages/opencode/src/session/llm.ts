@@ -162,7 +162,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
             .clone()
             .tag("providerID", input.model.providerID)
             .tag("modelID", input.model.id)
-            .tag("sessionID", input.sessionID)
+            .tag("session.id", input.sessionID)
             .tag("small", (input.small ?? false).toString())
             .tag("agent", input.agent.name)
             .tag("mode", input.agent.mode)
@@ -424,6 +424,18 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
           const tracer = cfg.experimental?.openTelemetry
             ? Option.getOrUndefined(yield* Effect.serviceOption(OtelTracer.OtelTracer))
             : undefined
+          const telemetryTracer = tracer
+            ? new Proxy(tracer, {
+                get(target, prop, receiver) {
+                  if (prop !== "startSpan") return Reflect.get(target, prop, receiver)
+                  return (...args: Parameters<typeof target.startSpan>) => {
+                    const span = target.startSpan(...args)
+                    span.setAttribute("session.id", input.sessionID)
+                    return span
+                  }
+                },
+              })
+            : undefined
 
           // Debug: log LLM stream parameters for diagnosing tool-call instability
           if (Flag.OPENCODE_DEBUG_LLM) {
@@ -597,8 +609,11 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
                   },
                 })
                 // Stream error escalation — must be last (closest to provider).
-                // Converts retryable 5xx error stream parts into thrown StreamRetryableError
-                // so they reach processor's Effect.retry via the async-iterable error path.
+                // Converts retryable error stream parts (5xx server failures or transient
+                // connection drops like ECONNRESET) into thrown StreamRetryableError so they
+                // reach processor's Effect.retry via the async-iterable error path. The
+                // decision logic lives in MessageV2.tryEscalateStreamError so it can be unit
+                // tested in isolation.
                 mw.push({
                   specificationVersion: "v3" as const,
                   async wrapStream({ doStream }) {
@@ -608,17 +623,15 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
                       stream: result.stream.pipeThrough(
                         new TransformStream({
                           transform(part, controller) {
-                            if (part.type === "error") {
-                              const statusCode = MessageV2.extractStatusCode(part.error)
-                              if (statusCode && statusCode >= 500 && !MessageV2.isContentFilter(part.error)) {
-                                const msg =
-                                  typeof part.error === "object" && part.error !== null && "message" in part.error
-                                    ? String((part.error as any).message)
-                                    : String(part.error)
-                                l.info("stream-5xx-escalation", { statusCode, message: msg })
-                                controller.error(new MessageV2.StreamRetryableError(statusCode, msg, part.error))
-                                return
-                              }
+                            const escalated = MessageV2.tryEscalateStreamError(part)
+                            if (escalated) {
+                              l.info("stream-error-escalation", {
+                                statusCode: escalated.statusCode,
+                                code: MessageV2.extractConnectionErrorCode((part as { error?: unknown }).error),
+                                message: escalated.message,
+                              })
+                              controller.error(escalated)
+                              return
                             }
                             controller.enqueue(part)
                           },
@@ -633,7 +646,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
             experimental_telemetry: {
               isEnabled: cfg.experimental?.openTelemetry,
               functionId: "session.llm",
-              tracer,
+              tracer: telemetryTracer,
               metadata: {
                 userId: cfg.username ?? "unknown",
                 sessionId: input.sessionID,

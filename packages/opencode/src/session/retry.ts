@@ -55,6 +55,10 @@ export function retryable(error: Err) {
   // context overflow errors should not be retried
   if (MessageV2.ContextOverflowError.isInstance(error)) return undefined
   if (MessageV2.APIError.isInstance(error)) {
+    // Hard veto from fromError(forceNonRetryable=true). Wins over the 5xx
+    // force-retry below — a tool already executed in this attempt and another
+    // round would duplicate side effects.
+    if (error.data.nonRetryable) return undefined
     const status = error.data.statusCode
     // 5xx errors are transient server failures and should always be retried,
     // even when the provider SDK doesn't explicitly mark them as retryable.

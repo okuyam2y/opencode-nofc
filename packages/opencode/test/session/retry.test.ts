@@ -230,6 +230,47 @@ describe("session.retry.retryable", () => {
     expect(retryable).toBeDefined()
     expect(retryable).toBe("Response decompression failed")
   })
+
+  test("nonRetryable veto wins over the 5xx force-retry escape hatch", () => {
+    // fromError(forceNonRetryable=true) on a 503 must not retry — a tool already
+    // ran in the attempt and another round would duplicate side effects. Without
+    // the veto, the 5xx special case in retryable() would force-retry on
+    // isRetryable=false alone (the bug discovered by oc-dev review of 56bf6c22f).
+    const error = new MessageV2.APIError({
+      message: "service unavailable",
+      isRetryable: false,
+      nonRetryable: true,
+      statusCode: 503,
+    }).toObject() as MessageV2.APIError
+
+    expect(SessionRetry.retryable(error)).toBeUndefined()
+  })
+
+  test("nonRetryable veto wins even when isRetryable=true", () => {
+    // Defensive: any path that produced isRetryable=true alongside the veto
+    // (shouldn't happen with current fromError) must still respect the veto.
+    const error = new MessageV2.APIError({
+      message: "service unavailable",
+      isRetryable: true,
+      nonRetryable: true,
+      statusCode: 500,
+    }).toObject() as MessageV2.APIError
+
+    expect(SessionRetry.retryable(error)).toBeUndefined()
+  })
+
+  test("nonRetryable veto blocks connection-error APIError without statusCode", () => {
+    // ECONNRESET shape after tool execution: connection-error path also gets
+    // the veto stamped, and retryable() must honor it.
+    const error = new MessageV2.APIError({
+      message: "Connection reset by server",
+      isRetryable: false,
+      nonRetryable: true,
+      metadata: { code: "ECONNRESET" },
+    }).toObject() as MessageV2.APIError
+
+    expect(SessionRetry.retryable(error)).toBeUndefined()
+  })
 })
 
 describe("session.message-v2.fromError", () => {

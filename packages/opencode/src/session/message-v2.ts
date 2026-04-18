@@ -52,6 +52,14 @@ export const APIError = NamedError.create(
     message: z.string(),
     statusCode: z.number().optional(),
     isRetryable: z.boolean(),
+    // Hard veto used by SessionRetry. When true, retryable() returns undefined
+    // even if statusCode is 5xx (which would otherwise force-retry regardless of
+    // isRetryable). Set by fromError when forceNonRetryable=true (i.e. a tool
+    // already executed in this attempt and re-running would duplicate side
+    // effects). isRetryable=false alone is not enough because retry.ts:retryable
+    // intentionally retries 5xx with isRetryable=false to recover from gateways
+    // that mismark transient failures.
+    nonRetryable: z.boolean().optional(),
     responseHeaders: z.record(z.string(), z.string()).optional(),
     responseBody: z.string().optional(),
     metadata: z.record(z.string(), z.string()).optional(),
@@ -966,11 +974,13 @@ export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: Ses
   return filterCompacted(stream(sessionID))
 })
 
-/** Typed Error for retryable 5xx stream errors. Preserves statusCode through the
- *  async-iterable error mapper in LLM.Service.stream(). */
+/** Typed Error for retryable stream errors (5xx or transient connection drops).
+ *  Preserves statusCode (when present) and the original cause through the
+ *  async-iterable error mapper in LLM.Service.stream(). statusCode is optional
+ *  because connection-reset errors (ECONNRESET, EPIPE, etc.) have no HTTP status. */
 export class StreamRetryableError extends Error {
-  readonly statusCode: number
-  constructor(statusCode: number, message: string, cause?: unknown) {
+  readonly statusCode: number | undefined
+  constructor(statusCode: number | undefined, message: string, cause?: unknown) {
     super(message, { cause })
     this.name = "StreamRetryableError"
     this.statusCode = statusCode
@@ -978,6 +988,11 @@ export class StreamRetryableError extends Error {
 }
 
 const CONTENT_FILTER_RE = /content management policy|content filtering|response was filtered|content_filter/i
+
+/** Connection-reset / transient socket failures we treat as retryable even when
+ *  the upstream SDK marks them isRetryable=false. ECONNREFUSED is intentionally
+ *  excluded — it indicates the gateway is unreachable, not a transient drop. */
+const CONNECTION_ERROR_CODES = new Set(["ECONNRESET", "EPIPE", "ETIMEDOUT", "ECONNABORTED", "UND_ERR_SOCKET"])
 
 /** Extract HTTP status code from heterogeneous error shapes (plain objects, Error subclasses, JSON-encoded messages). */
 export function extractStatusCode(e: unknown): number | undefined {
@@ -997,6 +1012,27 @@ export function extractStatusCode(e: unknown): number | undefined {
   return undefined
 }
 
+/** Extract a known transient connection-error code (ECONNRESET, EPIPE, ETIMEDOUT, ECONNABORTED, UND_ERR_SOCKET).
+ *  Walks the SDK shapes we observe in stream `error` parts:
+ *  - `error.data.metadata.code` (AI SDK APIError JSON serialization)
+ *  - `error.metadata.code` (AI SDK APIError instance)
+ *  - `error.code` (Node SystemError / direct throw)
+ *  - `error.cause.code` (wrapped Error)
+ *  Returns the matching code (string) or undefined. */
+export function extractConnectionErrorCode(e: unknown): string | undefined {
+  if (typeof e !== "object" || e === null) return undefined
+  const candidates: unknown[] = [
+    (e as any).data?.metadata?.code,
+    (e as any).metadata?.code,
+    (e as any).code,
+    (e as any).cause?.code,
+  ]
+  for (const c of candidates) {
+    if (typeof c === "string" && CONNECTION_ERROR_CODES.has(c)) return c
+  }
+  return undefined
+}
+
 /** Check if error message indicates a content filter block (should not be retried). */
 export function isContentFilter(e: unknown): boolean {
   if (typeof e === "string") return CONTENT_FILTER_RE.test(e)
@@ -1012,16 +1048,57 @@ export function isContentFilter(e: unknown): boolean {
   }
 }
 
+/** Best-effort extraction of a human-readable error message. AI SDK serializes
+ *  APIError instances with the user-facing message at `err.data.message` rather
+ *  than `err.message`, so prefer that when present and fall back to top-level. */
+function streamErrorMessage(err: unknown): string {
+  if (typeof err !== "object" || err === null) return String(err)
+  const dataMsg = (err as any).data?.message
+  if (typeof dataMsg === "string" && dataMsg) return dataMsg
+  const topMsg = (err as any).message
+  if (typeof topMsg === "string" && topMsg) return topMsg
+  try {
+    return JSON.stringify(err)
+  } catch {
+    return String(err)
+  }
+}
+
+/** Inspect a single AI SDK stream part. If it is an `error` part that should be
+ *  promoted to a thrown error (5xx server failure or transient connection drop),
+ *  return a StreamRetryableError. Otherwise return undefined and the caller
+ *  should pass the part through unchanged. */
+export function tryEscalateStreamError(part: unknown): StreamRetryableError | undefined {
+  if (typeof part !== "object" || part === null) return undefined
+  if ((part as { type?: unknown }).type !== "error") return undefined
+  const err = (part as { error?: unknown }).error
+  if (isContentFilter(err)) return undefined
+  const statusCode = extractStatusCode(err)
+  if (statusCode !== undefined && statusCode >= 500) {
+    return new StreamRetryableError(statusCode, streamErrorMessage(err), err)
+  }
+  if (extractConnectionErrorCode(err)) {
+    return new StreamRetryableError(undefined, streamErrorMessage(err), err)
+  }
+  return undefined
+}
+
 export function fromError(
   e: unknown,
   ctx: { providerID: ProviderID; aborted?: boolean; forceNonRetryable?: boolean },
 ): NonNullable<Assistant["error"]> {
   const result = fromErrorInner(e, ctx)
-  // When forceNonRetryable is set (tool executed in this attempt), override
-  // isRetryable on ALL APIError results so no retryable error path can bypass
-  // the tool-execution veto.
-  if (ctx.forceNonRetryable && APIError.isInstance(result) && result.data.isRetryable) {
-    return new APIError({ ...result.data, isRetryable: false }, { cause: e }).toObject()
+  // When forceNonRetryable is set (a tool already ran in this attempt and
+  // retry would duplicate side effects), stamp the veto on every APIError
+  // result. We set BOTH isRetryable=false and nonRetryable=true because
+  // SessionRetry.retryable forces-retry 5xx even when isRetryable=false to
+  // recover from gateways that mismark transient failures. nonRetryable is
+  // the unconditional veto that short-circuits that 5xx escape hatch.
+  if (ctx.forceNonRetryable && APIError.isInstance(result)) {
+    return new APIError(
+      { ...result.data, isRetryable: false, nonRetryable: true },
+      { cause: e },
+    ).toObject()
   }
   return result
 }

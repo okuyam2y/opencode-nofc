@@ -476,7 +476,7 @@ const log = Log.create({ service: "session.processor" })
           reasoningMap: {},
         }
         let aborted = false
-        const slog = log.clone().tag("sessionID", input.sessionID).tag("messageID", input.assistantMessage.id)
+        const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
         /** Attempt-scoped flag: set to true when any tool reaches completed or error state.
          *  Unlike ctx.hasToolCalls (step-scoped, reset on start-step), this persists
          *  across steps within a single attempt and prevents retry after tool execution. */

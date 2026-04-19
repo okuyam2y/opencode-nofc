@@ -11,6 +11,7 @@ import { MessageTable, PartTable, SessionTable } from "./session.sql"
 import { ProviderError } from "@/provider"
 import { iife } from "@/util/iife"
 import { errorMessage } from "@/util/error"
+import { isMedia } from "@/util/media"
 import type { SystemError } from "bun"
 import type { Provider } from "@/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
@@ -25,10 +26,7 @@ interface FetchDecompressionError extends Error {
 }
 
 export const SYNTHETIC_ATTACHMENT_PROMPT = "Attached image(s) from tool result:"
-
-export function isMedia(mime: string) {
-  return mime.startsWith("image/") || mime === "application/pdf"
-}
+export { isMedia }
 
 export const OutputLengthError = NamedError.create("MessageOutputLengthError", z.object({}))
 export const AbortedError = NamedError.create("MessageAbortedError", z.object({ message: z.string() }))
@@ -582,14 +580,35 @@ function hydrate(rows: (typeof MessageTable.$inferSelect)[]) {
 
 function providerMeta(metadata: Record<string, any> | undefined) {
   if (!metadata) return undefined
-  const { providerExecuted: _, ...rest } = metadata
+  // Drop internal flags that must not reach the provider:
+  //  - providerExecuted: AI SDK bookkeeping for provider-side tool execution
+  //  - notFound: hermes-only marker that tells toModelMessages to rewrite
+  //    a File-not-found result into a minimal fixed-text reply
+  //  - resetDirective: legacy field from rev.3 of tool-failure-reset-hook
+  //    (never actually written in rev.4+, dropped here for forward safety if
+  //    historical DB rows or a future bug resurrected it)
+  const { providerExecuted: _, notFound: _n, resetDirective: _r, ...rest } = metadata
   return Object.keys(rest).length > 0 ? rest : undefined
 }
 
 export const toModelMessagesEffect = Effect.fnUntraced(function* (
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean },
+  options?: {
+    stripMedia?: boolean
+    /**
+     * Map of tool part ID → reset directive.  When a failing tool part is
+     * rewritten to a model message and its ID is present in this map, the
+     * directive is prepended to errorText so the model sees it immediately
+     * before the actual error content.
+     *
+     * Consume-once invariant: the caller (prompt.ts main loop) drains the
+     * pending directives Map before calling toModelMessagesEffect and
+     * discards it afterward.  Passing `undefined` or omitting the option
+     * (e.g. title generation, compaction) yields existing behavior.
+     */
+    pendingDirectives?: Map<string, string>
+  },
 ) {
   const result: UIMessage[] = []
   const toolNames = new Set<string>()
@@ -726,18 +745,31 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
             type: "step-start",
           })
         if (part.type === "tool") {
+          // A reset directive from SessionFailureTracker lives in the caller's
+          // pending Map for exactly one rebuild.  Read (not delete) here —
+          // the caller guarantees the whole Map is discarded after this call,
+          // so the directive fires on exactly one llm.stream() invocation.
+          const resetDirective = options?.pendingDirectives?.get(part.id)
           // hermes: replace File-not-found results with a minimal message
           // to prevent hallucination from candidate paths. Keep a glob hint
           // so the model can self-correct. The notFound flag is only set when
           // toolParser is active (processor.ts), so native FC is never affected.
           if (part.metadata?.notFound === true) {
             toolNames.add(part.tool)
+            const baseText = "[File does not exist — use glob to search for the correct path]"
+            const errorText = resetDirective ? `${resetDirective}\n\n${baseText}` : baseText
             assistantMessage.parts.push({
               type: ("tool-" + part.tool) as `tool-${string}`,
               state: "output-error",
               toolCallId: part.callID,
               input: {},
-              errorText: "[File does not exist — use glob to search for the correct path]",
+              errorText,
+              // Passthrough metadata (e.g. anthropicCacheControl) must survive
+              // the hermes rewrite just like it does on the normal error path.
+              // providerMeta() strips internal flags (providerExecuted / notFound /
+              // resetDirective).
+              ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
+              ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
             })
             continue
           }
@@ -797,12 +829,15 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
                 ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
               })
             } else {
+              const errorText = resetDirective
+                ? `${resetDirective}\n\n---\n${part.state.error}`
+                : part.state.error
               assistantMessage.parts.push({
                 type: ("tool-" + part.tool) as `tool-${string}`,
                 state: "output-error",
                 toolCallId: part.callID,
                 input: part.state.input,
-                errorText: part.state.error,
+                errorText,
                 ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
                 ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
               })
@@ -870,7 +905,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 export function toModelMessages(
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean },
+  options?: { stripMedia?: boolean; pendingDirectives?: Map<string, string> },
 ): Promise<ModelMessage[]> {
   return Effect.runPromise(toModelMessagesEffect(input, model, options).pipe(Effect.provide(EffectLogger.layer)))
 }

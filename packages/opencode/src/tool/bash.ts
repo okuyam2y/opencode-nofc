@@ -662,6 +662,17 @@ export const BashTool = Tool.define(
               const cwd = params.workdir
                 ? yield* resolvePath(params.workdir, Instance.directory, shell)
                 : Instance.directory
+              // Guard against a non-existent workdir so the tool surfaces an
+              // actionable message instead of the spawner's raw access error
+              // (`NotFound: FileSystem.access (<path>)`), which leaves the
+              // caller guessing why `ls` or `mkdir` failed before any command
+              // is even dispatched.
+              if (params.workdir && !(yield* fs.existsSafe(cwd))) {
+                throw new Error(
+                  `workdir "${params.workdir}" (resolved to "${cwd}") does not exist. ` +
+                    `Create it first (for example \`mkdir -p ${cwd}\`) or omit the workdir parameter to run in ${Instance.directory}.`,
+                )
+              }
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }

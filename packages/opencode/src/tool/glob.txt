@@ -4,3 +4,4 @@
 - Use this tool when you need to find files by name patterns
 - When you are doing an open-ended search that may require multiple rounds of globbing and grepping, use the Task tool instead
 - You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches as a batch that are potentially useful.
+- Respects `.gitignore`.  Patterns like `**/*.ts` filter within the tracked tree.  `**/*` (match-all) returns the full tracked file list with gitignore still applied — it does not force-include build artifacts such as `target/`, `dist/`, or `node_modules/`.

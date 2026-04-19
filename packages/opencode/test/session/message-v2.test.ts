@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { APICallError } from "ai"
 import { MessageV2 } from "../../src/session/message-v2"
+import { ProviderTransform } from "../../src/provider"
 import type { Provider } from "../../src/provider"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 import { SessionID, MessageID, PartID } from "../../src/session/schema"
@@ -357,6 +358,89 @@ describe("session.message-v2.toModelMessage", () => {
         ],
       },
     ])
+  })
+
+  test("preserves jpeg tool-result media for anthropic models", async () => {
+    const anthropicModel: Provider.Model = {
+      ...model,
+      id: ModelID.make("anthropic/claude-opus-4-7"),
+      providerID: ProviderID.make("anthropic"),
+      api: {
+        id: "claude-opus-4-7-20250805",
+        url: "https://api.anthropic.com",
+        npm: "@ai-sdk/anthropic",
+      },
+      capabilities: {
+        ...model.capabilities,
+        attachment: true,
+        input: {
+          ...model.capabilities.input,
+          image: true,
+          pdf: true,
+        },
+      },
+    }
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]).toString(
+      "base64",
+    )
+    const userID = "m-user-anthropic"
+    const assistantID = "m-assistant-anthropic"
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          {
+            ...basePart(userID, "u1-anthropic"),
+            type: "text",
+            text: "run tool",
+          },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "a1-anthropic"),
+            type: "tool",
+            callID: "call-anthropic-1",
+            tool: "read",
+            state: {
+              status: "completed",
+              input: { filePath: "/tmp/rails-demo.png" },
+              output: "Image read successfully",
+              title: "Read",
+              metadata: {},
+              time: { start: 0, end: 1 },
+              attachments: [
+                {
+                  ...basePart(assistantID, "file-anthropic-1"),
+                  type: "file",
+                  mime: "image/jpeg",
+                  filename: "rails-demo.png",
+                  url: `data:image/jpeg;base64,${jpeg}`,
+                },
+              ],
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = ProviderTransform.message(await MessageV2.toModelMessages(input, anthropicModel), anthropicModel, {})
+    expect(result).toHaveLength(3)
+    expect(result[2].role).toBe("tool")
+    expect(result[2].content[0]).toMatchObject({
+      type: "tool-result",
+      toolCallId: "call-anthropic-1",
+      toolName: "read",
+      output: {
+        type: "content",
+        value: [
+          { type: "text", text: "Image read successfully" },
+          { type: "media", mediaType: "image/jpeg", data: jpeg },
+        ],
+      },
+    })
   })
 
   test("omits provider metadata when assistant model differs", async () => {
@@ -1232,6 +1316,364 @@ describe("session.message-v2.fromError", () => {
     const toolMsg = result.find((m) => m.role === "tool")
     expect(toolMsg).toBeDefined()
     expect((toolMsg as any).content[0].output.value).toBe("File not found: /nonexistent.ts")
+  })
+
+  test("pendingDirectives: prepends directive to hermes notFound fixed text", async () => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+    const toolPartID = PartID.make("a1")
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          { ...basePart(userID, "u1"), type: "text", text: "read file" },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            id: toolPartID,
+            sessionID,
+            messageID: MessageID.make(assistantID),
+            type: "tool",
+            callID: "call-1",
+            tool: "read",
+            state: {
+              status: "error",
+              input: { filePath: "/a.ts" },
+              error: "File not found: /a.ts",
+              time: { start: 0, end: 1 },
+            },
+            metadata: { notFound: true },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const pending = new Map<string, string>([[toolPartID, "[RESET: stop guessing]"]])
+    const result = await MessageV2.toModelMessages(input, model, { pendingDirectives: pending })
+    const toolMsg = result.find((m) => m.role === "tool")
+    expect(toolMsg).toBeDefined()
+    const value: string = (toolMsg as any).content[0].output.value
+    expect(value.startsWith("[RESET: stop guessing]\n\n")).toBe(true)
+    expect(value).toContain("[File does not exist — use glob to search for the correct path]")
+  })
+
+  test("pendingDirectives: prepends directive to normal error text", async () => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+    const toolPartID = PartID.make("a1")
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          { ...basePart(userID, "u1"), type: "text", text: "grep foo" },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            id: toolPartID,
+            sessionID,
+            messageID: MessageID.make(assistantID),
+            type: "tool",
+            callID: "call-1",
+            tool: "grep",
+            state: {
+              status: "error",
+              input: { pattern: "foo" },
+              error: "ripgrep failed with exit 2",
+              time: { start: 0, end: 1 },
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const pending = new Map<string, string>([[toolPartID, "[RESET: strategy change]"]])
+    const result = await MessageV2.toModelMessages(input, model, { pendingDirectives: pending })
+    const toolMsg = result.find((m) => m.role === "tool")
+    expect(toolMsg).toBeDefined()
+    const value: string = (toolMsg as any).content[0].output.value
+    expect(value.startsWith("[RESET: strategy change]\n\n---\n")).toBe(true)
+    expect(value).toContain("ripgrep failed with exit 2")
+  })
+
+  test("pendingDirectives: unaffected when partID is absent from the map", async () => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+    const toolPartID = PartID.make("a1")
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          { ...basePart(userID, "u1"), type: "text", text: "grep foo" },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            id: toolPartID,
+            sessionID,
+            messageID: MessageID.make(assistantID),
+            type: "tool",
+            callID: "call-1",
+            tool: "grep",
+            state: {
+              status: "error",
+              input: { pattern: "foo" },
+              error: "ripgrep failed with exit 2",
+              time: { start: 0, end: 1 },
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    // Map is present but keyed on a different part ID — must not touch the error.
+    const pending = new Map<string, string>([[PartID.make("other"), "[RESET]"]])
+    const result = await MessageV2.toModelMessages(input, model, { pendingDirectives: pending })
+    const toolMsg = result.find((m) => m.role === "tool")
+    expect(toolMsg).toBeDefined()
+    expect((toolMsg as any).content[0].output.value).toBe("ripgrep failed with exit 2")
+  })
+
+  test("providerMeta drops internal flags from callProviderMetadata on hermes notFound path", async () => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+    const toolPartID = PartID.make("a1")
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          { ...basePart(userID, "u1"), type: "text", text: "grep foo" },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            id: toolPartID,
+            sessionID,
+            messageID: MessageID.make(assistantID),
+            type: "tool",
+            callID: "call-1",
+            tool: "grep",
+            state: {
+              status: "error",
+              input: { pattern: "foo" },
+              error: "boom",
+              time: { start: 0, end: 1 },
+            },
+            // Internal flags that providerMeta() must strip + a passthrough
+            // field that must survive.  We deliberately do NOT set
+            // providerExecuted here — that flag re-routes the part as a
+            // provider-executed call and suppresses the tool-role message
+            // convertToModelMessages emits.  In practice hermes notFound and
+            // providerExecuted don't co-occur (hermes means local execution).
+            metadata: {
+              notFound: true,
+              resetDirective: "should never reach provider",
+              customPassthrough: "keep-me",
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model)
+    const toolMsg = result.find((m) => m.role === "tool")
+    expect(toolMsg).toBeDefined()
+    const resultItem = (toolMsg as any).content[0]
+    // Fixed-text rewrite confirms metadata.notFound was honored.
+    const value: string = resultItem.output.value
+    expect(value).toBe("[File does not exist — use glob to search for the correct path]")
+    // providerMeta() behavior: internal flags stripped from callProviderMetadata,
+    // passthrough field preserved.  Without asserting on providerOptions the
+    // test would still pass if providerMeta() were a no-op, so this is the
+    // load-bearing assertion.
+    expect(resultItem.providerOptions).toEqual({ customPassthrough: "keep-me" })
+  })
+
+  test("providerMeta forwards passthrough metadata on hermes notFound rewrite", async () => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+    const toolPartID = PartID.make("a1")
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          { ...basePart(userID, "u1"), type: "text", text: "read file" },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            id: toolPartID,
+            sessionID,
+            messageID: MessageID.make(assistantID),
+            type: "tool",
+            callID: "call-1",
+            tool: "read",
+            state: {
+              status: "error",
+              input: { filePath: "/a.ts" },
+              error: "File not found: /a.ts",
+              time: { start: 0, end: 1 },
+            },
+            metadata: {
+              notFound: true,
+              // providerExecuted intentionally omitted — see the companion test
+              // above: the flag re-routes convertToModelMessages output.
+              //
+              // Passthrough field — must survive the hermes rewrite.
+              anthropicCacheControl: { type: "ephemeral" },
+              // Internal-only — must be stripped by providerMeta.
+              resetDirective: "internal",
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model)
+    const toolMsg = result.find((m) => m.role === "tool")
+    expect(toolMsg).toBeDefined()
+    const resultItem = (toolMsg as any).content[0]
+    // Fixed text still emitted by the notFound rewrite.
+    expect(resultItem.output.value).toBe(
+      "[File does not exist — use glob to search for the correct path]",
+    )
+    // Passthrough metadata survives, internal flags dropped.
+    expect(resultItem.providerOptions).toEqual({ anthropicCacheControl: { type: "ephemeral" } })
+  })
+
+  test("hermes notFound + providerExecuted: internal flags stripped, passthrough metadata preserved", async () => {
+    // Regression guard for the rev.6 hermes-branch spread of providerExecuted +
+    // callProviderMetadata.  In practice this combination does not occur —
+    // hermes means local tool execution, while providerExecuted=true signals a
+    // provider-side tool.  But if it ever does, we must (a) not crash, (b) pass
+    // provider metadata through via providerMeta() (stripping internal flags),
+    // and (c) preserve the provider-executed routing.  The AI SDK's
+    // convertToModelMessages emits only a `tool-call` on the assistant message
+    // for provider-executed parts (the provider supplies its own result), so
+    // we can't assert the hermes fixed text here — only that the passthrough
+    // and strip invariants hold.
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+    const toolPartID = PartID.make("a1")
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          { ...basePart(userID, "u1"), type: "text", text: "read file" },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            id: toolPartID,
+            sessionID,
+            messageID: MessageID.make(assistantID),
+            type: "tool",
+            callID: "call-1",
+            tool: "read",
+            state: {
+              status: "error",
+              input: { filePath: "/a.ts" },
+              error: "File not found: /a.ts",
+              time: { start: 0, end: 1 },
+            },
+            metadata: {
+              notFound: true,
+              providerExecuted: true,
+              anthropicCacheControl: { type: "ephemeral" },
+              resetDirective: "internal",
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model)
+    const assistant = result.find((m) => m.role === "assistant")
+    expect(assistant).toBeDefined()
+    const toolCall = (assistant as any).content.find((c: any) => c.type === "tool-call")
+    expect(toolCall).toBeDefined()
+    // Provider-executed routing preserved.
+    expect(toolCall.providerExecuted).toBe(true)
+    // Passthrough provider metadata survives.
+    expect(toolCall.providerOptions).toEqual({ anthropicCacheControl: { type: "ephemeral" } })
+    // Branch-distinguishing assertion: the hermes `notFound` rewrite sets
+    // `input: {}` (no filePath exposed to the model), whereas the normal error
+    // path preserves `part.state.input`.  Asserting `{}` here proves the
+    // notFound branch actually ran instead of falling through.
+    expect(toolCall.input).toEqual({})
+    // Internal flags must not leak anywhere in the serialized output.
+    const blob = JSON.stringify(result)
+    expect(blob).not.toContain("resetDirective")
+    expect(blob).not.toContain('"notFound"')
+  })
+
+  test("providerMeta forwards non-internal metadata on normal error path", async () => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+    const toolPartID = PartID.make("a1")
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          { ...basePart(userID, "u1"), type: "text", text: "grep foo" },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            id: toolPartID,
+            sessionID,
+            messageID: MessageID.make(assistantID),
+            type: "tool",
+            callID: "call-1",
+            tool: "grep",
+            state: {
+              status: "error",
+              input: { pattern: "foo" },
+              error: "boom",
+              time: { start: 0, end: 1 },
+            },
+            metadata: {
+              // Must be stripped:
+              notFound: false,      // not === true, so no hermes rewrite
+              resetDirective: "internal",
+              providerExecuted: false,
+              // Must survive:
+              anthropicCacheControl: { type: "ephemeral" },
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model)
+    const toolMsg = result.find((m) => m.role === "tool")
+    expect(toolMsg).toBeDefined()
+    const resultItem = (toolMsg as any).content[0]
+    // callProviderMetadata lands on the tool-result's providerOptions
+    const opts = resultItem.providerOptions
+    expect(opts).toEqual({ anthropicCacheControl: { type: "ephemeral" } })
   })
 })
 

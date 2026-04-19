@@ -12,6 +12,7 @@ import { Config } from "@/config"
 import { Instance } from "@/project/instance"
 import type { Agent } from "@/agent/agent"
 import { MessageV2 } from "./message-v2"
+import * as FailureDetector from "./failure-detector"
 import { Plugin } from "@/plugin"
 import { SystemPrompt } from "./system"
 import { Flag } from "@/flag/flag"
@@ -120,6 +121,15 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
     retries?: number
     toolChoice?: "auto" | "required" | "none"
     toolParserActive?: boolean
+    /** Per-session failure tracker.  Only the main prompt loop provides one;
+     *  title generation / compaction / summary streams pass undefined so they
+     *  never inject directives or touch the pending Map. */
+    failureTracker?: FailureDetector.SessionFailureTracker
+    /** Callback to enqueue a reset directive for the next messages rebuild.
+     *  processor calls this when a matcher fires.  Single-consumer invariant:
+     *  the pending Map it writes to is drained only by the main prompt loop
+     *  immediately before its next llm.stream() call. */
+    appendPendingDirective?: (partID: string, directive: string) => void
   }
 
   export type StreamRequest = StreamInput & {
@@ -185,9 +195,11 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
           const isOpenaiOauth = item.id === "openai" && info?.type === "oauth"
 
           const toolParser = input.model.options?.toolParser ?? item.options?.toolParser
+          const promptVariant = input.model.options?.promptVariant ?? item.options?.promptVariant
           // Only rewrite apply_patch references when tool parser is actually active for this request
           const root = SystemPrompt.provider(input.model, {
             toolParser: toolParser && input.toolChoice !== "none" ? toolParser : undefined,
+            promptVariant: typeof promptVariant === "string" ? promptVariant : undefined,
           })
           const system: string[] = []
           system.push(

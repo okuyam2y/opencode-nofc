@@ -1192,4 +1192,27 @@ describe("tool.bash truncation", () => {
       },
     })
   })
+
+  test("rejects non-existent workdir with an actionable message", async () => {
+    await using tmp = await tmpdir()
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const bash = await initBash()
+        const missing = "does-not-exist-" + Math.random().toString(36).slice(2)
+        await expect(
+          Effect.runPromise(
+            bash.execute(
+              {
+                command: "ls",
+                workdir: missing,
+                description: "List files in a non-existent workdir",
+              },
+              ctx,
+            ),
+          ),
+        ).rejects.toThrow(/workdir .* does not exist/)
+      },
+    })
+  })
 })

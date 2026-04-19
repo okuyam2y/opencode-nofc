@@ -23,6 +23,8 @@ import { Log } from "@/util"
 import { isRecord } from "@/util/record"
 import { containsSpamInValues, stripSpam } from "@/util/spam-filter"
 import { Flag } from "@/flag/flag"
+import { Instance } from "@/project/instance"
+import type { ToolFailureEvent } from "./failure-detector"
 
 /** Tools exempt from same-step dedup (Stage 4).
  *  Only truly read-only, side-effect-free tools belong here.
@@ -569,6 +571,27 @@ const log = Log.create({ service: "session.processor" })
             },
             ...(isNotFound ? { metadata: { ...match.part.metadata, notFound: true } } : {}),
           })
+          // Record into the per-session failure tracker.  A matcher firing here
+          // enqueues a reset directive on the prompt.ts pendingDirectives Map for
+          // the *next* llm.stream() messages rebuild — the DB part is not mutated
+          // to store the directive (rev.4: one-shot semantics, see design doc).
+          const tracker = ctx.lastStreamInput?.failureTracker
+          const append = ctx.lastStreamInput?.appendPendingDirective
+          if (tracker && append) {
+            const event: ToolFailureEvent = {
+              toolName: match.part.tool,
+              input: match.part.state.input,
+              error: errMsg,
+              timestamp: Date.now(),
+              worktree: Instance.worktree,
+              cwd: Instance.directory,
+            }
+            const fired = tracker.record(event, "error")
+            if (fired.length > 0) {
+              const directive = fired.map((f) => f.directive).join("\n\n")
+              append(match.part.id, directive)
+            }
+          }
           if (error instanceof Permission.RejectedError || error instanceof Question.RejectedError) {
             ctx.blocked = ctx.shouldBreak
           }
@@ -832,6 +855,24 @@ const log = Log.create({ service: "session.processor" })
             case "tool-result": {
               log.debug("tool-result", { toolCallId: value.toolCallId })
               hasExecutedTool = true
+              // Read the part before completeToolCall deletes it from ctx.toolcalls,
+              // so the tracker sees the actual tool name / input from this call.
+              const tracker = ctx.lastStreamInput?.failureTracker
+              if (tracker) {
+                const pre = yield* readToolCall(value.toolCallId)
+                if (pre) {
+                  const event: ToolFailureEvent = {
+                    toolName: pre.part.tool,
+                    input: pre.part.state.input,
+                    error: "",
+                    output: value.output,
+                    timestamp: Date.now(),
+                    worktree: Instance.worktree,
+                    cwd: Instance.directory,
+                  }
+                  tracker.record(event, "completed")
+                }
+              }
               yield* completeToolCall(value.toolCallId, value.output)
               return
             }

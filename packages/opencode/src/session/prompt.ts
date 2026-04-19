@@ -3,6 +3,7 @@ import os from "os"
 import z from "zod"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
+import { SessionFailureTracker, READ_PREFIX_MATCHER } from "./failure-detector"
 import { Log } from "../util"
 import { SessionRevert } from "./revert"
 import * as Session from "./session"
@@ -151,15 +152,45 @@ export const layer = Layer.effect(
     })
 
       /** Highest confirmed inputTokens (input + cache.read) per session.
-       *  Persists across runLoop invocations (which are recreated on each user turn)
-       *  so the monotonic-decrease detector can compare across turns.
-       *  Entries are lightweight (one number per session) and naturally bounded
-       *  by the number of active sessions in the instance. */
+       *  Persists across runLoop invocations (which are recreated on each user
+       *  turn) so the monotonic-decrease detector can compare across turns.
+       *  Entries are added lazily on the first step of a session and removed
+       *  only by SessionPrompt.cancel() or compaction reset (search for
+       *  `confirmedInputs.delete`).  Normal prompt completion does NOT evict
+       *  — worst-case retention is the number of sessions touched since
+       *  process start.  Each entry is one number, so footprint is negligible;
+       *  if this becomes a real memory concern, add a shared eviction pass. */
       const confirmedInputs = new Map<string, number>()
+
+      /** Per-session failure tracker.  Lifetime contract matches confirmedInputs:
+       *  added on first main-loop iteration touching the session, removed only
+       *  on SessionPrompt.cancel().  Normal completion leaves entries in place
+       *  (accepted trade-off — see confirmedInputs comment).  Memory footprint
+       *  per session is tiny (one small state object plus a counter per active
+       *  matcher). */
+      const failureTrackers = new Map<string, SessionFailureTracker>()
+
+      /** Per-session pending reset directives keyed by tool part ID.
+       *  Written by processor.ts when a tracker matcher fires on tool-error,
+       *  drained by this layer's main loop immediately before the next
+       *  llm.stream() call (atomic `get + delete`).  Single-consumer invariant:
+       *  only the main loop consumes this Map, so title generation, compaction,
+       *  and summary never observe or mutate it.
+       *
+       *  End-of-turn cleanup: runLoop() wraps its body in `Effect.ensuring`
+       *  that deletes the sessionID entry on any exit (normal / error /
+       *  interrupt).  This guards the edge case where the processor enqueues
+       *  on the same step that ends the turn ("stop" / halt / hard step
+       *  limit / compaction break) — without the finalizer the entry would
+       *  survive until the next user turn and prepend a stale directive to an
+       *  unrelated tool part's rewrite. */
+      const pendingDirectives = new Map<string, Map<string, string>>()
 
       const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
         log.info("cancel", { sessionID })
         confirmedInputs.delete(sessionID)
+        failureTrackers.delete(sessionID)
+        pendingDirectives.delete(sessionID)
         yield* state.cancel(sessionID)
       })
 
@@ -1362,6 +1393,17 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           const MAX_DROP_RECOVERY = 3
           const session = yield* sessions.get(sessionID)
 
+          // End-of-turn cleanup for the per-session pending directives Map.
+          // The processor may enqueue a directive on the 3rd same-signature
+          // tool-error and then the same step can end the turn (halt → "stop",
+          // abort, hard step limit, etc.) before the next main-loop iteration
+          // consumes the entry.  Without this finalizer the stale directive
+          // would survive into the NEXT user turn and get prepended to an
+          // unrelated tool part's rewrite, breaking consume-once semantics.
+          //
+          // failureTrackers is intentionally *not* cleared here — the
+          // 1-session-1-fire guarantee must survive across turns.
+          return yield* Effect.gen(function* () {
           while (true) {
             yield* status.set(sessionID, { type: "busy" })
             log.info("loop", { sessionID, step })
@@ -1610,11 +1652,37 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
               yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
+              // Lazy-create the per-session failure tracker.  Phase 1 ships with
+              // the Read wrong-prefix matcher only; Phase 2+ will extend the list.
+              let tracker = failureTrackers.get(sessionID)
+              if (!tracker) {
+                tracker = new SessionFailureTracker([READ_PREFIX_MATCHER])
+                failureTrackers.set(sessionID, tracker)
+              }
+              // Atomic consume: hand the pending directives Map to toModelMessages
+              // (read-only from its perspective) and remove it from our state so
+              // the next iteration rebuilds from an empty slate.  This is the
+              // single point where pendingDirectives.delete runs — title gen and
+              // compaction do not touch this Map.
+              const pending = pendingDirectives.get(sessionID)
+              pendingDirectives.delete(sessionID)
+              const appendPendingDirective = (partID: string, directive: string) => {
+                let map = pendingDirectives.get(sessionID)
+                if (!map) {
+                  map = new Map<string, string>()
+                  pendingDirectives.set(sessionID, map)
+                }
+                // Stack multiple directives targeting the same tool part (e.g. if two
+                // matchers fired on the same event) rather than overwriting.
+                const existing = map.get(partID)
+                map.set(partID, existing ? `${existing}\n\n${directive}` : directive)
+              }
+
               const [skills, env, instructions, modelMsgs] = yield* Effect.all([
                 sys.skills(agent),
                 Effect.sync(() => sys.environment(model)),
                 instruction.system().pipe(Effect.orDie),
-                MessageV2.toModelMessagesEffect(msgs, model),
+                MessageV2.toModelMessagesEffect(msgs, model, { pendingDirectives: pending }),
               ])
               const system = [...env, ...(skills ? [skills] : []), ...instructions]
               const format = lastUser.format ?? { type: "text" as const }
@@ -1635,6 +1703,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 model,
                 toolChoice: activeToolChoice,
                 toolParserActive: !!(toolParserMode && activeToolChoice !== "none" && Object.keys(activeTools).length > 0),
+                failureTracker: tracker,
+                appendPendingDirective,
               })
 
               if (structured !== undefined) {
@@ -1714,6 +1784,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
           yield* compaction.prune({ sessionID, model: lastModel }).pipe(Effect.ignore, Effect.forkIn(scope))
           return yield* lastAssistant(sessionID)
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                pendingDirectives.delete(sessionID)
+              }),
+            ),
+          )
         },
       )
 

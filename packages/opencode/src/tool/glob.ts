@@ -9,6 +9,28 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import DESCRIPTION from "./glob.txt"
 import * as Tool from "./tool"
 
+/**
+ * ripgrep treats a match-all `--glob` argument (e.g. `**\/*`, `**`, `*`,
+ * `**\/**`, `***`) as a catch-all include override that effectively disables
+ * the .gitignore-based subtree pruning — paths under target/, dist/,
+ * node_modules/, etc. come back in the walk even when those directories are
+ * gitignored.  More specific patterns like `**\/*.ts` or `src/**\/*.java`
+ * do NOT trigger the override; the usual gitignore pruning still applies.
+ *
+ * The tool caller passing a match-all glob almost always means "list every
+ * matched file" (i.e. every file visible after gitignore filtering), not
+ * "force-include every ignored build artifact".  Dropping the --glob argument
+ * for these match-all patterns makes the behavior match the likely intent
+ * and preserves gitignore semantics.
+ *
+ * Observed in 2026-04-19 planetiler review (ses_25eaafacfffe*): a reviewer
+ * agent ran `glob **\/*` at worktree root and got back 100 `.class` files
+ * from `target/test-classes/`, which polluted context and triggered a
+ * downstream hallucination.
+ */
+const MATCH_ALL_PATTERN = /^[*/\\]+$/
+const isMatchAll = (pattern: string) => MATCH_ALL_PATTERN.test(pattern)
+
 export const GlobTool = Tool.define(
   "glob",
   Effect.gen(function* () {
@@ -45,11 +67,23 @@ export const GlobTool = Tool.define(
           if (info?.type === "File") {
             throw new Error(`glob path must be a directory: ${search}`)
           }
+          // Surface a clear error when the caller passes a path that doesn't
+          // exist, instead of letting ripgrep fail later with a raw
+          // `IO error for operation on .: No such file or directory`.
+          if (!info && params.path !== undefined) {
+            throw new Error(
+              `glob path "${params.path}" (resolved to "${search}") does not exist. ` +
+                `Create it first or omit the path parameter to search ${ins.directory}.`,
+            )
+          }
           yield* assertExternalDirectoryEffect(ctx, search, { kind: "directory" })
 
           const limit = 100
           let truncated = false
-          const files = yield* rg.files({ cwd: search, glob: [params.pattern], signal: ctx.abort }).pipe(
+          // Match-all patterns → drop the --glob override so ripgrep still
+          // respects .gitignore.  See MATCH_ALL_PATTERN at top of file.
+          const rgGlob = isMatchAll(params.pattern) ? undefined : [params.pattern]
+          const files = yield* rg.files({ cwd: search, glob: rgGlob, signal: ctx.abort }).pipe(
             Stream.mapEffect((file) =>
               Effect.gen(function* () {
                 const full = path.resolve(search, file)

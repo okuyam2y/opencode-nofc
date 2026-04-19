@@ -106,6 +106,10 @@ export class Info extends Schema.Class<Info>("ProviderConfig")({
           description:
             "Enable tool parser middleware for gateways that don't support function calling. 'hermes' uses JSON in <tool_call> tags, 'hermes-strict' adds explicit examples for models that need them, 'xml' uses pure XML format.",
         }),
+        promptVariant: Schema.optional(Schema.Literals(["frontier"])).annotate({
+          description:
+            "Select an alternate system prompt variant. 'frontier' uses the fork's frontier-tuned prompt for GPT (non-codex) and Claude families; other families fall back to the baseline. Unset means baseline. Can be overridden per-model via model.options.promptVariant.",
+        }),
       }),
       [Schema.Record(Schema.String, Schema.Any)],
     ),

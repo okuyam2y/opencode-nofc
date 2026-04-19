@@ -3,10 +3,12 @@ import { Context, Effect, Layer } from "effect"
 import { Instance } from "../project/instance"
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
+import PROMPT_ANTHROPIC_FRONTIER from "./prompt/anthropic-frontier.txt"
 import PROMPT_DEFAULT from "./prompt/default.txt"
 import PROMPT_BEAST from "./prompt/beast.txt"
 import PROMPT_GEMINI from "./prompt/gemini.txt"
 import PROMPT_GPT from "./prompt/gpt.txt"
+import PROMPT_GPT_FRONTIER from "./prompt/gpt-frontier.txt"
 import PROMPT_KIMI from "./prompt/kimi.txt"
 
 import PROMPT_CODEX from "./prompt/codex.txt"
@@ -16,7 +18,8 @@ import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
 
-export function provider(model: Provider.Model, options?: { toolParser?: string }) {
+export function provider(model: Provider.Model, options?: { toolParser?: string; promptVariant?: string }) {
+  const frontier = options?.promptVariant === "frontier"
   let prompts: string[]
   if (model.api.id.includes("gpt-4") || model.api.id.includes("o1") || model.api.id.includes("o3"))
     prompts = [PROMPT_BEAST]
@@ -24,10 +27,10 @@ export function provider(model: Provider.Model, options?: { toolParser?: string 
     if (model.api.id.includes("codex")) {
       prompts = [PROMPT_CODEX]
     } else {
-      prompts = [PROMPT_GPT]
+      prompts = [frontier ? PROMPT_GPT_FRONTIER : PROMPT_GPT]
     }
   } else if (model.api.id.includes("gemini-")) prompts = [PROMPT_GEMINI]
-  else if (model.api.id.includes("claude")) prompts = [PROMPT_ANTHROPIC]
+  else if (model.api.id.includes("claude")) prompts = [frontier ? PROMPT_ANTHROPIC_FRONTIER : PROMPT_ANTHROPIC]
   else if (model.api.id.toLowerCase().includes("trinity")) prompts = [PROMPT_TRINITY]
   else if (model.api.id.toLowerCase().includes("kimi")) prompts = [PROMPT_KIMI]
   else prompts = [PROMPT_DEFAULT]

@@ -1,7 +1,7 @@
 import z from "zod"
-import { Effect, Scope } from "effect"
+import { Effect, Option, Scope } from "effect"
 import { createReadStream } from "fs"
-import { open, readdir } from "fs/promises"
+import { readdir } from "fs/promises"
 import * as path from "path"
 import { createInterface } from "readline"
 import * as Tool from "./tool"
@@ -11,6 +11,7 @@ import DESCRIPTION from "./read.txt"
 import { Instance } from "../project/instance"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
+import { isImageAttachment, sniffAttachmentMime } from "@/util/media"
 import { extractDocumentText, extractImageText, isDocumentFile } from "./document"
 import { Config } from "../config"
 import type { Provider } from "../provider"
@@ -20,6 +21,7 @@ const MAX_LINE_LENGTH = 2000
 const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
 const MAX_BYTES = 50 * 1024
 const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
+const SAMPLE_BYTES = 4096
 
 const parameters = z.object({
   filePath: z.string().describe("The absolute path to the file or directory to read"),
@@ -121,6 +123,68 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
       yield* lsp.touchFile(filepath, false).pipe(Effect.ignore, Effect.forkIn(scope))
     })
 
+    const readSample = Effect.fn("ReadTool.readSample")(function* (
+      filepath: string,
+      fileSize: number,
+      sampleSize: number,
+    ) {
+      if (fileSize === 0) return new Uint8Array()
+
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const file = yield* fs.open(filepath, { flag: "r" })
+          return Option.getOrElse(yield* file.readAlloc(Math.min(sampleSize, fileSize)), () => new Uint8Array())
+        }),
+      )
+    })
+
+    const isBinaryFile = (filepath: string, bytes: Uint8Array) => {
+      const ext = path.extname(filepath).toLowerCase()
+      switch (ext) {
+        case ".zip":
+        case ".tar":
+        case ".gz":
+        case ".exe":
+        case ".dll":
+        case ".so":
+        case ".class":
+        case ".jar":
+        case ".war":
+        case ".7z":
+        case ".doc":
+        case ".docx":
+        case ".xls":
+        case ".xlsx":
+        case ".ppt":
+        case ".pptx":
+        case ".odt":
+        case ".ods":
+        case ".odp":
+        case ".bin":
+        case ".dat":
+        case ".obj":
+        case ".o":
+        case ".a":
+        case ".lib":
+        case ".wasm":
+        case ".pyc":
+        case ".pyo":
+          return true
+      }
+
+      if (bytes.length === 0) return false
+
+      let nonPrintableCount = 0
+      for (let i = 0; i < bytes.length; i++) {
+        if (bytes[i] === 0) return true
+        if (bytes[i] < 9 || (bytes[i] > 13 && bytes[i] < 32)) {
+          nonPrintableCount++
+        }
+      }
+
+      return nonPrintableCount / bytes.length > 0.3
+    }
+
     const run = Effect.fn("ReadTool.execute")(function* (params: z.infer<typeof parameters>, ctx: Tool.Context) {
       if (params.offset !== undefined && params.offset < 1) {
         return yield* Effect.fail(new Error("offset must be greater than or equal to 1"))
@@ -185,10 +249,10 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
       }
 
       const loaded = yield* instruction.resolve(ctx.messages, filepath, ctx.messageID)
+      const sample = yield* readSample(filepath, Number(stat.size), SAMPLE_BYTES)
 
-      const mime = AppFileSystem.mimeType(filepath)
-      const isImage = mime.startsWith("image/") && mime !== "image/svg+xml" && mime !== "image/vnd.fastbidsheet"
-      if (isImage) {
+      const mime = sniffAttachmentMime(sample, AppFileSystem.mimeType(filepath))
+      if (isImageAttachment(mime)) {
         // Determine whether to attempt OCR instead of returning a raw attachment.
         // OCR is preferred when the image attachment won't reach the model
         // (e.g. gateway strips image_url, or model lacks image input capability).
@@ -247,6 +311,7 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
         }
 
         // Native image input — return attachment as-is
+        const bytes = yield* fs.readFile(filepath)
         const msg = "Image read successfully"
         return {
           title,
@@ -260,7 +325,7 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
             {
               type: "file" as const,
               mime,
-              url: `data:${mime};base64,${Buffer.from(yield* fs.readFile(filepath)).toString("base64")}`,
+              url: `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`,
             },
           ],
         }
@@ -312,7 +377,7 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
         }
       }
 
-      if (yield* Effect.promise(() => isBinaryFile(filepath, Number(stat.size)))) {
+      if (isBinaryFile(filepath, sample)) {
         return yield* Effect.fail(new Error(`Cannot read binary file: ${filepath}`))
       }
 
@@ -407,62 +472,6 @@ async function lines(filepath: string, opts: { limit: number; offset: number }) 
   }
 
   return { raw, count, cut, more, offset: opts.offset }
-}
-
-async function isBinaryFile(filepath: string, fileSize: number): Promise<boolean> {
-  const ext = path.extname(filepath).toLowerCase()
-  // binary check for common non-text extensions
-  switch (ext) {
-    case ".zip":
-    case ".tar":
-    case ".gz":
-    case ".exe":
-    case ".dll":
-    case ".so":
-    case ".class":
-    case ".jar":
-    case ".war":
-    case ".7z":
-    case ".doc":
-    case ".ppt":
-    case ".odt":
-    case ".ods":
-    case ".odp":
-    case ".bin":
-    case ".dat":
-    case ".obj":
-    case ".o":
-    case ".a":
-    case ".lib":
-    case ".wasm":
-    case ".pyc":
-    case ".pyo":
-      return true
-    default:
-      break
-  }
-
-  if (fileSize === 0) return false
-
-  const fh = await open(filepath, "r")
-  try {
-    const sampleSize = Math.min(4096, fileSize)
-    const bytes = Buffer.alloc(sampleSize)
-    const result = await fh.read(bytes, 0, sampleSize, 0)
-    if (result.bytesRead === 0) return false
-
-    let nonPrintableCount = 0
-    for (let i = 0; i < result.bytesRead; i++) {
-      if (bytes[i] === 0) return true
-      if (bytes[i] < 9 || (bytes[i] > 13 && bytes[i] < 32)) {
-        nonPrintableCount++
-      }
-    }
-    // If >30% non-printable characters, consider it binary
-    return nonPrintableCount / result.bytesRead > 0.3
-  } finally {
-    await fh.close()
-  }
 }
 
 const SKIP_DIRS = new Set(["node_modules", ".git", ".claude", "dist", "build", ".next", "__pycache__", ".venv", "target"])

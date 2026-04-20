@@ -217,6 +217,47 @@ test("ignores legacy tui keys in opencode config", async () => {
   })
 })
 
+test("migrates legacy compaction.tail_tokens to preserve_recent_tokens", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await writeConfig(dir, {
+        $schema: "https://opencode.ai/config.json",
+        model: "test/model",
+        compaction: { tail_tokens: 500 },
+      } as Record<string, unknown>)
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await load()
+      expect(config.model).toBe("test/model")
+      expect(config.compaction?.preserve_recent_tokens).toBe(500)
+      expect((config.compaction as Record<string, unknown>).tail_tokens).toBeUndefined()
+    },
+  })
+})
+
+test("prefers preserve_recent_tokens when both legacy and new keys are set", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await writeConfig(dir, {
+        $schema: "https://opencode.ai/config.json",
+        model: "test/model",
+        compaction: { tail_tokens: 500, preserve_recent_tokens: 1000 },
+      } as Record<string, unknown>)
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await load()
+      expect(config.compaction?.preserve_recent_tokens).toBe(1000)
+      expect((config.compaction as Record<string, unknown>).tail_tokens).toBeUndefined()
+    },
+  })
+})
+
 test("loads JSONC config file", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {

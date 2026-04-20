@@ -56,14 +56,37 @@ function mergeConfigConcatArrays(target: Info, source: Info): Info {
 
 function normalizeLoadedConfig(data: unknown, source: string) {
   if (!isRecord(data)) return data
-  const copy = { ...data }
-  const hadLegacy = "theme" in copy || "keybinds" in copy || "tui" in copy
-  if (!hadLegacy) return copy
-  delete copy.theme
-  delete copy.keybinds
-  delete copy.tui
-  log.warn("tui keys in opencode config are deprecated; move them to tui.json", { path: source })
+  let copy: Record<string, unknown> = { ...data }
+  const hadLegacyTui = "theme" in copy || "keybinds" in copy || "tui" in copy
+  if (hadLegacyTui) {
+    delete copy.theme
+    delete copy.keybinds
+    delete copy.tui
+    log.warn("tui keys in opencode config are deprecated; move them to tui.json", { path: source })
+  }
+  copy = migrateCompactionKeys(copy, source)
   return copy
+}
+
+// Upstream #23491 (c6c56ac2c) renamed compaction.tail_tokens to
+// preserve_recent_tokens. Config is parsed .strict(), so existing user
+// configs with tail_tokens would otherwise fail to load. Map the legacy
+// key on read and emit a warning.
+function migrateCompactionKeys(data: Record<string, unknown>, source: string): Record<string, unknown> {
+  const compaction = data.compaction
+  if (!isRecord(compaction) || !("tail_tokens" in compaction)) return data
+  const nextCompaction: Record<string, unknown> = { ...compaction }
+  const legacyValue = nextCompaction.tail_tokens
+  delete nextCompaction.tail_tokens
+  if ("preserve_recent_tokens" in nextCompaction) {
+    log.warn("compaction.tail_tokens is deprecated and ignored; preserve_recent_tokens already set", {
+      path: source,
+    })
+  } else {
+    nextCompaction.preserve_recent_tokens = legacyValue
+    log.warn("compaction.tail_tokens is deprecated; renamed to preserve_recent_tokens", { path: source })
+  }
+  return { ...data, compaction: nextCompaction }
 }
 
 async function resolveLoadedPlugins<T extends { plugin?: ConfigPlugin.Spec[] }>(config: T, filepath: string) {
@@ -203,6 +226,13 @@ const InfoSchema = Schema.Struct({
       }),
       prune: Schema.optional(Schema.Boolean).annotate({
         description: "Enable pruning of old tool outputs (default: true)",
+      }),
+      tail_turns: Schema.optional(NonNegativeInt).annotate({
+        description:
+          "Number of recent user turns, including their following assistant/tool responses, to keep verbatim during compaction (default: 2)",
+      }),
+      preserve_recent_tokens: Schema.optional(NonNegativeInt).annotate({
+        description: "Maximum number of tokens from recent turns to preserve verbatim after compaction",
       }),
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
@@ -746,13 +776,13 @@ export const layer = Layer.effect(
 
       let next: Info
       if (!file.endsWith(".jsonc")) {
-        const existing = ConfigParse.schema(Info, ConfigParse.jsonc(before, file), file)
+        const existing = ConfigParse.schema(Info, normalizeLoadedConfig(ConfigParse.jsonc(before, file), file), file)
         const merged = mergeDeep(writable(existing), writable(config))
         yield* fs.writeFileString(file, JSON.stringify(merged, null, 2)).pipe(Effect.orDie)
         next = merged
       } else {
         const updated = patchJsonc(before, writable(config))
-        next = ConfigParse.schema(Info, ConfigParse.jsonc(updated, file), file)
+        next = ConfigParse.schema(Info, normalizeLoadedConfig(ConfigParse.jsonc(updated, file), file), file)
         yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
       }
 

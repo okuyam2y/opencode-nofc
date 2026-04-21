@@ -1963,238 +1963,236 @@ export const defaultLayer = Layer.suspend(() =>
     ),
   ),
 )
-  export const PromptInput = z.object({
-    sessionID: SessionID.zod,
-    messageID: MessageID.zod.optional(),
-    model: z
-      .object({
-        providerID: ProviderID.zod,
-        modelID: ModelID.zod,
+export const PromptInput = z.object({
+  sessionID: SessionID.zod,
+  messageID: MessageID.zod.optional(),
+  model: z
+    .object({
+      providerID: ProviderID.zod,
+      modelID: ModelID.zod,
+    })
+    .optional(),
+  agent: z.string().optional(),
+  noReply: z.boolean().optional(),
+  tools: z
+    .record(z.string(), z.boolean())
+    .optional()
+    .describe("@deprecated tools and permissions have been merged, you can set permissions on the session itself now"),
+  format: MessageV2.Format.zod.optional(),
+  system: z.string().optional(),
+  variant: z.string().optional(),
+  parts: z.array(
+    z.discriminatedUnion("type", [
+      MessageV2.TextPart.omit({
+        messageID: true,
+        sessionID: true,
       })
-      .optional(),
-    agent: z.string().optional(),
-    noReply: z.boolean().optional(),
-    tools: z
-      .record(z.string(), z.boolean())
-      .optional()
-      .describe(
-        "@deprecated tools and permissions have been merged, you can set permissions on the session itself now",
-      ),
-    format: MessageV2.Format.optional(),
-    system: z.string().optional(),
-    variant: z.string().optional(),
-    parts: z.array(
-      z.discriminatedUnion("type", [
-        MessageV2.TextPart.omit({
-          messageID: true,
-          sessionID: true,
+        .partial({
+          id: true,
         })
-          .partial({
-            id: true,
-          })
-          .meta({
-            ref: "TextPartInput",
-          }),
+        .meta({
+          ref: "TextPartInput",
+        }),
+      MessageV2.FilePart.omit({
+        messageID: true,
+        sessionID: true,
+      })
+        .partial({
+          id: true,
+        })
+        .meta({
+          ref: "FilePartInput",
+        }),
+      MessageV2.AgentPart.omit({
+        messageID: true,
+        sessionID: true,
+      })
+        .partial({
+          id: true,
+        })
+        .meta({
+          ref: "AgentPartInput",
+        }),
+      MessageV2.SubtaskPart.omit({
+        messageID: true,
+        sessionID: true,
+      })
+        .partial({
+          id: true,
+        })
+        .meta({
+          ref: "SubtaskPartInput",
+        }),
+    ]),
+  ),
+})
+export type PromptInput = z.infer<typeof PromptInput>
+
+export const LoopInput = z.object({
+  sessionID: SessionID.zod,
+})
+
+export const ShellInput = z.object({
+  sessionID: SessionID.zod,
+  messageID: MessageID.zod.optional(),
+  agent: z.string(),
+  model: z
+    .object({
+      providerID: ProviderID.zod,
+      modelID: ModelID.zod,
+    })
+    .optional(),
+  command: z.string(),
+})
+export type ShellInput = z.infer<typeof ShellInput>
+
+export const CommandInput = z.object({
+  messageID: MessageID.zod.optional(),
+  sessionID: SessionID.zod,
+  agent: z.string().optional(),
+  model: z.string().optional(),
+  arguments: z.string(),
+  command: z.string(),
+  variant: z.string().optional(),
+  parts: z
+    .array(
+      z.discriminatedUnion("type", [
         MessageV2.FilePart.omit({
           messageID: true,
           sessionID: true,
-        })
-          .partial({
-            id: true,
-          })
-          .meta({
-            ref: "FilePartInput",
-          }),
-        MessageV2.AgentPart.omit({
-          messageID: true,
-          sessionID: true,
-        })
-          .partial({
-            id: true,
-          })
-          .meta({
-            ref: "AgentPartInput",
-          }),
-        MessageV2.SubtaskPart.omit({
-          messageID: true,
-          sessionID: true,
-        })
-          .partial({
-            id: true,
-          })
-          .meta({
-            ref: "SubtaskPartInput",
-          }),
+        }).partial({
+          id: true,
+        }),
       ]),
-    ),
-  })
-  export type PromptInput = z.infer<typeof PromptInput>
+    )
+    .optional(),
+})
+export type CommandInput = z.infer<typeof CommandInput>
 
-  export const LoopInput = z.object({
-    sessionID: SessionID.zod,
-  })
+/** @internal Exported for testing */
+export function createStructuredOutputTool(input: {
+  schema: Record<string, any>
+  onSuccess: (output: unknown) => void
+}): AITool {
+  // Remove $schema property if present (not needed for tool input)
+  const { $schema: _, ...toolSchema } = input.schema
 
-  export const ShellInput = z.object({
-    sessionID: SessionID.zod,
-    messageID: MessageID.zod.optional(),
-    agent: z.string(),
-    model: z
-      .object({
-        providerID: ProviderID.zod,
-        modelID: ModelID.zod,
-      })
-      .optional(),
-    command: z.string(),
-  })
-  export type ShellInput = z.infer<typeof ShellInput>
-
-  export const CommandInput = z.object({
-    messageID: MessageID.zod.optional(),
-    sessionID: SessionID.zod,
-    agent: z.string().optional(),
-    model: z.string().optional(),
-    arguments: z.string(),
-    command: z.string(),
-    variant: z.string().optional(),
-    parts: z
-      .array(
-        z.discriminatedUnion("type", [
-          MessageV2.FilePart.omit({
-            messageID: true,
-            sessionID: true,
-          }).partial({
-            id: true,
-          }),
-        ]),
-      )
-      .optional(),
-  })
-  export type CommandInput = z.infer<typeof CommandInput>
-
-  /** @internal Exported for testing */
-  export function createStructuredOutputTool(input: {
-    schema: Record<string, any>
-    onSuccess: (output: unknown) => void
-  }): AITool {
-    // Remove $schema property if present (not needed for tool input)
-    const { $schema: _, ...toolSchema } = input.schema
-
-    return tool({
-      description: STRUCTURED_OUTPUT_DESCRIPTION,
-      inputSchema: jsonSchema(toolSchema as JSONSchema7),
-      async execute(args) {
-        // AI SDK validates args against inputSchema before calling execute()
-        input.onSuccess(args)
-        return {
-          output: "Structured output captured successfully.",
-          title: "Structured Output",
-          metadata: { valid: true },
-        }
-      },
-      toModelOutput({ output }) {
-        return {
-          type: "text",
-          value: output.output,
-        }
-      },
-    })
-  }
-
-  /**
-   * Check the current session messages for unresolved failures that should
-   * prevent a premature `complete` call.  Returns an error string if the
-   * model should NOT be allowed to mark the task as done, undefined otherwise.
-   */
-  /**
-   * Scan an array of parts for tool failures (error state or bash non-zero exit).
-   * Shared by both execute-time and post-step validation.
-   */
-  export function validateCompleteFromParts(parts: MessageV2.Part[]): string | undefined {
-    for (const part of parts) {
-      if (part.type !== "tool") continue
-      if (part.state.status === "error") {
-        return `Cannot complete: tool "${part.tool}" failed — ${part.state.error}`
+  return tool({
+    description: STRUCTURED_OUTPUT_DESCRIPTION,
+    inputSchema: jsonSchema(toolSchema as JSONSchema7),
+    async execute(args) {
+      // AI SDK validates args against inputSchema before calling execute()
+      input.onSuccess(args)
+      return {
+        output: "Structured output captured successfully.",
+        title: "Structured Output",
+        metadata: { valid: true },
       }
-      if (
-        part.tool === "bash" &&
-        part.state.status === "completed" &&
-        part.state.metadata?.exit != null &&
-        part.state.metadata.exit !== 0
-      ) {
-        return `Cannot complete: bash command exited with code ${part.state.metadata.exit} — fix the error before completing`
+    },
+    toModelOutput({ output }) {
+      return {
+        type: "text",
+        value: output.output,
       }
+    },
+  })
+}
+
+/**
+ * Check the current session messages for unresolved failures that should
+ * prevent a premature `complete` call.  Returns an error string if the
+ * model should NOT be allowed to mark the task as done, undefined otherwise.
+ */
+/**
+ * Scan an array of parts for tool failures (error state or bash non-zero exit).
+ * Shared by both execute-time and post-step validation.
+ */
+export function validateCompleteFromParts(parts: MessageV2.Part[]): string | undefined {
+  for (const part of parts) {
+    if (part.type !== "tool") continue
+    if (part.state.status === "error") {
+      return `Cannot complete: tool "${part.tool}" failed — ${part.state.error}`
     }
-    return undefined
-  }
-
-  /**
-   * Check the current session messages for unresolved failures that should
-   * prevent a premature `complete` call.  Returns an error string if the
-   * model should NOT be allowed to mark the task as done, undefined otherwise.
-   *
-   * NOTE: this runs at execute time, so it only sees the pre-step `msgs`
-   * snapshot.  Same-step failures (bash + complete batched in one inference)
-   * are caught by the post-step check in the break判定.
-   */
-  export function validateComplete(msgs: MessageV2.WithParts[]): string | undefined {
-    // Scan ALL assistant messages (not just the last) because a failure in an
-    // earlier step may not have been resolved yet.  Walk backwards and stop at
-    // the last user message (everything after it is the current turn).
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const msg = msgs[i]
-      if (msg.info.role === "user") break
-
-      if (msg.info.role !== "assistant") continue
-
-      // 1. Assistant-level error (e.g. content filter, stream failure)
-      if (msg.info.error) {
-        return `Cannot complete: assistant response has an unresolved error — ${typeof msg.info.error === "string" ? msg.info.error : JSON.stringify(msg.info.error)}`
-      }
-
-      // 2. Scan tool parts for failures
-      const partReject = validateCompleteFromParts(msg.parts)
-      if (partReject) return partReject
+    if (
+      part.tool === "bash" &&
+      part.state.status === "completed" &&
+      part.state.metadata?.exit != null &&
+      part.state.metadata.exit !== 0
+    ) {
+      return `Cannot complete: bash command exited with code ${part.state.metadata.exit} — fix the error before completing`
     }
-    return undefined
   }
+  return undefined
+}
 
-  export function createCompleteTool(input: {
-    onSuccess: (summary: string) => void
-    messages: () => MessageV2.WithParts[]
-  }): AITool {
-    return tool({
-      description: COMPLETE_DESCRIPTION,
-      inputSchema: jsonSchema({
-        type: "object",
-        properties: {
-          summary: { type: "string", description: "A concise plain-text summary: what was done, which files changed (exact paths only), and verification results" },
-        },
-        required: ["summary"],
-      } as JSONSchema7),
-      async execute(args) {
-        const rejection = validateComplete(input.messages())
-        if (rejection) {
-          return {
-            output: rejection,
-            title: "Complete rejected",
-            metadata: { rejected: true },
-          }
-        }
-        input.onSuccess(args.summary)
-        return {
-          output: args.summary,
-          title: "Complete",
-          metadata: {},
-        }
-      },
-      toModelOutput({ output }) {
-        return {
-          type: "text",
-          value: output.output,
-        }
-      },
-    })
+/**
+ * Check the current session messages for unresolved failures that should
+ * prevent a premature `complete` call.  Returns an error string if the
+ * model should NOT be allowed to mark the task as done, undefined otherwise.
+ *
+ * NOTE: this runs at execute time, so it only sees the pre-step `msgs`
+ * snapshot.  Same-step failures (bash + complete batched in one inference)
+ * are caught by the post-step check in the break判定.
+ */
+export function validateComplete(msgs: MessageV2.WithParts[]): string | undefined {
+  // Scan ALL assistant messages (not just the last) because a failure in an
+  // earlier step may not have been resolved yet.  Walk backwards and stop at
+  // the last user message (everything after it is the current turn).
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const msg = msgs[i]
+    if (msg.info.role === "user") break
+
+    if (msg.info.role !== "assistant") continue
+
+    // 1. Assistant-level error (e.g. content filter, stream failure)
+    if (msg.info.error) {
+      return `Cannot complete: assistant response has an unresolved error — ${typeof msg.info.error === "string" ? msg.info.error : JSON.stringify(msg.info.error)}`
+    }
+
+    // 2. Scan tool parts for failures
+    const partReject = validateCompleteFromParts(msg.parts)
+    if (partReject) return partReject
   }
+  return undefined
+}
+
+export function createCompleteTool(input: {
+  onSuccess: (summary: string) => void
+  messages: () => MessageV2.WithParts[]
+}): AITool {
+  return tool({
+    description: COMPLETE_DESCRIPTION,
+    inputSchema: jsonSchema({
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "A concise plain-text summary: what was done, which files changed (exact paths only), and verification results" },
+      },
+      required: ["summary"],
+    } as JSONSchema7),
+    async execute(args) {
+      const rejection = validateComplete(input.messages())
+      if (rejection) {
+        return {
+          output: rejection,
+          title: "Complete rejected",
+          metadata: { rejected: true },
+        }
+      }
+      input.onSuccess(args.summary)
+      return {
+        output: args.summary,
+        title: "Complete",
+        metadata: {},
+      }
+    },
+    toModelOutput({ output }) {
+      return {
+        type: "text",
+        value: output.output,
+      }
+    },
+  })
+}
 const bashRegex = /!`([^`]+)`/g
 // Match [Image N] as single token, quoted strings, or non-space sequences
 const argsRegex = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi

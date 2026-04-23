@@ -1,9 +1,12 @@
 import { $ } from "bun"
 import { afterEach, describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import fs from "fs/promises"
 import path from "path"
-import { tmpdir } from "../fixture/fixture"
+import * as CrossSpawnSpawner from "@/effect/cross-spawn-spawner"
+import { provideTmpdirInstance, tmpdir } from "../fixture/fixture"
+import { testEffect } from "../lib/effect"
 import { AppRuntime } from "../../src/effect/app-runtime"
 import { FileWatcher } from "../../src/file/watcher"
 import { Instance } from "../../src/project/instance"
@@ -283,4 +286,202 @@ describe("Vcs diff", () => {
       )
     })
   })
+})
+
+describe("Vcs summary", () => {
+  afterEach(async () => {
+    await Instance.disposeAll()
+  })
+
+  function readSummary(directory: string) {
+    return AppRuntime.runPromise(
+      Effect.gen(function* () {
+        const vcs = yield* Vcs.Service
+        return yield* vcs.summary()
+      }),
+    )
+  }
+
+  test("summary() returns undefined for non-git directories", async () => {
+    await using tmp = await tmpdir()
+
+    await withVcsOnly(tmp.path, async () => {
+      const result = await readSummary(tmp.path)
+      expect(result).toBeUndefined()
+    })
+  })
+
+  test("summary() returns clean counts for fresh repo", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await withVcsOnly(tmp.path, async () => {
+      const result = await readSummary(tmp.path)
+      expect(result).toBeDefined()
+      expect(result!.head).toMatch(/^[0-9a-f]+$/)
+      expect(result!.modified).toBe(0)
+      expect(result!.untracked).toBe(0)
+    })
+  })
+
+  test("summary() counts untracked files (code === '??')", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await fs.writeFile(path.join(tmp.path, "new.txt"), "hello\n", "utf-8")
+
+    await withVcsOnly(tmp.path, async () => {
+      const result = await readSummary(tmp.path)
+      expect(result).toBeDefined()
+      expect(result!.untracked).toBe(1)
+      expect(result!.modified).toBe(0)
+    })
+  })
+
+  test("summary() counts staged-add as modified, not untracked (regression for kind() collapsing '??' and 'A')", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await fs.writeFile(path.join(tmp.path, "staged.txt"), "hello\n", "utf-8")
+    await $`git add staged.txt`.cwd(tmp.path).quiet()
+
+    await withVcsOnly(tmp.path, async () => {
+      const result = await readSummary(tmp.path)
+      expect(result).toBeDefined()
+      expect(result!.untracked).toBe(0)
+      expect(result!.modified).toBe(1)
+    })
+  })
+
+  test("summary() counts modifications to tracked files", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await fs.writeFile(path.join(tmp.path, "tracked.txt"), "v1\n", "utf-8")
+    await $`git add tracked.txt`.cwd(tmp.path).quiet()
+    await $`git commit --no-gpg-sign -m "add tracked"`.cwd(tmp.path).quiet()
+    await fs.writeFile(path.join(tmp.path, "tracked.txt"), "v2\n", "utf-8")
+
+    await withVcsOnly(tmp.path, async () => {
+      const result = await readSummary(tmp.path)
+      expect(result).toBeDefined()
+      expect(result!.modified).toBe(1)
+      expect(result!.untracked).toBe(0)
+    })
+  })
+
+  test("summary() counts deletions in modified bucket", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await fs.writeFile(path.join(tmp.path, "doomed.txt"), "v1\n", "utf-8")
+    await $`git add doomed.txt`.cwd(tmp.path).quiet()
+    await $`git commit --no-gpg-sign -m "add doomed"`.cwd(tmp.path).quiet()
+    await fs.unlink(path.join(tmp.path, "doomed.txt"))
+
+    await withVcsOnly(tmp.path, async () => {
+      const result = await readSummary(tmp.path)
+      expect(result).toBeDefined()
+      expect(result!.modified).toBe(1)
+      expect(result!.untracked).toBe(0)
+    })
+  })
+
+  test("summary() reports repo-wide state when invoked from a subdirectory (worktree scope)", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const sub = path.join(tmp.path, "sub")
+    await fs.mkdir(sub, { recursive: true })
+    // One change at repo root, one change inside the subdirectory.
+    await fs.writeFile(path.join(tmp.path, "root.txt"), "x\n", "utf-8")
+    await fs.writeFile(path.join(sub, "child.txt"), "y\n", "utf-8")
+
+    // Instance.directory points at the subdirectory; summary() must still
+    // count both files (worktree scope, not cwd scope).
+    await withVcsOnly(sub, async () => {
+      const result = await readSummary(sub)
+      expect(result).toBeDefined()
+      expect(result!.untracked).toBe(2)
+      expect(result!.modified).toBe(0)
+    })
+  })
+
+  test("summary() returns undefined silently for empty repo (git init without commit)", async () => {
+    await using tmp = await tmpdir()
+    // Manual `git init` without the fixture's initial commit so HEAD is unborn.
+    await $`git init`.cwd(tmp.path).quiet()
+    await $`git config commit.gpgsign false`.cwd(tmp.path).quiet()
+    await $`git config user.email test@opencode.test`.cwd(tmp.path).quiet()
+    await $`git config user.name Test`.cwd(tmp.path).quiet()
+
+    await withVcsOnly(tmp.path, async () => {
+      const result = await readSummary(tmp.path)
+      // status succeeds on empty repo, head fails — silent undefined,
+      // no log.error spam.
+      expect(result).toBeUndefined()
+    })
+  })
+
+  test("summary() reports head + counts when repo is in detached HEAD state", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await fs.writeFile(path.join(tmp.path, "tracked.txt"), "v1\n", "utf-8")
+    await $`git add tracked.txt`.cwd(tmp.path).quiet()
+    await $`git commit --no-gpg-sign -m "v1"`.cwd(tmp.path).quiet()
+    // Detach HEAD onto the commit hash so symbolic-ref returns nothing.
+    const sha = (await $`git rev-parse HEAD`.cwd(tmp.path).quiet().text()).trim()
+    await $`git checkout --detach ${sha}`.cwd(tmp.path).quiet()
+    await fs.writeFile(path.join(tmp.path, "extra.txt"), "x\n", "utf-8")
+
+    await withVcsOnly(tmp.path, async () => {
+      const result = await readSummary(tmp.path)
+      expect(result).toBeDefined()
+      // rev-parse --short HEAD still returns the commit hash even when detached.
+      expect(result!.head).toMatch(/^[0-9a-f]+$/)
+      expect(result!.untracked).toBe(1)
+      expect(result!.modified).toBe(0)
+    })
+  })
+
+  test("summary() caches result across calls within TTL", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await fs.writeFile(path.join(tmp.path, "a.txt"), "1\n", "utf-8")
+
+    await withVcsOnly(tmp.path, async () => {
+      const first = await readSummary(tmp.path)
+      expect(first?.untracked).toBe(1)
+
+      // Mutate the working tree after caching. Within TTL the cache still
+      // hides this change — proving the cache is engaged.
+      await fs.writeFile(path.join(tmp.path, "b.txt"), "2\n", "utf-8")
+
+      const second = await readSummary(tmp.path)
+      expect(second?.untracked).toBe(1)
+      expect(second?.head).toBe(first?.head)
+    })
+  })
+})
+
+// TTL expiry boundary verification with TestClock — the live test above only
+// proves cache hit within TTL; this proves the cache actually expires past TTL
+// (and rules out regressions like Date.now() fallback or unbounded caching).
+const itClock = testEffect(Layer.mergeAll(Vcs.defaultLayer, CrossSpawnSpawner.defaultLayer))
+
+describe("Vcs summary TTL", () => {
+  itClock.effect("refetches after TTL window elapses", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() => Bun.write(path.join(dir, "a.txt"), "1\n"))
+
+          const vcs = yield* Vcs.Service
+          const first = yield* vcs.summary()
+          expect(first?.untracked).toBe(1)
+
+          // Mutate the working tree after the first fetch. Within TTL the
+          // cached value is still returned.
+          yield* Effect.promise(() => Bun.write(path.join(dir, "b.txt"), "2\n"))
+
+          const cached = yield* vcs.summary()
+          expect(cached?.untracked).toBe(1)
+
+          // Advance Effect's Clock past the 60s TTL boundary. The cache should
+          // refetch and observe the new untracked file.
+          yield* TestClock.adjust("61 seconds")
+
+          const refetched = yield* vcs.summary()
+          expect(refetched?.untracked).toBe(2)
+        }),
+      { git: true },
+    ),
+  )
 })

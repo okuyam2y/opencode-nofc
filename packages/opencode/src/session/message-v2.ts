@@ -327,6 +327,12 @@ export const ToolStateCompleted = Schema.Struct({
   .pipe(withStatics((s) => ({ zod: zod(s) })))
 export type ToolStateCompleted = Types.DeepMutable<Schema.Schema.Type<typeof ToolStateCompleted>>
 
+function truncateToolOutput(text: string, maxChars?: number) {
+  if (!maxChars || text.length <= maxChars) return text
+  const omitted = text.length - maxChars
+  return `${text.slice(0, maxChars)}\n[Tool output truncated for compaction: omitted ${omitted} chars]`
+}
+
 export const ToolStateError = Schema.Struct({
   status: Schema.Literal("error"),
   input: Schema.Record(Schema.String, Schema.Any),
@@ -717,6 +723,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
   model: Provider.Model,
   options?: {
     stripMedia?: boolean
+    toolOutputMaxChars?: number
     /**
      * Map of tool part ID → reset directive.  When a failing tool part is
      * rewritten to a model message and its ID is present in this map, the
@@ -896,7 +903,9 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           }
           toolNames.add(part.tool)
           if (part.state.status === "completed") {
-            let outputText = part.state.time.compacted ? "[Old tool result content cleared]" : part.state.output
+            let outputText = part.state.time.compacted
+              ? "[Old tool result content cleared]"
+              : truncateToolOutput(part.state.output, options?.toolOutputMaxChars)
             // Prepend exit code so the model sees non-zero exit explicitly.
             // Currently only bash sets metadata.exit (bash.ts).
             // Skip for compacted messages — the original output is gone, signal is not useful.
@@ -1026,7 +1035,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 export function toModelMessages(
   input: WithParts[],
   model: Provider.Model,
-  options?: { stripMedia?: boolean; pendingDirectives?: Map<string, string> },
+  options?: { stripMedia?: boolean; toolOutputMaxChars?: number; pendingDirectives?: Map<string, string> },
 ): Promise<ModelMessage[]> {
   return Effect.runPromise(toModelMessagesEffect(input, model, options).pipe(Effect.provide(EffectLogger.layer)))
 }

@@ -1,4 +1,4 @@
-import { Effect, Layer, Context, Stream, Scope } from "effect"
+import { Effect, Layer, Context, Stream, Scope, Clock } from "effect"
 import { formatPatch, structuredPatch } from "diff"
 import path from "path"
 import { Bus } from "@/bus"
@@ -136,16 +136,30 @@ export const FileDiff = z
   })
 export type FileDiff = z.infer<typeof FileDiff>
 
+export interface Summary {
+  head: string | undefined
+  modified: number
+  untracked: number
+}
+
 export interface Interface {
   readonly init: () => Effect.Effect<void>
   readonly branch: () => Effect.Effect<string | undefined>
   readonly defaultBranch: () => Effect.Effect<string | undefined>
   readonly diff: (mode: Mode) => Effect.Effect<FileDiff[]>
+  readonly summary: () => Effect.Effect<Summary | undefined>
+}
+
+const SUMMARY_TTL_MS = 60_000
+
+interface CachedSummary extends Summary {
+  fetchedAt: number
 }
 
 interface State {
   current: string | undefined
   root: Git.Base | undefined
+  summary: CachedSummary | undefined
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Vcs") {}
@@ -161,7 +175,7 @@ export const layer: Layer.Layer<Service, never, AppFileSystem.Service | Git.Serv
     const state = yield* InstanceState.make<State>(
       Effect.fn("Vcs.state")(function* (ctx) {
         if (ctx.project.vcs !== "git") {
-          return { current: undefined, root: undefined }
+          return { current: undefined, root: undefined, summary: undefined }
         }
 
         const get = Effect.fnUntraced(function* () {
@@ -170,7 +184,7 @@ export const layer: Layer.Layer<Service, never, AppFileSystem.Service | Git.Serv
         const [current, root] = yield* Effect.all([git.branch(ctx.directory), git.defaultBranch(ctx.directory)], {
           concurrency: 2,
         })
-        const value = { current, root }
+        const value: State = { current, root, summary: undefined }
         log.info("initialized", { branch: value.current, default_branch: value.root?.name })
 
         yield* bus.subscribe(FileWatcher.Event.Updated).pipe(
@@ -191,6 +205,47 @@ export const layer: Layer.Layer<Service, never, AppFileSystem.Service | Git.Serv
         return value
       }),
     )
+
+    const fetchSummary = Effect.fnUntraced(function* (cwd: string) {
+      // Run head + status in parallel via raw Git.run so we can inspect Result.exitCode
+      // and surface failures via log instead of silently returning empty data
+      // (Git.status() / Git.hasHead() swallow errors into [] / false which would hide
+      //  spawn / permission / corrupted-git-dir failures from operators).
+      const [headRun, statusRun] = yield* Effect.all(
+        [
+          git.run(["rev-parse", "--short", "HEAD"], { cwd }),
+          git.run(["status", "--porcelain=v1", "--untracked-files=all", "--no-renames", "-z"], { cwd }),
+        ],
+        { concurrency: 2 },
+      )
+      // Structural empty-repo classification (regex on git stderr is brittle to
+      // localization / wording changes): `git status` returns exit 0 even on a
+      // fresh `git init` repo with no commits, while `git rev-parse HEAD` fails.
+      // So `status ok + head fail` is the empty-repo signature. Anything where
+      // `status` itself failed is treated as a real operational error.
+      if (statusRun.exitCode !== 0) {
+        log.error("Vcs.summary git status failed", {
+          exitCode: statusRun.exitCode,
+          stderr: statusRun.stderr.toString().trim(),
+        })
+        return undefined
+      }
+      if (headRun.exitCode !== 0) {
+        // status worked → repo is accessible → head failure means no commits yet.
+        // Treat as empty-repo silent path.
+        return undefined
+      }
+      const head = headRun.text().trim() || undefined
+      let untracked = 0
+      let modified = 0
+      for (const entry of statusRun.text().split("\0")) {
+        if (!entry) continue
+        const code = entry.slice(0, 2)
+        if (code === "??") untracked += 1
+        else modified += 1
+      }
+      return { head, modified, untracked }
+    })
 
     return Service.of({
       init: Effect.fn("Vcs.init")(function* () {
@@ -215,6 +270,28 @@ export const layer: Layer.Layer<Service, never, AppFileSystem.Service | Git.Serv
         const ref = yield* git.mergeBase(ctx.directory, value.root.ref)
         if (!ref) return []
         return yield* compare(fs, git, ctx.directory, ref)
+      }),
+      summary: Effect.fn("Vcs.summary")(function* () {
+        const value = yield* InstanceState.get(state)
+        const ctx = yield* InstanceState.context
+        if (ctx.project.vcs !== "git") return undefined
+
+        const now = yield* Clock.currentTimeMillis
+        const cached = value.summary
+        if (cached && now - cached.fetchedAt <= SUMMARY_TTL_MS) {
+          const { fetchedAt: _ignored, ...rest } = cached
+          return rest
+        }
+
+        // Use ctx.worktree (repo root) so subdirectory invocations still report
+        // repo-wide state. Git.status with cwd=worktree avoids "-- ." narrowing.
+        const fetched = yield* fetchSummary(ctx.worktree)
+        if (!fetched) {
+          // Don't poison cache with failures; let next call retry.
+          return undefined
+        }
+        value.summary = { ...fetched, fetchedAt: now }
+        return fetched
       }),
     })
   }),

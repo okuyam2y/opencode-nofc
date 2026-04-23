@@ -1678,13 +1678,19 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 map.set(partID, existing ? `${existing}\n\n${directive}` : directive)
               }
 
-              const [skills, env, instructions, modelMsgs] = yield* Effect.all([
+              const [skills, env, gitState, instructions, modelMsgs] = yield* Effect.all([
                 sys.skills(agent),
                 Effect.sync(() => sys.environment(model)),
+                sys.gitState(),
                 instruction.system().pipe(Effect.orDie),
                 MessageV2.toModelMessagesEffect(msgs, model, { pendingDirectives: pending }),
               ])
-              const system = [...env, ...(skills ? [skills] : []), ...instructions]
+              const system = [
+                ...env,
+                ...(gitState ? [gitState] : []),
+                ...(skills ? [skills] : []),
+                ...instructions,
+              ]
               const format = lastUser.format ?? { type: "text" as const }
               if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
               const providerInfo = yield* provider.getProvider(model.providerID)

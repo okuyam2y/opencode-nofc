@@ -105,4 +105,7 @@ export const Flag = {
   get OPENCODE_CLIENT() {
     return process.env["OPENCODE_CLIENT"] ?? "cli"
   },
+  get OPENCODE_ENABLE_GIT_STATE() {
+    return truthy("OPENCODE_ENABLE_GIT_STATE")
+  },
 }

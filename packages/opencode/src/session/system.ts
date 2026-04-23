@@ -1,6 +1,8 @@
 import { Context, Effect, Layer } from "effect"
 
 import { Instance } from "../project/instance"
+import { Vcs } from "../project"
+import { Flag } from "@/flag/flag"
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
 import PROMPT_ANTHROPIC_FRONTIER from "./prompt/anthropic-frontier.txt"
@@ -75,6 +77,7 @@ export function provider(model: Provider.Model, options?: { toolParser?: string;
 export interface Interface {
   readonly environment: (model: Provider.Model) => string[]
   readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
+  readonly gitState: () => Effect.Effect<string | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SystemPrompt") {}
@@ -83,6 +86,7 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const skill = yield* Skill.Service
+    const vcs = yield* Vcs.Service
 
     return Service.of({
       environment(model) {
@@ -115,10 +119,27 @@ export const layer = Layer.effect(
           Skill.fmt(list, { verbose: true }),
         ].join("\n")
       }),
+
+      gitState: Effect.fn("SystemPrompt.gitState")(function* () {
+        // Stage 1: opt-in. Flag is a getter so runtime env flips work in tests.
+        if (!Flag.OPENCODE_ENABLE_GIT_STATE) return undefined
+        // Failure logging happens inside Vcs.summary() (Git.run swallows errors
+        // into Result, so SystemPrompt.gitState cannot observe Effect failures here).
+        const summary = yield* vcs.summary()
+        if (!summary || !summary.head) return undefined
+        const dirty = summary.modified + summary.untracked
+        if (dirty === 0) {
+          return `[GIT STATE] HEAD: ${summary.head} (clean)`
+        }
+        return [
+          `[GIT STATE] HEAD: ${summary.head} | Modified: ${summary.modified} | Untracked: ${summary.untracked}`,
+          "> Working tree differs from HEAD. For review baselines use `git diff HEAD -- <file>` (cwd-relative paths). For full baseline content use `git show HEAD:<repo-root-relative-path>` (paths must be relative to the repo root, not cwd).",
+        ].join("\n")
+      }),
     })
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Skill.defaultLayer))
+export const defaultLayer = layer.pipe(Layer.provide(Skill.defaultLayer), Layer.provide(Vcs.defaultLayer))
 
 export * as SystemPrompt from "./system"

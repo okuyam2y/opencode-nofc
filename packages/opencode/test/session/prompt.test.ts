@@ -1883,3 +1883,102 @@ it.live(
     ),
   30_000,
 )
+
+// Git state injection (Stage 1: opt-in via OPENCODE_ENABLE_GIT_STATE)
+
+function withGitStateFlag<A, E, R>(value: string | undefined, fx: () => Effect.Effect<A, E, R>) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const prev = process.env.OPENCODE_ENABLE_GIT_STATE
+      if (value === undefined) delete process.env.OPENCODE_ENABLE_GIT_STATE
+      else process.env.OPENCODE_ENABLE_GIT_STATE = value
+      return prev
+    }),
+    () => fx(),
+    (prev) =>
+      Effect.sync(() => {
+        if (prev === undefined) delete process.env.OPENCODE_ENABLE_GIT_STATE
+        else process.env.OPENCODE_ENABLE_GIT_STATE = prev
+      }),
+  )
+}
+
+function findSystemContent(body: Record<string, unknown> | undefined): string {
+  if (!body) return ""
+  const messages = body["messages"]
+  if (!Array.isArray(messages)) return ""
+  const systems = messages
+    .filter((m): m is { role: string; content: unknown } => !!m && typeof m === "object" && "role" in m)
+    .filter((m) => m.role === "system")
+  return systems
+    .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+    .join("\n")
+}
+
+it.live("injects [GIT STATE] block immediately after </env> when flag is enabled", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ dir, llm }) {
+      const result = yield* withGitStateFlag("true", () =>
+        Effect.gen(function* () {
+          // Make the working tree dirty so we exercise the dirty path + advisory.
+          yield* Effect.promise(() => Bun.write(path.join(dir, "untracked.txt"), "x\n"))
+
+          const prompt = yield* SessionPrompt.Service
+          const sessions = yield* Session.Service
+          const chat = yield* sessions.create({
+            title: "git-state",
+            permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          })
+          yield* llm.text("ok")
+          yield* prompt.prompt({
+            sessionID: chat.id,
+            agent: "build",
+            parts: [{ type: "text", text: "hello" }],
+          })
+          const inputs = yield* llm.inputs
+          return inputs.at(-1)
+        }),
+      )
+
+      const system = findSystemContent(result)
+      // Loose count match — the fixture adds `opencode.json` as an untracked
+      // file in addition to our marker file, so we just assert >=1.
+      expect(system).toMatch(/\[GIT STATE\] HEAD: [0-9a-f]+ \| Modified: 0 \| Untracked: \d+/)
+      // Adjacency: the [GIT STATE] block sits directly after </env>, before
+      // any skills/instructions. Plugin transforms or wiring re-orderings would
+      // shift this and fail the test.
+      expect(system).toMatch(/<\/env>\s*\n+\[GIT STATE\]/)
+      expect(system).toContain("git diff HEAD -- <file>")
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("omits [GIT STATE] block when OPENCODE_ENABLE_GIT_STATE is unset (default off)", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const result = yield* withGitStateFlag(undefined, () =>
+        Effect.gen(function* () {
+          const prompt = yield* SessionPrompt.Service
+          const sessions = yield* Session.Service
+          const chat = yield* sessions.create({
+            title: "git-state-off",
+            permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          })
+          yield* llm.text("ok")
+          yield* prompt.prompt({
+            sessionID: chat.id,
+            agent: "build",
+            parts: [{ type: "text", text: "hello" }],
+          })
+          const inputs = yield* llm.inputs
+          return inputs.at(-1)
+        }),
+      )
+
+      const system = findSystemContent(result)
+      expect(system).not.toContain("[GIT STATE]")
+    }),
+    { git: true, config: providerCfg },
+  ),
+)

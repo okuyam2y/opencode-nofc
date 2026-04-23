@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
+import fs from "fs/promises"
 import path from "path"
 import { Effect } from "effect"
 import { Agent } from "../../src/agent/agent"
@@ -11,6 +12,52 @@ function load<A>(dir: string, fn: (svc: Agent.Interface) => Effect.Effect<A>) {
 }
 
 describe("session.system", () => {
+  describe("gitState", () => {
+    afterEach(async () => {
+      delete process.env.OPENCODE_ENABLE_GIT_STATE
+      await Instance.disposeAll()
+    })
+
+    function load(dir: string) {
+      return Effect.runPromise(
+        provideInstance(dir)(SystemPrompt.Service.use((s) => s.gitState())).pipe(
+          Effect.provide(SystemPrompt.defaultLayer),
+        ),
+      )
+    }
+
+    test("returns undefined when OPENCODE_ENABLE_GIT_STATE is not set (Stage 1 default off)", async () => {
+      await using tmp = await tmpdir({ git: true })
+      delete process.env.OPENCODE_ENABLE_GIT_STATE
+      const result = await load(tmp.path)
+      expect(result).toBeUndefined()
+    })
+
+    test("returns clean line when working tree has no changes", async () => {
+      await using tmp = await tmpdir({ git: true })
+      process.env.OPENCODE_ENABLE_GIT_STATE = "true"
+      const result = await load(tmp.path)
+      expect(result).toMatch(/^\[GIT STATE\] HEAD: [0-9a-f]+ \(clean\)$/)
+    })
+
+    test("returns dirty line with counts and advisory when working tree differs from HEAD", async () => {
+      await using tmp = await tmpdir({ git: true })
+      process.env.OPENCODE_ENABLE_GIT_STATE = "true"
+      await fs.writeFile(path.join(tmp.path, "untracked.txt"), "x\n", "utf-8")
+      const result = await load(tmp.path)
+      expect(result).toMatch(/^\[GIT STATE\] HEAD: [0-9a-f]+ \| Modified: 0 \| Untracked: 1$/m)
+      expect(result).toContain("git diff HEAD -- <file>")
+      expect(result).toContain("git show HEAD:<repo-root-relative-path>")
+    })
+
+    test("returns undefined for non-git directories", async () => {
+      await using tmp = await tmpdir()
+      process.env.OPENCODE_ENABLE_GIT_STATE = "true"
+      const result = await load(tmp.path)
+      expect(result).toBeUndefined()
+    })
+  })
+
   test("skills output is sorted by name and stable across calls", async () => {
     await using tmp = await tmpdir({
       git: true,

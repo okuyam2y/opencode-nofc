@@ -33,6 +33,7 @@ export const Info = z
     hidden: z.boolean().optional(),
     topP: z.number().optional(),
     temperature: z.number().optional(),
+    maxOutputTokens: z.number().int().positive().optional(),
     color: z.string().optional(),
     permission: Permission.Ruleset.zod,
     model: z
@@ -261,6 +262,7 @@ export const layer = Layer.effect(
           item.description = value.description ?? item.description
           item.temperature = value.temperature ?? item.temperature
           item.topP = value.top_p ?? item.topP
+          item.maxOutputTokens = value.maxOutputTokens ?? item.maxOutputTokens
           item.mode = value.mode ?? item.mode
           item.color = value.color ?? item.color
           item.hidden = value.hidden ?? item.hidden

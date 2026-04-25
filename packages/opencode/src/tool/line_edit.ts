@@ -1,6 +1,5 @@
-import z from "zod"
 import * as path from "path"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "../lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
@@ -22,17 +21,15 @@ function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
 }
 
-const Parameters = z.object({
-  filePath: z.string().describe("The absolute path to the file to modify"),
-  startLine: z.number().int().describe("The starting line number (1-based, inclusive)"),
-  endLine: z.number().int().describe("The ending line number (1-based, inclusive)"),
-  oldText: z
-    .string()
-    .optional()
-    .describe(
+const Parameters = Schema.Struct({
+  filePath: Schema.String.annotate({ description: "The absolute path to the file to modify" }),
+  startLine: Schema.Int.annotate({ description: "The starting line number (1-based, inclusive)" }),
+  endLine: Schema.Int.annotate({ description: "The ending line number (1-based, inclusive)" }),
+  oldText: Schema.optional(Schema.String).annotate({
+    description:
       "The current content at the specified line range for verification. Omit if you just Read the file and are confident in the line numbers.",
-    ),
-  newText: z.string().describe("The new content to replace the specified line range with"),
+  }),
+  newText: Schema.String.annotate({ description: "The new content to replace the specified line range with" }),
 })
 
 export const LineEditTool = Tool.define(
@@ -46,7 +43,7 @@ export const LineEditTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
-      execute: (params: z.infer<typeof Parameters>, ctx: Tool.Context) =>
+      execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           if (!params.filePath) {
             throw new Error("filePath is required")

@@ -1,4 +1,3 @@
-import z from "zod"
 import os from "os"
 import fuzzysort from "fuzzysort"
 import { Config } from "../config"
@@ -8,7 +7,6 @@ import { Log } from "../util"
 import { Npm } from "../npm"
 import { Hash } from "@opencode-ai/shared/util/hash"
 import { Plugin } from "../plugin"
-import { NamedError } from "@opencode-ai/shared/util/error"
 import { type LanguageModelV3 } from "@ai-sdk/provider"
 import * as ModelsDev from "./models"
 import { Auth } from "../auth"
@@ -16,6 +14,7 @@ import { Env } from "../env"
 import { InstallationVersion } from "../installation/version"
 import { Flag } from "../flag/flag"
 import { zod } from "@/util/effect-zod"
+import { namedSchemaError } from "@/util/named-schema-error"
 import { iife } from "@/util/iife"
 import { Global } from "../global"
 import path from "path"
@@ -1047,7 +1046,7 @@ export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {
     id: ProviderID.make(provider.id),
     source: "custom",
     name: provider.name,
-    env: provider.env ?? [],
+    env: [...(provider.env ?? [])],
     options: {},
     models,
   }
@@ -1178,7 +1177,7 @@ const layer: Layer.Layer<
                     model.modalities?.output?.includes("video") ?? existingModel?.capabilities.output.video ?? false,
                   pdf: model.modalities?.output?.includes("pdf") ?? existingModel?.capabilities.output.pdf ?? false,
                 },
-                interleaved: model.interleaved ?? false,
+                interleaved: model.interleaved ?? existingModel?.capabilities.interleaved ?? false,
               },
               cost: {
                 input: model?.cost?.input ?? existingModel?.cost?.input ?? 0,
@@ -1472,9 +1471,41 @@ const layer: Layer.Layer<
             }
           }
 
-          // Convert max_tokens to max_completion_tokens for gateways that require it
-          if (provider.options?.["useMaxCompletionTokens"] && opts.body && opts.method === "POST") {
-            opts.body = applyMaxCompletionTokensTransform(opts.body as string)
+          // Convert max_tokens to max_completion_tokens for gateways that require it.
+          // Must resolve per-request (not per-SDK) because a single SDK instance is shared
+          // across all models under the same provider config; the `model` captured in this
+          // closure is whichever model first built the SDK, not the model being requested.
+          // Anthropic models require `max_tokens` (sending `max_completion_tokens` causes
+          // the gateway to fall back to a tiny ~2k internal default), while GPT reasoning
+          // models require `max_completion_tokens` (rejecting `max_tokens` with 400).
+          if (opts.body && opts.method === "POST") {
+            try {
+              const body = JSON.parse(opts.body as string)
+              const requestedModelID = body?.model as string | undefined
+              // body.model is the SDK-facing api.id, but s.providers[...].models is keyed by
+              // config modelID. For aliased configs (api.id !== config key), fall back to
+              // searching by api.id. When multiple aliases share the same api.id with
+              // divergent options, picking a first-match would silently apply an unrelated
+              // override — fall back to provider-level instead.
+              const providerModels = s.providers[model.providerID]?.models
+              const apiIdMatches = requestedModelID
+                ? Object.values(providerModels ?? {}).filter((m) => m.api.id === requestedModelID)
+                : []
+              const requestedModel = requestedModelID
+                ? (providerModels?.[requestedModelID] ?? (apiIdMatches.length === 1 ? apiIdMatches[0] : undefined))
+                : undefined
+              const useMaxCompletionTokens =
+                requestedModel?.options?.["useMaxCompletionTokens"] ??
+                provider.options?.["useMaxCompletionTokens"]
+              if (useMaxCompletionTokens) {
+                opts.body = applyMaxCompletionTokensTransform(opts.body as string)
+              }
+            } catch {
+              // non-JSON body — fall through to provider-level default
+              if (provider.options?.["useMaxCompletionTokens"]) {
+                opts.body = applyMaxCompletionTokensTransform(opts.body as string)
+              }
+            }
           }
 
           const res = await fetchFn(input, {
@@ -1742,18 +1773,12 @@ export function parseModel(model: string) {
   }
 }
 
-export const ModelNotFoundError = NamedError.create(
-  "ProviderModelNotFoundError",
-  z.object({
-    providerID: ProviderID.zod,
-    modelID: ModelID.zod,
-    suggestions: z.array(z.string()).optional(),
-  }),
-)
+export const ModelNotFoundError = namedSchemaError("ProviderModelNotFoundError", {
+  providerID: ProviderID,
+  modelID: ModelID,
+  suggestions: Schema.optional(Schema.Array(Schema.String)),
+})
 
-export const InitError = NamedError.create(
-  "ProviderInitError",
-  z.object({
-    providerID: ProviderID.zod,
-  }),
-)
+export const InitError = namedSchemaError("ProviderInitError", {
+  providerID: ProviderID,
+})

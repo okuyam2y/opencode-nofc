@@ -9,6 +9,10 @@ export function usable(input: { cfg: Config.Info; model: Provider.Model }) {
   const context = input.model.limit.context
   if (context === 0) return 0
 
+  // NOTE: reserves model-level max output regardless of per-agent maxOutputTokens override.
+  // This is pessimistic (under-reports usable input) when an agent sets a lower override,
+  // but stays integrity-safe because llm.ts caps actual maxOutputTokens with Math.min against
+  // the same model value. Callers here don't carry agent context; revisit if that changes.
   const reserved =
     input.cfg.compaction?.reserved ?? Math.min(COMPACTION_BUFFER, ProviderTransform.maxOutputTokens(input.model))
   return input.model.limit.input

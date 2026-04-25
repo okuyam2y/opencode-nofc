@@ -280,7 +280,10 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
                 : undefined,
               topP: input.agent.topP ?? ProviderTransform.topP(input.model),
               topK: ProviderTransform.topK(input.model),
-              maxOutputTokens: ProviderTransform.maxOutputTokens(input.model),
+              maxOutputTokens: Math.min(
+                input.agent.maxOutputTokens ?? Infinity,
+                ProviderTransform.maxOutputTokens(input.model),
+              ),
               options,
             },
           )
@@ -599,7 +602,9 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
                       // @ts-expect-error
                       args.params.prompt = ProviderTransform.message(args.params.prompt, input.model, options)
                     }
-                    // Strip max_tokens for gateways that reject it (require max_completion_tokens)
+                    // Strip max_tokens for gateways that reject it (require max_completion_tokens).
+                    // NOTE: this also suppresses any input.agent.maxOutputTokens override — gateways
+                    // with noMaxTokens cannot honor per-agent limits.
                     if (input.model.options?.noMaxTokens ?? item.options?.["noMaxTokens"]) {
                       args.params.maxOutputTokens = undefined
                     }

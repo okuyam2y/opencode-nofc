@@ -17,7 +17,7 @@ import type { Provider } from "@/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { Effect, Schema, Types } from "effect"
 import { zod, ZodOverride } from "@/util/effect-zod"
-import { withStatics } from "@/util/schema"
+import { NonNegativeInt, withStatics } from "@/util/schema"
 import { namedSchemaError } from "@/util/named-schema-error"
 import { EffectLogger } from "@/effect"
 
@@ -72,9 +72,7 @@ export class OutputFormatText extends Schema.Class<OutputFormatText>("OutputForm
 export class OutputFormatJsonSchema extends Schema.Class<OutputFormatJsonSchema>("OutputFormatJsonSchema")({
   type: Schema.Literal("json_schema"),
   schema: Schema.Record(Schema.String, Schema.Any).annotate({ identifier: "JSONSchema" }),
-  retryCount: Schema.Number.check(Schema.isInt())
-    .check(Schema.isGreaterThanOrEqualTo(0))
-    .pipe(Schema.optional, Schema.withDecodingDefault(Effect.succeed(2))),
+  retryCount: NonNegativeInt.pipe(Schema.optional, Schema.withDecodingDefault(Effect.succeed(2))),
 }) {
   static readonly zod = zod(this)
 }
@@ -146,8 +144,8 @@ export type ReasoningPart = Types.DeepMutable<Schema.Schema.Type<typeof Reasonin
 const filePartSourceBase = {
   text: Schema.Struct({
     value: Schema.String,
-    start: Schema.Number.check(Schema.isInt()),
-    end: Schema.Number.check(Schema.isInt()),
+    start: Schema.Int,
+    end: Schema.Int,
   }).annotate({ identifier: "FilePartSourceText" }),
 }
 
@@ -165,7 +163,7 @@ export const SymbolSource = Schema.Struct({
   path: Schema.String,
   range: LSP.Range,
   name: Schema.String,
-  kind: Schema.Number.check(Schema.isInt()),
+  kind: Schema.Int,
 })
   .annotate({ identifier: "SymbolSource" })
   .pipe(withStatics((s) => ({ zod: zod(s) })))
@@ -204,8 +202,8 @@ export const AgentPart = Schema.Struct({
   source: Schema.optional(
     Schema.Struct({
       value: Schema.String,
-      start: Schema.Number.check(Schema.isInt()),
-      end: Schema.Number.check(Schema.isInt()),
+      start: Schema.Int,
+      end: Schema.Int,
     }),
   ),
 })
@@ -509,8 +507,8 @@ export const AgentPartInput = Schema.Struct({
   source: Schema.optional(
     Schema.Struct({
       value: Schema.String,
-      start: Schema.Number.check(Schema.isInt()),
-      end: Schema.Number.check(Schema.isInt()),
+      start: Schema.Int,
+      end: Schema.Int,
     }),
   ),
 })
@@ -584,54 +582,62 @@ export const Info = Object.assign(_Info, {
 })
 export type Info = User | Assistant
 
+const UpdatedEventSchema = Schema.Struct({
+  sessionID: SessionID,
+  info: _Info,
+})
+
+const RemovedEventSchema = Schema.Struct({
+  sessionID: SessionID,
+  messageID: MessageID,
+})
+
+const PartUpdatedEventSchema = Schema.Struct({
+  sessionID: SessionID,
+  part: _Part,
+  time: Schema.Number,
+})
+
+const PartRemovedEventSchema = Schema.Struct({
+  sessionID: SessionID,
+  messageID: MessageID,
+  partID: PartID,
+})
+
 export const Event = {
   Updated: SyncEvent.define({
     type: "message.updated",
     version: 1,
     aggregate: "sessionID",
-    schema: z.object({
-      sessionID: SessionID.zod,
-      info: Info.zod,
-    }),
+    schema: UpdatedEventSchema,
   }),
   Removed: SyncEvent.define({
     type: "message.removed",
     version: 1,
     aggregate: "sessionID",
-    schema: z.object({
-      sessionID: SessionID.zod,
-      messageID: MessageID.zod,
-    }),
+    schema: RemovedEventSchema,
   }),
   PartUpdated: SyncEvent.define({
     type: "message.part.updated",
     version: 1,
     aggregate: "sessionID",
-    schema: z.object({
-      sessionID: SessionID.zod,
-      part: Part.zod,
-      time: z.number(),
-    }),
+    schema: PartUpdatedEventSchema,
   }),
   PartDelta: BusEvent.define(
     "message.part.delta",
-    z.object({
-      sessionID: SessionID.zod,
-      messageID: MessageID.zod,
-      partID: PartID.zod,
-      field: z.string(),
-      delta: z.string(),
+    Schema.Struct({
+      sessionID: SessionID,
+      messageID: MessageID,
+      partID: PartID,
+      field: Schema.String,
+      delta: Schema.String,
     }),
   ),
   PartRemoved: SyncEvent.define({
     type: "message.part.removed",
     version: 1,
     aggregate: "sessionID",
-    schema: z.object({
-      sessionID: SessionID.zod,
-      messageID: MessageID.zod,
-      partID: PartID.zod,
-    }),
+    schema: PartRemovedEventSchema,
   }),
 }
 

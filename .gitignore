@@ -63,4 +63,5 @@ dev-tools/
 .husky/*
 !.husky/_/
 !.husky/pre-push
+.tmp-claude-build/
 .npmrc

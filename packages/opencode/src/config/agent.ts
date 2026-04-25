@@ -4,6 +4,7 @@ import { Schema } from "effect"
 import z from "zod"
 import { Bus } from "@/bus"
 import { zod } from "@/util/effect-zod"
+import { PositiveInt } from "@/util/schema"
 import { Log } from "../util"
 import { NamedError } from "@opencode-ai/shared/util/error"
 import { Glob } from "@opencode-ai/shared/util/glob"
@@ -14,8 +15,6 @@ import { ConfigModelID } from "./model-id"
 import { ConfigPermission } from "./permission"
 
 const log = Log.create({ service: "config" })
-
-const PositiveInt = Schema.Number.check(Schema.isInt()).check(Schema.isGreaterThan(0))
 
 const Color = Schema.Union([
   Schema.String.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/)),
@@ -30,6 +29,9 @@ const AgentSchema = Schema.StructWithRest(
     }),
     temperature: Schema.optional(Schema.Number),
     top_p: Schema.optional(Schema.Number),
+    maxOutputTokens: Schema.optional(PositiveInt).annotate({
+      description: "Maximum output tokens per model response (capped against model.limit.output)",
+    }),
     prompt: Schema.optional(Schema.String),
     tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)).annotate({
       description: "@deprecated Use 'permission' field instead",
@@ -61,6 +63,7 @@ const KNOWN_KEYS = new Set([
   "description",
   "temperature",
   "top_p",
+  "maxOutputTokens",
   "mode",
   "hidden",
   "color",

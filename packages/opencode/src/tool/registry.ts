@@ -15,7 +15,9 @@ import { SkillTool } from "./skill"
 import * as Tool from "./tool"
 import { Config } from "../config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
+import { Schema } from "effect"
 import z from "zod"
+import { ZodOverride } from "@/util/effect-zod"
 import { Plugin } from "../plugin"
 import { Provider } from "../provider"
 import { ProviderID, type ModelID } from "../provider/schema"
@@ -129,9 +131,17 @@ export const layer: Layer.Layer<
         const custom: Tool.Def[] = []
 
         function fromPlugin(id: string, def: ToolDefinition): Tool.Def {
+          // Plugin tools define their args as a raw Zod shape. Wrap the
+          // derived Zod object in a `Schema.declare` so it slots into the
+          // Schema-typed framework, and annotate with `ZodOverride` so the
+          // walker emits the original Zod object for LLM JSON Schema.
+          const zodParams = z.object(def.args)
+          const parameters = Schema.declare<unknown>((u): u is unknown => zodParams.safeParse(u).success).annotate({
+            [ZodOverride]: zodParams,
+          })
           return {
             id,
-            parameters: z.object(def.args),
+            parameters,
             description: def.description,
             execute: (args, toolCtx) =>
               Effect.gen(function* () {
@@ -279,19 +289,32 @@ export const layer: Layer.Layer<
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
       // When toolParser middleware is active, fall back to edit/write + line_edit.
-      const isGptPatch =
-        input.modelID.includes("gpt-") && !input.modelID.includes("oss") && !input.modelID.includes("gpt-4")
       // Resolve toolParser the same way llm.ts does:
       //   model.options.toolParser ?? provider.options.toolParser
       // configModelID is the exact config key for the selected model, which
-      // may differ from modelID (api.id) for aliased configs.
+      // may differ from modelID (api.id) for aliased configs. Callers in
+      // supplementary paths (experimental routes, debug agent) only know one
+      // identifier and pass it as modelID without configModelID — fall back to
+      // searching by api.id so alias resolution stays consistent with the main
+      // path (session/prompt.ts).
       const providerInfo = yield* providers.getProvider(input.providerID)
-      let hasToolParser = false
+      let modelInfo: Provider.Model | undefined
       if (providerInfo) {
         const lookupKey = input.configModelID ?? input.modelID
-        const modelInfo = providerInfo.models[lookupKey]
-        hasToolParser = !!(modelInfo?.options?.toolParser ?? providerInfo.options?.toolParser)
+        const direct = providerInfo.models[lookupKey]
+        if (direct) {
+          modelInfo = direct
+        } else {
+          // Fall back to searching by api.id only when the match is unique. Multiple aliases
+          // sharing the same api.id with divergent options would otherwise silently apply
+          // an unrelated override — fall back to provider-level in that case.
+          const matches = Object.values(providerInfo.models).filter((m) => m.api.id === input.modelID)
+          if (matches.length === 1) modelInfo = matches[0]
+        }
       }
+      const apiId = modelInfo?.api.id ?? input.modelID
+      const isGptPatch = apiId.includes("gpt-") && !apiId.includes("oss") && !apiId.includes("gpt-4")
+      const hasToolParser = !!(modelInfo?.options?.toolParser ?? providerInfo?.options?.toolParser)
       const usePatch = isGptPatch && !hasToolParser
 
       const filtered = (yield* all()).filter((tool) => {

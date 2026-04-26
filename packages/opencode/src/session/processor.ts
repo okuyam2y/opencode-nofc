@@ -22,7 +22,7 @@ import { errorMessage } from "@/util/error"
 import { Log } from "@/util"
 import { isRecord } from "@/util/record"
 import { containsSpamInValues, stripSpam } from "@/util/spam-filter"
-import { Flag } from "@/flag/flag"
+import { Flag } from "@opencode-ai/core/flag/flag"
 import { Instance } from "@/project/instance"
 import type { ToolFailureEvent } from "./failure-detector"
 

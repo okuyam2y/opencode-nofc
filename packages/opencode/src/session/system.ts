@@ -2,7 +2,7 @@ import { Context, Effect, Layer } from "effect"
 
 import { Instance } from "../project/instance"
 import { Vcs } from "../project"
-import { Flag } from "@/flag/flag"
+import { Flag } from "@opencode-ai/core/flag/flag"
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
 import PROMPT_ANTHROPIC_FRONTIER from "./prompt/anthropic-frontier.txt"

@@ -13,7 +13,7 @@ import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { containsSpam } from "@/util/spam-filter"
 import { trimDiff } from "./edit"
-import { AppFileSystem } from "@opencode-ai/shared/filesystem"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
 

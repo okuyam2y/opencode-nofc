@@ -2,7 +2,7 @@ import { createSignal, Show, Switch, Match } from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import { useTheme } from "@tui/context/theme"
 import type { AssistantMessage } from "@opencode-ai/sdk/v2"
-import { Flag } from "@/flag/flag"
+import { Flag } from "@opencode-ai/core/flag/flag"
 import type { IntermediateTextPart } from "./intermediate-text-collapse"
 
 export function IntermediateTextPart(props: {

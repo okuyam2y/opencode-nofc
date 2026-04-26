@@ -551,6 +551,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
                     "x-opencode-session": input.sessionID,
                     "x-opencode-request": input.user.id,
                     "x-opencode-client": Flag.OPENCODE_CLIENT,
+                    "User-Agent": `opencode/${InstallationVersion}`,
                   }
                 : {
                     "x-session-affinity": input.sessionID,

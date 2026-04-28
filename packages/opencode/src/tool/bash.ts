@@ -11,6 +11,7 @@ import { Language, type Node } from "web-tree-sitter"
 
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { fileURLToPath } from "url"
+import { Config } from "@/config"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Shell } from "@/shell/shell"
 
@@ -83,7 +84,6 @@ function collectDiagnosticArtifacts(output: string, cwd: string): string {
   return parts.length > 0 ? DIAGNOSTIC_DELIMITER + parts.join("") : ""
 }
 const DEFAULT_TIMEOUT = Flag.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
-const PS = new Set(["powershell", "pwsh"])
 const CWD = new Set(["cd", "push-location", "set-location"])
 const FILES = new Set([
   ...CWD,
@@ -337,8 +337,8 @@ const ask = Effect.fn("BashTool.ask")(function* (ctx: Tool.Context, scan: Scan) 
   })
 })
 
-function cmd(shell: string, name: string, command: string, cwd: string, env: NodeJS.ProcessEnv) {
-  if (process.platform === "win32" && PS.has(name)) {
+function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv) {
+  if (process.platform === "win32" && Shell.ps(shell)) {
     return ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
       cwd,
       env,
@@ -350,7 +350,7 @@ function cmd(shell: string, name: string, command: string, cwd: string, env: Nod
   // zsh errors on unmatched globs (NOMATCH is on by default), which breaks
   // LLM-generated commands like `mvn -Dincludes=com.google.protobuf:*`.
   // nonomatch makes unmatched globs pass through as literal strings (bash default).
-  const wrapped = name === "zsh" ? `setopt nonomatch 2>/dev/null; ${command}` : command
+  const wrapped = Shell.name(shell) === "zsh" ? `setopt nonomatch 2>/dev/null; ${command}` : command
 
   return ChildProcess.make(wrapped, [], {
     shell,
@@ -360,7 +360,6 @@ function cmd(shell: string, name: string, command: string, cwd: string, env: Nod
     detached: process.platform !== "win32",
   })
 }
-
 const parser = lazy(async () => {
   const { Parser } = await import("web-tree-sitter")
   const { default: treeWasm } = await import("web-tree-sitter/tree-sitter.wasm" as string, {
@@ -392,6 +391,7 @@ const parser = lazy(async () => {
 export const BashTool = Tool.define(
   "bash",
   Effect.gen(function* () {
+    const config = yield* Config.Service
     const spawner = yield* ChildProcessSpawner
     const fs = yield* AppFileSystem.Service
     const trunc = yield* Truncate.Service
@@ -472,7 +472,6 @@ export const BashTool = Tool.define(
     const run = Effect.fn("BashTool.run")(function* (
       input: {
         shell: string
-        name: string
         command: string
         cwd: string
         env: NodeJS.ProcessEnv
@@ -502,7 +501,7 @@ export const BashTool = Tool.define(
 
       const code: number | null = yield* Effect.scoped(
         Effect.gen(function* () {
-          const handle = yield* spawner.spawn(cmd(input.shell, input.name, input.command, input.cwd, input.env))
+          const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
 
           yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
@@ -637,7 +636,8 @@ export const BashTool = Tool.define(
 
     return () =>
       Effect.gen(function* () {
-        const shell = Shell.acceptable()
+        const cfg = yield* config.get()
+        const shell = Shell.acceptable(cfg.shell)
         const name = Shell.name(shell)
         const chain =
           name === "powershell"
@@ -676,7 +676,7 @@ export const BashTool = Tool.define(
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
               const timeout = params.timeout ?? DEFAULT_TIMEOUT
-              const ps = PS.has(name)
+              const ps = Shell.ps(shell)
               const root = yield* parse(params.command, ps)
               const scan = yield* collect(root, cwd, ps, shell)
               if (!Instance.containsPath(cwd)) scan.dirs.add(cwd)
@@ -685,7 +685,6 @@ export const BashTool = Tool.define(
               return yield* run(
                 {
                   shell,
-                  name,
                   command: params.command,
                   cwd,
                   env: yield* shellEnv(ctx, cwd),

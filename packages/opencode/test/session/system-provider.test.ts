@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { SystemPrompt } from "../../src/session/system"
-import type { Provider } from "../../src/provider"
+import type { Provider } from "../../src/provider/provider"
 
 function fakeModel(apiId: string): Provider.Model {
   return { api: { id: apiId } } as unknown as Provider.Model

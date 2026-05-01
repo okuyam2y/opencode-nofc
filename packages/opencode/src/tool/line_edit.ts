@@ -1,7 +1,7 @@
 import * as path from "path"
 import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
-import { LSP } from "../lsp"
+import { LSP } from "../lsp/lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
 import DESCRIPTION from "./line_edit.txt"
 import { File } from "../file"

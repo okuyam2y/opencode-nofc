@@ -4,27 +4,27 @@ import z from "zod"
 import * as EffectZod from "@/util/effect-zod"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
+import * as Log from "@opencode-ai/core/util/log"
 import { SessionFailureTracker, READ_PREFIX_MATCHER } from "./failure-detector"
-import { Log } from "../util"
 import { SessionRevert } from "./revert"
 import * as Session from "./session"
 import { Agent } from "../agent/agent"
-import { Provider } from "../provider"
+import { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "../provider/schema"
 import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema } from "ai"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { SessionCompaction } from "./compaction"
 import { Bus } from "../bus"
-import { ProviderTransform } from "../provider"
+import { ProviderTransform } from "@/provider/transform"
 import { SystemPrompt } from "./system"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
 import PROMPT_PLAN from "../session/prompt/plan.txt"
 import BUILD_SWITCH from "../session/prompt/build-switch.txt"
 import MAX_STEPS from "../session/prompt/max-steps.txt"
-import { ToolRegistry } from "../tool"
+import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
-import { LSP } from "../lsp"
+import { LSP } from "@/lsp/lsp"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { ulid } from "ulid"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -32,27 +32,27 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import * as Stream from "effect/Stream"
 import { Command } from "../command"
 import { pathToFileURL, fileURLToPath } from "url"
-import { ConfigMarkdown } from "../config"
+import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionProcessor } from "./processor"
-import { Tool } from "@/tool"
+import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { SessionStatus } from "./status"
 import { LLM } from "./llm"
 import { Shell } from "@/shell/shell"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
-import { Truncate } from "@/tool"
+import { Truncate } from "@/tool/truncate"
 import { decodeDataUrl } from "@/util/data-url"
-import { Process } from "@/util"
-import { Cause, Effect, Exit, Layer, Option, Scope, Context, Schema } from "effect"
+import { Process } from "@/util/process"
+import { Cause, Effect, Exit, Layer, Option, Scope, Context, Schema, Types } from "effect"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
-import { EffectLogger } from "@/effect"
-import { InstanceState } from "@/effect"
+import * as EffectLogger from "@opencode-ai/core/effect/logger"
+import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
-import { EffectBridge } from "@/effect"
+import { EffectBridge } from "@/effect/bridge"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -199,7 +199,7 @@ export const layer = Layer.effect(
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
       const ctx = yield* InstanceState.context
-      const parts: PromptInput["parts"] = [{ type: "text", text: template }]
+      const parts: Types.DeepMutable<PromptInput["parts"]> = [{ type: "text", text: template }]
       const files = ConfigMarkdown.files(template)
       const seen = new Set<string>()
       yield* Effect.forEach(
@@ -1121,7 +1121,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             case "file:": {
               log.info("file", { mime: part.mime })
               const filepath = fileURLToPath(part.url)
-              if (yield* fsys.isDir(filepath)) part.mime = "application/x-directory"
+              const mime = (yield* fsys.isDir(filepath)) ? "application/x-directory" : part.mime
 
               const { read } = yield* registry.named()
               const execRead = (args: Parameters<typeof read.execute>[0], extra?: Tool.Context["extra"]) => {
@@ -1140,7 +1140,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   .pipe(Effect.onInterrupt(() => Effect.sync(() => controller.abort())))
               }
 
-              if (part.mime === "text/plain") {
+              if (mime === "text/plain") {
                 let offset: number | undefined
                 let limit: number | undefined
                 const range = { start: url.searchParams.get("start"), end: url.searchParams.get("end") }
@@ -1200,7 +1200,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                       })),
                     )
                   } else {
-                    pieces.push({ ...part, messageID: info.id, sessionID: input.sessionID })
+                    pieces.push({ ...part, mime, messageID: info.id, sessionID: input.sessionID })
                   }
                 } else {
                   const error = Cause.squash(exit.cause)
@@ -1221,7 +1221,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 return pieces
               }
 
-              if (part.mime === "application/x-directory") {
+              if (mime === "application/x-directory") {
                 const args = { filePath: filepath }
                 const exit = yield* execRead(args).pipe(Effect.exit)
                 if (Exit.isFailure(exit)) {
@@ -1275,9 +1275,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   sessionID: input.sessionID,
                   type: "file",
                   url:
-                    `data:${part.mime};base64,` +
+                    `data:${mime};base64,` +
                     Buffer.from(yield* fsys.readFile(filepath).pipe(Effect.catch(Effect.die))).toString("base64"),
-                  mime: part.mime,
+                  mime,
                   filename: part.filename!,
                   source: part.source,
                 },
@@ -1999,18 +1999,7 @@ export const PromptInput = Schema.Struct({
     ]).annotate({ discriminator: "type" }),
   ),
 }).pipe(withStatics((s) => ({ zod: zod(s) })))
-// `z.discriminatedUnion` erases the discriminated members' shapes back to
-// `{}` when walked from the generic `z.ZodType` input. Restore the precise
-// `parts` type from the exported Schema input types so callers see a proper
-// tagged union.
-type PartInputUnion =
-  | MessageV2.TextPartInput
-  | MessageV2.FilePartInput
-  | MessageV2.AgentPartInput
-  | MessageV2.SubtaskPartInput
-export type PromptInput = Omit<Schema.Schema.Type<typeof PromptInput>, "parts"> & {
-  parts: PartInputUnion[]
-}
+export type PromptInput = Schema.Schema.Type<typeof PromptInput>
 
 export class LoopInput extends Schema.Class<LoopInput>("SessionPrompt.LoopInput")({
   sessionID: SessionID,

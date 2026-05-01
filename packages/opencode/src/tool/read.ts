@@ -1,19 +1,20 @@
 import { Effect, Option, Schema, Scope } from "effect"
+import { NonNegativeInt } from "@/util/schema"
 import { createReadStream } from "fs"
 import { readdir } from "fs/promises"
 import * as path from "path"
 import { createInterface } from "readline"
 import * as Tool from "./tool"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
-import { LSP } from "../lsp"
+import { LSP } from "@/lsp/lsp"
 import DESCRIPTION from "./read.txt"
 import { Instance } from "../project/instance"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isImageAttachment, sniffAttachmentMime } from "@/util/media"
 import { extractDocumentText, extractImageText, isDocumentFile } from "./document"
-import { Config } from "../config"
-import type { Provider } from "../provider"
+import { Config } from "@/config/config"
+import type { Provider } from "@/provider/provider"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -29,10 +30,10 @@ const SAMPLE_BYTES = 4096
 // unchanged; purely CLI-facing uses must now send numbers rather than strings.
 export const Parameters = Schema.Struct({
   filePath: Schema.String.annotate({ description: "The absolute path to the file or directory to read" }),
-  offset: Schema.optional(Schema.Number).annotate({
+  offset: Schema.optional(NonNegativeInt).annotate({
     description: "The line number to start reading from (1-indexed)",
   }),
-  limit: Schema.optional(Schema.Number).annotate({
+  limit: Schema.optional(NonNegativeInt).annotate({
     description: "The maximum number of lines to read (defaults to 2000)",
   }),
 })

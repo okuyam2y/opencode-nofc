@@ -8,7 +8,7 @@ import * as Tool from "./tool"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { LSP } from "@/lsp/lsp"
 import DESCRIPTION from "./read.txt"
-import { Instance } from "../project/instance"
+import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isImageAttachment, sniffAttachmentMime } from "@/util/media"
@@ -47,6 +47,7 @@ export const ReadTool = Tool.define(
     const scope = yield* Scope.Scope
 
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
+      const ctx = yield* InstanceState.context
       const dir = path.dirname(filepath)
       const base = path.basename(filepath)
       const baseLower = base.toLowerCase()
@@ -68,7 +69,7 @@ export const ReadTool = Tool.define(
         ),
         Effect.catch(() => Effect.succeed([] as string[])),
       )
-      const root = Instance.directory
+      const root = ctx.directory
       const repoExact = yield* Effect.tryPromise(() =>
         findByBasename(root, base),
       ).pipe(Effect.catch(() => Effect.succeed([] as string[])))
@@ -105,7 +106,7 @@ Do NOT retry the same path. Confirm the correct filename with glob or grep befor
 
 No file named "${base}" exists anywhere in the repository — this file may not exist at all.
 
-Working directory: ${Instance.directory}
+Working directory: ${ctx.directory}
 
 Do NOT retry the same path. Run glob or grep to locate the correct file before the next Read. If no such file exists, do not reference it in subsequent output.`,
         ),
@@ -198,18 +199,15 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context,
     ) {
-      if (params.offset !== undefined && params.offset < 1) {
-        return yield* Effect.fail(new Error("offset must be greater than or equal to 1"))
-      }
-
+      const instance = yield* InstanceState.context
       let filepath = params.filePath
       if (!path.isAbsolute(filepath)) {
-        filepath = path.resolve(Instance.directory, filepath)
+        filepath = path.resolve(instance.directory, filepath)
       }
       if (process.platform === "win32") {
         filepath = AppFileSystem.normalizePath(filepath)
       }
-      const title = path.relative(Instance.worktree, filepath)
+      const title = path.relative(instance.worktree, filepath)
 
       const stat = yield* fs.stat(filepath).pipe(
         Effect.catchIf(
@@ -235,7 +233,7 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
       if (stat.type === "Directory") {
         const items = yield* list(filepath)
         const limit = params.limit ?? DEFAULT_READ_LIMIT
-        const offset = params.offset ?? 1
+        const offset = params.offset || 1
         const start = offset - 1
         const sliced = items.slice(start, start + limit)
         const truncated = start + sliced.length < items.length
@@ -394,7 +392,7 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
       }
 
       const file = yield* Effect.promise(() =>
-        lines(filepath, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset ?? 1 }),
+        lines(filepath, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset || 1 }),
       )
       if (file.count < file.offset && !(file.count === 0 && file.offset === 1)) {
         return yield* Effect.fail(

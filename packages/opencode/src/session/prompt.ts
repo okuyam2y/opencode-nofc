@@ -328,7 +328,8 @@ export const layer = Layer.effect(
 
       const assistantMessage = input.messages.findLast((msg) => msg.info.role === "assistant")
       if (input.agent.name !== "plan" && assistantMessage?.info.agent === "plan") {
-        const plan = Session.plan(input.session)
+        const ctxPlan = yield* InstanceState.context
+        const plan = Session.plan(input.session, ctxPlan)
         if (!(yield* fsys.existsSafe(plan))) return input.messages
         const part = yield* sessions.updatePart({
           id: PartID.ascending(),
@@ -344,7 +345,8 @@ export const layer = Layer.effect(
 
       if (input.agent.name !== "plan" || assistantMessage?.info.agent === "plan") return input.messages
 
-      const plan = Session.plan(input.session)
+      const ctxPlan = yield* InstanceState.context
+      const plan = Session.plan(input.session, ctxPlan)
       const exists = yield* fsys.existsSafe(plan)
       if (!exists) yield* fsys.ensureDir(path.dirname(plan)).pipe(Effect.catch(Effect.die))
       const part = yield* sessions.updatePart({
@@ -1683,7 +1685,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
             const [skills, env, gitState, instructions, modelMsgs] = yield* Effect.all([
               sys.skills(agent),
-              Effect.sync(() => sys.environment(model)),
+              sys.environment(model),
               sys.gitState(),
               instruction.system().pipe(Effect.orDie),
               MessageV2.toModelMessagesEffect(msgs, model, { pendingDirectives: pending }),

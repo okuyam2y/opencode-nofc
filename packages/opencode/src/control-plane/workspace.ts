@@ -16,7 +16,7 @@ import { Filesystem } from "@/util/filesystem"
 import { ProjectID } from "@/project/schema"
 import { Slug } from "@opencode-ai/core/util/slug"
 import { WorkspaceTable } from "./workspace.sql"
-import { getAdaptor } from "./adaptors"
+import { getAdapter } from "./adapters"
 import { type WorkspaceInfo, WorkspaceInfo as WorkspaceInfoSchema } from "./types"
 import { WorkspaceID } from "./schema"
 import { Session } from "@/session/session"
@@ -25,6 +25,7 @@ import { SessionID } from "@/session/schema"
 import { errorData } from "@/util/error"
 import { waitEvent } from "./util"
 import { WorkspaceContext } from "./workspace-context"
+import { EffectBridge } from "@/effect/bridge"
 import { NonNegativeInt, withStatics } from "@/util/schema"
 import { zod as effectZod, zodObject } from "@/util/effect-zod"
 
@@ -335,8 +336,8 @@ export const layer = Layer.effect(
     })
 
     const syncWorkspaceLoop = Effect.fn("Workspace.syncWorkspaceLoop")(function* (space: Info) {
-      const adaptor = getAdaptor(space.projectID, space.type)
-      const target = yield* Effect.promise(() => Promise.resolve(adaptor.target(space)))
+      const adapter = getAdapter(space.projectID, space.type)
+      const target = yield* EffectBridge.fromPromise(() => adapter.target(space))
 
       if (target.type === "local") return
 
@@ -419,8 +420,8 @@ export const layer = Layer.effect(
     const startSync = Effect.fn("Workspace.startSync")(function* (space: Info) {
       if (!Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) return
 
-      const adaptor = getAdaptor(space.projectID, space.type)
-      const target = yield* Effect.promise(() => Promise.resolve(adaptor.target(space)))
+      const adapter = getAdapter(space.projectID, space.type)
+      const target = yield* EffectBridge.fromPromise(() => adapter.target(space))
 
       if (target.type === "local") {
         setStatus(space.id, (yield* Effect.promise(() => Filesystem.exists(target.directory))) ? "connected" : "error")
@@ -458,9 +459,9 @@ export const layer = Layer.effect(
 
     const create = Effect.fn("Workspace.create")(function* (input: CreateInput) {
       const id = WorkspaceID.ascending(input.id)
-      const adaptor = getAdaptor(input.projectID, input.type)
-      const config = yield* Effect.promise(() =>
-        Promise.resolve(adaptor.configure({ ...input, id, name: Slug.create(), directory: null })),
+      const adapter = getAdapter(input.projectID, input.type)
+      const config = yield* EffectBridge.fromPromise(() =>
+        adapter.configure({ ...input, id, name: Slug.create(), directory: null }),
       )
 
       const info: Info = {
@@ -496,7 +497,7 @@ export const layer = Layer.effect(
         OTEL_RESOURCE_ATTRIBUTES: process.env.OTEL_RESOURCE_ATTRIBUTES,
       }
 
-      yield* Effect.promise(() => adaptor.create(config, env))
+      yield* EffectBridge.fromPromise(() => adapter.create(config, env))
       yield* Effect.all(
         [
           waitEvent({
@@ -531,8 +532,8 @@ export const layer = Layer.effect(
             workspaceID: input.workspaceID,
           })
 
-        const adaptor = getAdaptor(space.projectID, space.type)
-        const target = yield* Effect.promise(() => Promise.resolve(adaptor.target(space)))
+        const adapter = getAdapter(space.projectID, space.type)
+        const target = yield* EffectBridge.fromPromise(() => adapter.target(space))
 
         yield* sync.run(Session.Event.Updated, {
           sessionID: input.sessionID,
@@ -724,14 +725,14 @@ export const layer = Layer.effect(
       yield* stopSync(id)
 
       const info = fromRow(row)
-      yield* Effect.catch(
+      yield* Effect.catchCause(
         Effect.gen(function* () {
-          const adaptor = getAdaptor(info.projectID, row.type)
-          yield* Effect.tryPromise(() => Promise.resolve(adaptor.remove(info)))
+          const adapter = getAdapter(info.projectID, row.type)
+          yield* EffectBridge.fromPromise(() => adapter.remove(info))
         }),
         () =>
           Effect.sync(() => {
-            log.error("adaptor not available when removing workspace", { type: row.type })
+            log.error("adapter not available when removing workspace", { type: row.type })
           }),
       )
 

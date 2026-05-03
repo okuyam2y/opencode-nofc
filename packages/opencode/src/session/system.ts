@@ -1,7 +1,7 @@
 import { Context, Effect, Layer } from "effect"
 
-import { Instance } from "../project/instance"
-import { Vcs } from "../project/vcs"
+import { InstanceState } from "@/effect/instance-state"
+import { Vcs } from "@/project/vcs"
 import { Flag } from "@opencode-ai/core/flag/flag"
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
@@ -75,7 +75,7 @@ export function provider(model: Provider.Model, options?: { toolParser?: string;
 }
 
 export interface Interface {
-  readonly environment: (model: Provider.Model) => string[]
+  readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
   readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
   readonly gitState: () => Effect.Effect<string | undefined>
 }
@@ -89,22 +89,22 @@ export const layer = Layer.effect(
     const vcs = yield* Vcs.Service
 
     return Service.of({
-      environment(model) {
-        const project = Instance.project
+      environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model) {
+        const ctx = yield* InstanceState.context
         return [
           [
             `You are powered by the model named ${model.api.id}. The exact model ID is ${model.providerID}/${model.api.id}`,
             `Here is some useful information about the environment you are running in:`,
             `<env>`,
-            `  Working directory: ${Instance.directory}`,
-            `  Workspace root folder: ${Instance.worktree}`,
-            `  Is directory a git repo: ${project.vcs === "git" ? "yes" : "no"}`,
+            `  Working directory: ${ctx.directory}`,
+            `  Workspace root folder: ${ctx.worktree}`,
+            `  Is directory a git repo: ${ctx.project.vcs === "git" ? "yes" : "no"}`,
             `  Platform: ${process.platform}`,
             `  Today's date: ${new Date().toDateString()}`,
             `</env>`,
           ].join("\n"),
         ]
-      },
+      }),
 
       skills: Effect.fn("SystemPrompt.skills")(function* (agent: Agent.Info) {
         if (Permission.disabled(["skill"], agent.permission).has("skill")) return

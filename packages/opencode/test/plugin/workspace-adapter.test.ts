@@ -3,7 +3,7 @@ import { Effect, Layer } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import path from "path"
 import { pathToFileURL } from "url"
-import { provideTmpdirInstance } from "../fixture/fixture"
+import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const disableDefault = process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS
@@ -20,7 +20,7 @@ const experimental = Flag.OPENCODE_EXPERIMENTAL_WORKSPACES
 Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = true
 
 afterEach(async () => {
-  await Instance.disposeAll()
+  await disposeAllInstances()
 })
 
 afterAll(() => {
@@ -34,7 +34,7 @@ afterAll(() => {
 })
 
 describe("plugin.workspace", () => {
-  it.live("plugin can install a workspace adaptor", () =>
+  it.live("plugin can install a workspace adapter", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
         const type = `plug-${Math.random().toString(36).slice(2)}`
@@ -48,7 +48,7 @@ describe("plugin.workspace", () => {
               "export default async ({ experimental_workspace }) => {",
               `  experimental_workspace.register(${JSON.stringify(type)}, {`,
               '    name: "plug",',
-              '    description: "plugin workspace adaptor",',
+              '    description: "plugin workspace adapter",',
               "    configure(input) {",
               `      return { ...input, name: "plug", branch: "plug/main", directory: ${JSON.stringify(space)} }`,
               "    },",

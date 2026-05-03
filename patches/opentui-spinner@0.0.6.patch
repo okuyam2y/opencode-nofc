@@ -1,0 +1,17 @@
+diff --git a/package.json b/package.json
+index c2a9eb537acbf9dfdc9d84770e0c74f02f52906a..b9b052c91baf61c016114f2d97ea5023ce4e4202 100644
+--- a/package.json
++++ b/package.json
+@@ -53,9 +53,9 @@
+     "tsdown": "^0.16.0"
+   },
+   "peerDependencies": {
+-    "@opentui/core": "^0.1.49",
+-    "@opentui/react": "^0.1.49",
+-    "@opentui/solid": "^0.1.49",
++    "@opentui/core": ">=0.1.49",
++    "@opentui/react": ">=0.1.49",
++    "@opentui/solid": ">=0.1.49",
+     "typescript": "^5"
+   },
+   "peerDependenciesMeta": {

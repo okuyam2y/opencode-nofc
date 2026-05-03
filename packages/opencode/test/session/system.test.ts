@@ -4,8 +4,9 @@ import path from "path"
 import { Effect } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { Instance } from "../../src/project/instance"
+import { WithInstance } from "../../src/project/with-instance"
 import { SystemPrompt } from "../../src/session/system"
-import { provideInstance, tmpdir } from "../fixture/fixture"
+import { disposeAllInstances, provideInstance, tmpdir } from "../fixture/fixture"
 
 function load<A>(dir: string, fn: (svc: Agent.Interface) => Effect.Effect<A>) {
   return Effect.runPromise(provideInstance(dir)(Agent.Service.use(fn)).pipe(Effect.provide(Agent.defaultLayer)))
@@ -15,7 +16,7 @@ describe("session.system", () => {
   describe("gitState", () => {
     afterEach(async () => {
       delete process.env.OPENCODE_ENABLE_GIT_STATE
-      await Instance.disposeAll()
+      await disposeAllInstances()
     })
 
     function load(dir: string) {
@@ -86,7 +87,7 @@ description: ${description}
     process.env.OPENCODE_TEST_HOME = tmp.path
 
     try {
-      await Instance.provide({
+      await WithInstance.provide({
         directory: tmp.path,
         fn: async () => {
           const build = await load(tmp.path, (svc) => svc.get("build"))

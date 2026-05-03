@@ -4,7 +4,8 @@ import fs from "fs/promises"
 import { Effect, Layer, ManagedRuntime } from "effect"
 import { LineEditTool } from "../../src/tool/line_edit"
 import { Instance } from "../../src/project/instance"
-import { tmpdir } from "../fixture/fixture"
+import { WithInstance } from "../../src/project/with-instance"
+import { disposeAllInstances, tmpdir } from "../fixture/fixture"
 import { LSP } from "../../src/lsp/lsp"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Format } from "../../src/format"
@@ -51,7 +52,7 @@ const resolve = () =>
   )
 
 afterEach(async () => {
-  await Instance.disposeAll()
+  await disposeAllInstances()
 })
 
 describe("tool.line_edit", () => {
@@ -66,7 +67,7 @@ describe("tool.line_edit", () => {
     const tmp = await tmpdir()
     const { filepath, tool } = await setup(tmp, "line1\nline2\nline3\n")
 
-    const result = await Instance.provide({
+    const result = await WithInstance.provide({
       directory: tmp.path,
       fn: () =>
         runtime.runPromise(
@@ -91,7 +92,7 @@ describe("tool.line_edit", () => {
     const tmp = await tmpdir()
     const { filepath, tool } = await setup(tmp, "line1\nline2\nline3\nline4\n")
 
-    await Instance.provide({
+    await WithInstance.provide({
       directory: tmp.path,
       fn: () =>
         runtime.runPromise(
@@ -115,7 +116,7 @@ describe("tool.line_edit", () => {
     const tmp = await tmpdir()
     const { filepath, tool } = await setup(tmp, "line1\nline2\nline3\n")
 
-    await Instance.provide({
+    await WithInstance.provide({
       directory: tmp.path,
       fn: () =>
         runtime.runPromise(
@@ -140,7 +141,7 @@ describe("tool.line_edit", () => {
     const { filepath, tool } = await setup(tmp, "line1\nline2\n")
 
     await expect(
-      Instance.provide({
+      WithInstance.provide({
         directory: tmp.path,
         fn: () =>
           runtime.runPromise(
@@ -163,7 +164,7 @@ describe("tool.line_edit", () => {
     const { filepath, tool } = await setup(tmp, "line1\nline2\nline3\n")
 
     await expect(
-      Instance.provide({
+      WithInstance.provide({
         directory: tmp.path,
         fn: () =>
           runtime.runPromise(
@@ -186,7 +187,7 @@ describe("tool.line_edit", () => {
     const tmp = await tmpdir()
     const { filepath, tool } = await setup(tmp, "line1\nline2\nline3\n")
 
-    const result = await Instance.provide({
+    const result = await WithInstance.provide({
       directory: tmp.path,
       fn: () =>
         runtime.runPromise(

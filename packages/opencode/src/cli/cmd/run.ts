@@ -4,6 +4,7 @@ import { pathToFileURL } from "url"
 import { UI } from "../ui"
 import { cmd } from "./cmd"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { AppRuntime } from "@/effect/app-runtime"
 import { bootstrap } from "../bootstrap"
 import { EOL } from "os"
 import { Filesystem } from "@/util/filesystem"
@@ -28,7 +29,6 @@ import { ShellTool } from "../../tool/shell"
 import { ShellID } from "../../tool/shell/id"
 import { TodoWriteTool } from "../../tool/todo"
 import { Locale } from "@/util/locale"
-import { AppRuntime } from "@/effect/app-runtime"
 
 /**
  * Buffers text parts within a step and flushes or discards them when
@@ -328,6 +328,11 @@ export const RunCommand = cmd({
         alias: ["p"],
         type: "string",
         describe: "basic auth password (defaults to OPENCODE_SERVER_PASSWORD)",
+      })
+      .option("username", {
+        alias: ["u"],
+        type: "string",
+        describe: "basic auth username (defaults to OPENCODE_SERVER_USERNAME or 'opencode')",
       })
       .option("dir", {
         type: "string",

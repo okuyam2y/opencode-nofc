@@ -146,9 +146,8 @@ export const layer = Layer.effect(
       return yield* EffectBridge.make()
     })
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
-      const run = yield* runner()
       return {
-        cancel: (sessionID: SessionID) => run.fork(cancel(sessionID)),
+        cancel: (sessionID: SessionID) => cancel(sessionID),
         resolvePromptParts: (template: string) => resolvePromptParts(template),
         prompt: (input: PromptInput) => prompt(input),
       } satisfies TaskPromptOps
@@ -798,7 +797,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const shellImpl = Effect.fn("SessionPrompt.shellImpl")(function* (input: ShellInput) {
       const ctx = yield* InstanceState.context
       const run = yield* runner()
-      const session = yield* sessions.get(input.sessionID)
+      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       if (session.revert) {
         yield* revert.cleanup(session)
       }
@@ -1357,7 +1356,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
     const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.prompt")(
       function* (input: PromptInput) {
-        const session = yield* sessions.get(input.sessionID)
+        const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
         yield* revert.cleanup(session)
         const message = yield* createUserMessage(input)
         yield* sessions.touch(input.sessionID)
@@ -1396,7 +1395,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         const MAX_AUTO_CONTINUE = 3
         let dropRecoveryCount = 0
         const MAX_DROP_RECOVERY = 3
-        const session = yield* sessions.get(sessionID)
+        const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         // End-of-turn cleanup for the per-session pending directives Map.
         // The processor may enqueue a directive on the 3rd same-signature

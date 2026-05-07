@@ -25,6 +25,7 @@ import { containsSpamInValues, stripSpam } from "@/util/spam-filter"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { EventV2 } from "@/v2/event"
 import { SessionEvent } from "@/v2/session-event"
+import { Modelv2 } from "@/v2/model"
 import * as DateTime from "effect/DateTime"
 import { Instance } from "@/project/instance"
 import type { ToolFailureEvent } from "./failure-detector"
@@ -954,7 +955,7 @@ const log = Log.create({ service: "session.processor" })
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               {
                 const teCalled = yield* readToolCall(value.toolCallId)
-                EventV2.run(SessionEvent.Tool.Error.Sync, {
+                EventV2.run(SessionEvent.Tool.Failed.Sync, {
                   sessionID: ctx.sessionID,
                   callID: value.toolCallId,
                   error: {
@@ -985,9 +986,9 @@ const log = Log.create({ service: "session.processor" })
                   sessionID: ctx.sessionID,
                   agent: input.assistantMessage.agent,
                   model: {
-                    id: ctx.model.id,
-                    providerID: ctx.model.providerID,
-                    variant: input.assistantMessage.variant,
+                    id: Modelv2.ID.make(ctx.model.id),
+                    providerID: Modelv2.ProviderID.make(ctx.model.providerID),
+                    variant: Modelv2.VariantID.make(input.assistantMessage.variant ?? "default"),
                   },
                   snapshot: ctx.snapshot,
                   timestamp: DateTime.makeUnsafe(Date.now()),
@@ -1348,6 +1349,17 @@ const log = Log.create({ service: "session.processor" })
             yield* bus.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
             return
           }
+          if (!ctx.assistantMessage.summary) {
+            // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
+            EventV2.run(SessionEvent.Step.Failed.Sync, {
+              sessionID: ctx.sessionID,
+              error: {
+                type: "unknown",
+                message: errorMessage(e),
+              },
+              timestamp: DateTime.makeUnsafe(Date.now()),
+            })
+          }
           ctx.assistantMessage.error = error
           yield* bus.publish(Session.Event.Error, {
             sessionID: ctx.assistantMessage.sessionID,
@@ -1474,6 +1486,7 @@ const log = Log.create({ service: "session.processor" })
                         type: "retry",
                         attempt: info.attempt,
                         message: info.message,
+                        action: info.action,
                         next: info.next,
                       })
                     }),

@@ -28,6 +28,7 @@ import { SessionEvent } from "@/v2/session-event"
 import { Modelv2 } from "@/v2/model"
 import * as DateTime from "effect/DateTime"
 import { Instance } from "@/project/instance"
+import { InstanceRef } from "@/effect/instance-ref"
 import type { ToolFailureEvent } from "./failure-detector"
 
 /** Tools exempt from same-step dedup (Stage 4).
@@ -459,6 +460,22 @@ const log = Log.create({ service: "session.processor" })
       const status = yield* SessionStatus.Service
 
       const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
+        // Capture instance via InstanceRef (Effect Service) so downstream
+        // failure-tracker access works inside forked fibers where the
+        // AsyncLocalStorage-backed `Instance.xxx` getters lose their context
+        // (notably the promptAsync route used by the TUI, which forks the
+        // prompt fiber via Effect.forkIn).  Fall back to Instance ALS only
+        // for legacy paths that don't provide InstanceRef.
+        const instanceRef = yield* InstanceRef
+        const instance =
+          instanceRef ??
+          (() => {
+            try {
+              return Instance.current
+            } catch {
+              return undefined
+            }
+          })()
         // Pre-capture snapshot before the LLM stream starts. The AI SDK
         // may execute tools internally before emitting start-step events,
         // so capturing inside the event handler can be too late.
@@ -587,8 +604,8 @@ const log = Log.create({ service: "session.processor" })
               input: match.part.state.input,
               error: errMsg,
               timestamp: Date.now(),
-              worktree: Instance.worktree,
-              cwd: Instance.directory,
+              worktree: instance?.worktree ?? "",
+              cwd: instance?.directory ?? "",
             }
             const fired = tracker.record(event, "error")
             if (fired.length > 0) {
@@ -939,8 +956,8 @@ const log = Log.create({ service: "session.processor" })
                     error: "",
                     output: value.output,
                     timestamp: Date.now(),
-                    worktree: Instance.worktree,
-                    cwd: Instance.directory,
+                    worktree: instance?.worktree ?? "",
+                    cwd: instance?.directory ?? "",
                   }
                   tracker.record(event, "completed")
                 }
@@ -1460,6 +1477,7 @@ const log = Log.create({ service: "session.processor" })
               ),
               Effect.retry(
                 SessionRetry.policy({
+                  provider: ctx.model.providerID,
                   parse,
                   set: (info) =>
                     Effect.gen(function* () {

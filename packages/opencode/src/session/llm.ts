@@ -10,6 +10,7 @@ import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import { Instance } from "@/project/instance"
+import { InstanceRef } from "@/effect/instance-ref"
 import type { Agent } from "@/agent/agent"
 import { MessageV2 } from "./message-v2"
 import * as FailureDetector from "./failure-detector"
@@ -168,6 +169,20 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
           if (!droppedToolCallsMap.has(input.sessionID)) {
             droppedToolCallsMap.set(input.sessionID, [])
           }
+          // Capture project id via InstanceRef so it works in forked fibers
+          // where Instance.project.id (AsyncLocalStorage) would otherwise
+          // throw "No context found for instance" — notably the TUI
+          // promptAsync route forks the prompt fiber.
+          const instanceRef = yield* InstanceRef
+          const projectID =
+            instanceRef?.project.id ??
+            (() => {
+              try {
+                return Instance.project.id
+              } catch {
+                return undefined
+              }
+            })()
           const l = log
             .clone()
             .tag("providerID", input.model.providerID)
@@ -344,6 +359,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
               execute: async () => ({ output: "", title: "", metadata: {} }),
             })
           }
+          const sortedTools = Object.fromEntries(Object.entries(tools).toSorted(([a], [b]) => a.localeCompare(b)))
 
           // Wire up toolExecutor for DWS workflow models so that tool calls
           // from the workflow service are executed via opencode's tool system
@@ -357,7 +373,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
             workflowModel.sessionID = input.sessionID
             workflowModel.systemPrompt = system.join("\n")
             workflowModel.toolExecutor = async (toolName, argsJson, _requestID) => {
-              const t = tools[toolName]
+              const t = sortedTools[toolName]
               if (!t || !t.execute) {
                 return { result: "", error: `Unknown tool: ${toolName}` }
               }
@@ -379,7 +395,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
             }
 
             const ruleset = Permission.merge(input.agent.permission ?? [], input.permission ?? [])
-            workflowModel.sessionPreapprovedTools = Object.keys(tools).filter((name) => {
+            workflowModel.sessionPreapprovedTools = Object.keys(sortedTools).filter((name) => {
               const match = ruleset.findLast((rule) => Wildcard.match(name, rule.permission))
               return !match || match.action !== "ask"
             })
@@ -539,15 +555,15 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
                 } as any,
               }
             })(),
-            activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
-            tools,
+            activeTools: Object.keys(sortedTools).filter((x) => x !== "invalid"),
+            tools: sortedTools,
             toolChoice: input.toolChoice,
             maxOutputTokens: params.maxOutputTokens,
             abortSignal: input.abort,
             headers: {
               ...(input.model.providerID.startsWith("opencode")
                 ? {
-                    "x-opencode-project": Instance.project.id,
+                    "x-opencode-project": projectID ?? "",
                     "x-opencode-session": input.sessionID,
                     "x-opencode-request": input.user.id,
                     "x-opencode-client": Flag.OPENCODE_CLIENT,

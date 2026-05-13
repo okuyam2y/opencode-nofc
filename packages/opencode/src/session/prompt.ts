@@ -482,8 +482,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         providerID: input.model.providerID,
         agent: input.agent,
       })) {
-        const schema = ProviderTransform.schema(input.model, EffectZod.toJsonSchema(item.parameters))
-          tools[item.id] = tool({
+        const rawSchema = (item.jsonSchema ?? EffectZod.toJsonSchema(item.parameters)) as JSONSchema7
+        const schema = ProviderTransform.schema(input.model, rawSchema)
+        tools[item.id] = tool({
             description: item.description,
           inputSchema: jsonSchema(schema),
           execute(args, options) {
@@ -1324,26 +1325,26 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         { message: info, parts },
       )
 
-      const parsed = MessageV2.Info.zod.safeParse(info)
-      if (!parsed.success) {
+      const parsed = Schema.decodeUnknownExit(MessageV2.Info)(info)
+      if (parsed._tag === "Failure") {
         log.error("invalid user message before save", {
           sessionID: input.sessionID,
           messageID: info.id,
           agent: info.agent,
           model: info.model,
-          issues: parsed.error.issues,
+          error: String(parsed.cause),
         })
       }
       parts.forEach((part, index) => {
-        const p = MessageV2.Part.zod.safeParse(part)
-        if (p.success) return
+        const p = Schema.decodeUnknownExit(MessageV2.Part)(part)
+        if (p._tag === "Success") return
         log.error("invalid user part before save", {
           sessionID: input.sessionID,
           messageID: info.id,
           partID: part.id,
           partType: part.type,
           index,
-          issues: p.error.issues,
+          error: String(p.cause),
           part,
         })
       })

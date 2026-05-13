@@ -65,6 +65,7 @@ export interface Interface {
     options?: { publish: boolean; ownerID?: string },
   ) => Effect.Effect<string | undefined>
   readonly remove: (aggregateID: string) => Effect.Effect<void>
+  readonly claim: (aggregateID: string, ownerID: string) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SyncEvent") {}
@@ -177,11 +178,23 @@ export const layer = Layer.effect(Service)(
       })
     })
 
+    const claimMethod: Interface["claim"] = (aggregateID, ownerID) =>
+      Effect.sync(() => {
+        Database.use((db) =>
+          db
+            .update(EventSequenceTable)
+            .set({ owner_id: ownerID })
+            .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+            .run(),
+        )
+      })
+
     return Service.of({
       run,
       replay,
       replayAll,
       remove,
+      claim: claimMethod,
     })
   }),
 )

@@ -1,5 +1,5 @@
 import { Effect, Option, Schema, Scope } from "effect"
-import { NonNegativeInt } from "@/util/schema"
+import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { createReadStream } from "fs"
 import { readdir } from "fs/promises"
 import * as path from "path"
@@ -12,6 +12,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isImageAttachment, sniffAttachmentMime } from "@/util/media"
+import { Reference } from "@/reference/reference"
 import { extractDocumentText, extractImageText, isDocumentFile } from "./document"
 import { Config } from "@/config/config"
 import type { Provider } from "@/provider/provider"
@@ -44,6 +45,7 @@ export const ReadTool = Tool.define(
     const fs = yield* AppFileSystem.Service
     const instruction = yield* Instruction.Service
     const lsp = yield* LSP.Service
+    const reference = yield* Reference.Service
     const scope = yield* Scope.Scope
 
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
@@ -207,6 +209,7 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
       if (process.platform === "win32") {
         filepath = AppFileSystem.normalizePath(filepath)
       }
+      yield* reference.ensure(filepath)
       const title = path.relative(instance.worktree, filepath)
 
       const stat = yield* fs.stat(filepath).pipe(
@@ -217,13 +220,13 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
       )
 
       yield* assertExternalDirectoryEffect(ctx, filepath, {
-        bypass: Boolean(ctx.extra?.["bypassCwdCheck"]),
+        bypass: Boolean(ctx.extra?.["bypassCwdCheck"]) || (yield* reference.contains(filepath)),
         kind: stat?.type === "Directory" ? "directory" : "file",
       })
 
       yield* ctx.ask({
         permission: "read",
-        patterns: [filepath],
+        patterns: [path.relative(instance.worktree, filepath)],
         always: ["*"],
         metadata: {},
       })

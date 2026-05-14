@@ -1,6 +1,6 @@
 import { Identifier } from "@/id/id"
 import { SyncEvent } from "@/sync"
-import { withStatics } from "@/util/schema"
+import { withStatics } from "@opencode-ai/core/schema"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import * as Schema from "effect/Schema"
 
@@ -41,6 +41,9 @@ export function define<const Type extends string, Fields extends Schema.Struct.F
   })
 }
 
+// Fork facade: gates SyncEvent.run on experimental event system flag.
+// Re-added after upstream removed the equivalent (#26783) so that fork's
+// processor.ts continues to dual-write events behind the flag.
 export function run<Def extends SyncEvent.Definition>(
   def: Def,
   data: SyncEvent.Event<Def>["data"],

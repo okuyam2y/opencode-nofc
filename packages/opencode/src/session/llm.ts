@@ -23,9 +23,9 @@ import { Bus } from "@/bus"
 import { Wildcard } from "@/util/wildcard"
 import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
-import { Installation } from "@/installation"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { EffectBridge } from "@/effect/bridge"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
 
@@ -148,8 +148,11 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
 
   export class Service extends Context.Service<Service, Interface>()("@opencode/LLM") {}
 
-  export const layer: Layer.Layer<Service, never, Auth.Service | Config.Service | Provider.Service | Plugin.Service | Permission.Service> =
-    Layer.effect(
+  export const layer: Layer.Layer<
+    Service,
+    never,
+    Auth.Service | Config.Service | Provider.Service | Plugin.Service | Permission.Service | RuntimeFlags.Service
+  > = Layer.effect(
       Service,
       Effect.gen(function* () {
         const auth = yield* Auth.Service
@@ -157,6 +160,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
         const provider = yield* Provider.Service
         const plugin = yield* Plugin.Service
         const perm = yield* Permission.Service
+        const flags = yield* RuntimeFlags.Service
 
         // Per-session storage for tool calls dropped by the parser.
         // Keyed by sessionID to prevent cross-session interference.
@@ -566,7 +570,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
                     "x-opencode-project": projectID ?? "",
                     "x-opencode-session": input.sessionID,
                     "x-opencode-request": input.user.id,
-                    "x-opencode-client": Flag.OPENCODE_CLIENT,
+                    "x-opencode-client": flags.client,
                     "User-Agent": `opencode/${InstallationVersion}`,
                   }
                 : {
@@ -725,6 +729,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
       Layer.provide(Provider.defaultLayer),
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Permission.defaultLayer),
+      Layer.provide(RuntimeFlags.defaultLayer),
     ),
   )
 

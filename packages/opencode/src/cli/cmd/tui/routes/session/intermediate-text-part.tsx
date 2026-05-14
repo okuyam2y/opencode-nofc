@@ -2,7 +2,6 @@ import { createSignal, Show, Switch, Match } from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import { useTheme } from "@tui/context/theme"
 import type { AssistantMessage } from "@opencode-ai/sdk/v2"
-import { Flag } from "@opencode-ai/core/flag/flag"
 import type { IntermediateTextPart } from "./intermediate-text-collapse"
 
 export function IntermediateTextPart(props: {
@@ -32,29 +31,14 @@ export function IntermediateTextPart(props: {
             </text>
           </Match>
           <Match when={expanded()}>
-            <Switch>
-              <Match when={Flag.OPENCODE_EXPERIMENTAL_MARKDOWN}>
-                <markdown
-                  syntaxStyle={syntax()}
-                  streaming={false}
-                  content={trimmed()}
-                  conceal={props.conceal}
-                  fg={theme.textMuted}
-                  bg={theme.background}
-                />
-              </Match>
-              <Match when={!Flag.OPENCODE_EXPERIMENTAL_MARKDOWN}>
-                <code
-                  filetype="markdown"
-                  drawUnstyledText={false}
-                  streaming={false}
-                  syntaxStyle={syntax()}
-                  content={trimmed()}
-                  conceal={props.conceal}
-                  fg={theme.textMuted}
-                />
-              </Match>
-            </Switch>
+            <markdown
+              syntaxStyle={syntax()}
+              streaming={false}
+              content={trimmed()}
+              conceal={props.conceal}
+              fg={theme.textMuted}
+              bg={theme.background}
+            />
           </Match>
         </Switch>
       </box>

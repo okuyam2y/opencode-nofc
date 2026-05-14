@@ -25,7 +25,8 @@ import { containsSpamInValues, stripSpam } from "@/util/spam-filter"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { EventV2 } from "@/v2/event"
 import { SessionEvent } from "@/v2/session-event"
-import { Modelv2 } from "@/v2/model"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import * as DateTime from "effect/DateTime"
 import { Instance } from "@/project/instance"
 import { InstanceRef } from "@/effect/instance-ref"
@@ -1003,9 +1004,9 @@ const log = Log.create({ service: "session.processor" })
                   sessionID: ctx.sessionID,
                   agent: input.assistantMessage.agent,
                   model: {
-                    id: Modelv2.ID.make(ctx.model.id),
-                    providerID: Modelv2.ProviderID.make(ctx.model.providerID),
-                    variant: Modelv2.VariantID.make(input.assistantMessage.variant ?? "default"),
+                    id: ModelV2.ID.make(ctx.model.id),
+                    providerID: ProviderV2.ID.make(ctx.model.providerID),
+                    variant: ModelV2.VariantID.make(input.assistantMessage.variant ?? "default"),
                   },
                   snapshot: ctx.snapshot,
                   timestamp: DateTime.makeUnsafe(Date.now()),

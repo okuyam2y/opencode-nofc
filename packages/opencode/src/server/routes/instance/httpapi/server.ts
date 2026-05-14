@@ -21,6 +21,7 @@ import { File } from "@/file"
 import { FileWatcher } from "@/file/watcher"
 import { Ripgrep } from "@/file/ripgrep"
 import { Format } from "@/format"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
 import { Permission } from "@/permission"
@@ -29,7 +30,7 @@ import { InstanceLayer } from "@/project/instance-layer"
 import { Plugin } from "@/plugin"
 import { Project } from "@/project/project"
 import { ProviderAuth } from "@/provider/auth"
-import { ModelsDev } from "@/provider/models"
+import { ModelsDev } from "@opencode-ai/core/models"
 import { Provider } from "@/provider/provider"
 import { Pty } from "@/pty"
 import { PtyTicket } from "@/pty/ticket"
@@ -58,7 +59,8 @@ import { ServerAuth } from "@/server/auth"
 import { InstanceHttpApi, RootHttpApi } from "./api"
 import { PublicApi } from "./public"
 import { authorizationLayer, authorizationRouterMiddleware } from "./middleware/authorization"
-import { EventApi, eventHandlers } from "./event"
+import { EventApi } from "./groups/event"
+import { eventHandlers } from "./handlers/event"
 import { configHandlers } from "./handlers/config"
 import { controlHandlers } from "./handlers/control"
 import { experimentalHandlers } from "./handlers/experimental"
@@ -171,7 +173,10 @@ const uiRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const fs = yield* AppFileSystem.Service
     const client = yield* HttpClient.HttpClient
-    yield* router.add("*", "/*", (request) => serveUIEffect(request, { fs, client }))
+    const flags = yield* RuntimeFlags.Service
+    yield* router.add("*", "/*", (request) =>
+      serveUIEffect(request, { fs, client, disableEmbeddedWebUi: flags.disableEmbeddedWebUi }),
+    )
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
 
@@ -205,6 +210,7 @@ export function createRoutes(corsOptions?: CorsOptions) {
       PtyTicket.defaultLayer,
       Question.defaultLayer,
       Ripgrep.defaultLayer,
+      RuntimeFlags.defaultLayer,
       Session.defaultLayer,
       SessionCompaction.defaultLayer,
       SessionPrompt.defaultLayer,

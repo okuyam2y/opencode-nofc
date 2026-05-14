@@ -109,7 +109,7 @@ export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts>
   readonly loop: (input: LoopInput) => Effect.Effect<MessageV2.WithParts>
-  readonly shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts>
+  readonly shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts, Session.BusyError>
   readonly command: (input: CommandInput) => Effect.Effect<MessageV2.WithParts>
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
 }
@@ -149,7 +149,8 @@ export const layer = Layer.effect(
       return {
         cancel: (sessionID: SessionID) => cancel(sessionID),
         resolvePromptParts: (template: string) => resolvePromptParts(template),
-        prompt: (input: PromptInput) => prompt(input),
+        prompt: (input: PromptInput) => prompt(input).pipe(Effect.catch(Effect.die)),
+        loop: (input: LoopInput) => loop(input),
       } satisfies TaskPromptOps
     })
 
@@ -981,19 +982,21 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       if (Exit.isSuccess(exit)) return exit.value
       const err = Cause.squash(exit.cause)
       if (Provider.ModelNotFoundError.isInstance(err)) {
-        const hint = err.data.suggestions?.length ? ` Did you mean: ${err.data.suggestions.join(", ")}?` : ""
+        const hint = err.suggestions?.length ? ` Did you mean: ${err.suggestions.join(", ")}?` : ""
         yield* bus.publish(Session.Event.Error, {
           sessionID,
           error: new NamedError.Unknown({
-            message: `Model not found: ${err.data.providerID}/${err.data.modelID}.${hint}`,
+            message: `Model not found: ${err.providerID}/${err.modelID}.${hint}`,
           }).toObject(),
         })
       }
-      return yield* Effect.failCause(exit.cause)
+      return yield* Effect.die(err)
     })
 
     const lastModel = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const match = yield* sessions.findMessage(sessionID, (m) => m.info.role === "user" && !!m.info.model)
+      const match = yield* sessions
+        .findMessage(sessionID, (m) => m.info.role === "user" && !!m.info.model)
+        .pipe(Effect.orDie)
       if (Option.isSome(match) && match.value.info.role === "user") return match.value.info.model
       return yield* provider.defaultModel()
     })
@@ -1377,9 +1380,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     )
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user")
+      const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user").pipe(Effect.orDie)
       if (Option.isSome(match)) return match.value
-      const msgs = yield* sessions.messages({ sessionID, limit: 1 })
+      const msgs = yield* sessions.messages({ sessionID, limit: 1 }).pipe(Effect.orDie)
       if (msgs.length > 0) return msgs[0]
       throw new Error("Impossible")
     })
@@ -1415,19 +1418,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID)
 
-          let lastUser: MessageV2.User | undefined
-          let lastAssistant: MessageV2.Assistant | undefined
-          let lastFinished: MessageV2.Assistant | undefined
-          let tasks: (MessageV2.CompactionPart | MessageV2.SubtaskPart)[] = []
-          for (let i = msgs.length - 1; i >= 0; i--) {
-            const msg = msgs[i]
-            if (!lastUser && msg.info.role === "user") lastUser = msg.info
-            if (!lastAssistant && msg.info.role === "assistant") lastAssistant = msg.info
-            if (!lastFinished && msg.info.role === "assistant" && msg.info.finish) lastFinished = msg.info
-            if (lastUser && lastFinished) break
-            const task = msg.parts.filter((part) => part.type === "compaction" || part.type === "subtask")
-            if (task && !lastFinished) tasks.push(...task)
-          }
+          const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
@@ -1595,12 +1586,25 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             sessionID,
           }
           yield* sessions.updateMessage(msg)
-          const handle = yield* processor.create({
-            assistantMessage: msg,
-            sessionID,
-            model,
-            confirmedInput: confirmedInputs.get(sessionID) ?? 0,
+
+          const finalizeInterruptedAssistant = Effect.gen(function* () {
+            if (msg.time.completed) return
+            msg.error ??= MessageV2.fromError(new DOMException("Aborted", "AbortError"), {
+              providerID: msg.providerID,
+              aborted: true,
+            })
+            msg.time.completed = Date.now()
+            yield* sessions.updateMessage(msg)
           })
+
+          const handle = yield* processor
+            .create({
+              assistantMessage: msg,
+              sessionID,
+              model,
+              confirmedInput: confirmedInputs.get(sessionID) ?? 0,
+            })
+            .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
           const outcome: "break" | "continue" = yield* Effect.gen(function* () {
             const lastUserMsg = msgs.findLast((m) => m.info.role === "user")
@@ -1780,7 +1784,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               })
             }
             return "continue" as const
-          }).pipe(Effect.ensuring(instruction.clear(handle.message.id)))
+          }).pipe(
+            Effect.ensuring(instruction.clear(handle.message.id)),
+            Effect.onInterrupt(() => finalizeInterruptedAssistant),
+          )
           // Update confirmed input baseline for per-turn gateway detection.
           // Only update when finish-step was reached (finish is set), ensuring
           // error/abort/blocked paths don't corrupt the baseline.
@@ -1811,11 +1818,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
     })
 
-    const shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.shell")(
-      function* (input: ShellInput) {
-        return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input))
-      },
-    )
+    const shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts, Session.BusyError> = Effect.fn(
+      "SessionPrompt.shell",
+    )(function* (input: ShellInput) {
+      return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input))
+    })
 
     const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
       yield* elog.info("command", { sessionID: input.sessionID, command: input.command, agent: input.agent })

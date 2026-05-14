@@ -26,10 +26,7 @@ import { provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { raw, reply, TestLLMServer } from "../lib/llm-server"
 import { SyncEvent } from "@/sync"
-import {
-  READ_PREFIX_MATCHER,
-  SessionFailureTracker,
-} from "../../src/session/failure-detector"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 
 void Log.init({ print: false })
 
@@ -109,6 +106,17 @@ function defer<T>() {
   return { promise, resolve }
 }
 
+const waitFor = <A>(check: Effect.Effect<A | undefined>, message: string) =>
+  Effect.gen(function* () {
+    const stop = Date.now() + 500
+    while (Date.now() < stop) {
+      const value = yield* check
+      if (value !== undefined) return value
+      yield* Effect.sleep("10 millis")
+    }
+    return yield* Effect.fail(new Error(message))
+  })
+
 const user = Effect.fn("TestSession.user")(function* (sessionID: SessionID, text: string) {
   const session = yield* Session.Service
   const msg = yield* session.updateMessage({
@@ -176,7 +184,12 @@ const deps = Layer.mergeAll(
 ).pipe(Layer.provideMerge(infra))
 const env = Layer.mergeAll(
   TestLLMServer.layer,
-  SessionProcessor.layer.pipe(Layer.provide(summary), Layer.provide(Image.defaultLayer), Layer.provideMerge(deps)),
+  SessionProcessor.layer.pipe(
+    Layer.provide(summary),
+    Layer.provide(Image.defaultLayer),
+    Layer.provide(RuntimeFlags.layer({ experimentalEventSystem: true })),
+    Layer.provideMerge(deps),
+  ),
 )
 
 const it = testEffect(env)
@@ -300,15 +313,10 @@ it.live("session.processor effect tests preserve text start time", () =>
           })
           .pipe(Effect.forkChild)
 
-        yield* Effect.promise(async () => {
-          const stop = Date.now() + 500
-          while (Date.now() < stop) {
-            const text = MessageV2.parts(msg.id).find((part): part is MessageV2.TextPart => part.type === "text")
-            if (text?.time?.start) return
-            await Bun.sleep(10)
-          }
-          throw new Error("timed out waiting for text part")
-        })
+        yield* waitFor(
+          Effect.sync(() => MessageV2.parts(msg.id).find((part): part is MessageV2.TextPart => part.type === "text")),
+          "timed out waiting for text part",
+        )
         yield* Effect.sleep("20 millis")
         gate.resolve()
 
@@ -692,14 +700,10 @@ it.live("session.processor effect tests mark pending tools as aborted on cleanup
           .pipe(Effect.forkChild)
 
         yield* llm.wait(1)
-        yield* Effect.promise(async () => {
-          const end = Date.now() + 500
-          while (Date.now() < end) {
-            const parts = await MessageV2.parts(msg.id)
-            if (parts.some((part) => part.type === "tool")) return
-            await Bun.sleep(10)
-          }
-        })
+        yield* waitFor(
+          Effect.sync(() => MessageV2.parts(msg.id).find((part): part is MessageV2.ToolPart => part.type === "tool")),
+          "timed out waiting for tool part",
+        )
         yield* Fiber.interrupt(run)
 
         const exit = yield* Fiber.await(run)
@@ -1151,7 +1155,7 @@ it.live("session.processor effect tests record aborted errors and idle state", (
 
         const exit = yield* Fiber.await(run)
         yield* Effect.promise(() => seen.promise)
-        const stored = MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
         const state = yield* sts.get(chat.id)
         off()
 
@@ -1213,7 +1217,7 @@ it.live("session.processor effect tests mark interruptions aborted without manua
         yield* Fiber.interrupt(run)
 
         const exit = yield* Fiber.await(run)
-        const stored = MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
         const state = yield* sts.get(chat.id)
 
         expect(Exit.isFailure(exit)).toBe(true)
@@ -1368,228 +1372,6 @@ it.live("dedup: native FC duplicate glob — both execute (read-only, no dedup)"
             p.type === "tool" && p.state.status === "completed" && !!p.state.metadata?.deduplicated,
         )
         expect(dedupedParts.length).toBe(0)
-      }),
-    { git: true, config: (url) => providerCfg(url) },
-  ),
-)
-
-// ---------------------------------------------------------------------------
-// tool-failure-reset-hook: 3-layer wiring regression (processor → prompt Map
-// writer → message-v2 rewrite).  The layers are exercised end-to-end at the
-// processor level by feeding a tracker + capturing the directive the processor
-// enqueues via appendPendingDirective on the 3rd same-prefix Read failure.
-// The message-v2 rewrite side is covered by message-v2.test.ts.
-// ---------------------------------------------------------------------------
-
-/** SSE chunks for three parallel Read calls targeting the same 3-segment prefix. */
-function tripleReadChunks(prefix: string) {
-  const args = (n: number) => JSON.stringify({ filePath: `${prefix}/File${n}.java` })
-  return [
-    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: { role: "assistant" } }] },
-    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: { tool_calls: [{ index: 0, id: "read-1", type: "function", function: { name: "read", arguments: "" } }] } }] },
-    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: args(1) } }] } }] },
-    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: { tool_calls: [{ index: 1, id: "read-2", type: "function", function: { name: "read", arguments: "" } }] } }] },
-    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: { tool_calls: [{ index: 1, function: { arguments: args(2) } }] } }] },
-    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: { tool_calls: [{ index: 2, id: "read-3", type: "function", function: { name: "read", arguments: "" } }] } }] },
-    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: { tool_calls: [{ index: 2, function: { arguments: args(3) } }] } }] },
-    { id: "chatcmpl-test", object: "chat.completion.chunk", choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 } },
-  ]
-}
-
-/** A read tool that always throws File not found for the supplied filePath. */
-function failingReadTool() {
-  const calls: Array<{ filePath: string }> = []
-  return {
-    calls,
-    tool: aiTool({
-      description: "read (always fails)",
-      inputSchema: jsonSchema({ type: "object", properties: { filePath: { type: "string" } } }),
-      execute: async (args): Promise<{ output: string; title: string; metadata: {} }> => {
-        const filePath = String((args as { filePath?: string })?.filePath ?? "")
-        calls.push({ filePath })
-        throw new Error(`File not found: ${filePath}`)
-      },
-    }),
-  }
-}
-
-it.live("tool-failure-reset-hook: 3rd same-prefix Read failure enqueues directive", () =>
-  provideTmpdirServer(
-    ({ dir, llm }) =>
-      Effect.gen(function* () {
-        const { processors, session, provider } = yield* boot()
-        const mock = failingReadTool()
-
-        // Three parallel Read calls, all with the same 3-segment worktree-relative
-        // prefix "planetiler-examples/src/main".
-        yield* llm.push(
-          raw({ chunks: tripleReadChunks("planetiler-examples/src/main") }),
-        )
-
-        const chat = yield* session.create({})
-        const parent = yield* user(chat.id, "review")
-        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
-        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
-        const handle = yield* processors.create({
-          assistantMessage: msg,
-          sessionID: chat.id,
-          model: mdl,
-        })
-
-        const tracker = new SessionFailureTracker([READ_PREFIX_MATCHER])
-        const enqueued: Array<{ partID: string; directive: string }> = []
-
-        yield* handle.process({
-          user: {
-            id: parent.id,
-            sessionID: chat.id,
-            role: "user",
-            time: parent.time,
-            agent: parent.agent,
-            model: { providerID: ref.providerID, modelID: ref.modelID },
-          } satisfies MessageV2.User,
-          sessionID: chat.id,
-          model: mdl,
-          agent: agent(),
-          system: [],
-          messages: [{ role: "user", content: "review" }],
-          tools: { read: mock.tool },
-          failureTracker: tracker,
-          appendPendingDirective: (partID, directive) => {
-            enqueued.push({ partID, directive })
-          },
-        })
-
-        // All three tools ran and failed.
-        expect(mock.calls.length).toBe(3)
-        const parts = MessageV2.parts(msg.id)
-        const errors = parts.filter(
-          (p): p is MessageV2.ToolPart => p.type === "tool" && p.state.status === "error",
-        )
-        expect(errors.length).toBe(3)
-
-        // The 3rd failure (completion order, which matches call order here since
-        // all three throws are synchronous-ish) must have triggered exactly one
-        // directive enqueue.  The partID is one of the three error tool parts.
-        expect(enqueued.length).toBe(1)
-        expect(enqueued[0].directive).toContain("TOOL-FAILURE-RESET")
-        expect(enqueued[0].directive).toContain('"planetiler-examples/src/main"')
-        const errorPartIDs = new Set<string>(errors.map((e) => e.id as string))
-        expect(errorPartIDs.has(enqueued[0].partID)).toBe(true)
-
-        // Second identical process() with further same-prefix failures must NOT
-        // fire again — firedOnce is per-tracker, per-session.
-        yield* llm.push(
-          raw({ chunks: tripleReadChunks("planetiler-examples/src/main") }),
-        )
-        const handle2 = yield* processors.create({
-          assistantMessage: yield* assistant(chat.id, parent.id, path.resolve(dir)),
-          sessionID: chat.id,
-          model: mdl,
-        })
-        yield* handle2.process({
-          user: {
-            id: parent.id,
-            sessionID: chat.id,
-            role: "user",
-            time: parent.time,
-            agent: parent.agent,
-            model: { providerID: ref.providerID, modelID: ref.modelID },
-          } satisfies MessageV2.User,
-          sessionID: chat.id,
-          model: mdl,
-          agent: agent(),
-          system: [],
-          messages: [{ role: "user", content: "review" }],
-          tools: { read: mock.tool },
-          failureTracker: tracker,
-          appendPendingDirective: (partID, directive) => {
-            enqueued.push({ partID, directive })
-          },
-        })
-        // No new enqueue — firedOnce prevents re-fire even though 3 more fails happened.
-        expect(enqueued.length).toBe(1)
-      }),
-    { git: true, config: (url) => providerCfg(url) },
-  ),
-)
-
-it.live("tool-failure-reset-hook: Read success resets the matcher counter", () =>
-  provideTmpdirServer(
-    ({ dir, llm }) =>
-      Effect.gen(function* () {
-        const { processors, session, provider } = yield* boot()
-
-        // Two consecutive same-prefix failures, then a successful read, then
-        // another same-prefix failure.  With the counter reset by the success,
-        // the streak should be at 1 (not 3), so no directive fires.
-        const failReadFrom = (filePath: string) =>
-          aiTool({
-            description: "read",
-            inputSchema: jsonSchema({ type: "object", properties: { filePath: { type: "string" } } }),
-            execute: async (args): Promise<{ output: string; title: string; metadata: {} }> => {
-              const argPath = (args as { filePath?: string })?.filePath
-              if (argPath === filePath) throw new Error(`File not found: ${filePath}`)
-              return { output: "content", title: "ok", metadata: {} }
-            },
-          })
-
-        const tracker = new SessionFailureTracker([READ_PREFIX_MATCHER])
-        const enqueued: Array<{ partID: string; directive: string }> = []
-        const chat = yield* session.create({})
-        const parent = yield* user(chat.id, "review")
-        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
-
-        const runStep = (toolReply: ReturnType<typeof reply>, tool: ReturnType<typeof failReadFrom>) =>
-          Effect.gen(function* () {
-            yield* llm.push(toolReply.stop().item())
-            const msgStep = yield* assistant(chat.id, parent.id, path.resolve(dir))
-            const h = yield* processors.create({ assistantMessage: msgStep, sessionID: chat.id, model: mdl })
-            yield* h.process({
-              user: {
-                id: parent.id,
-                sessionID: chat.id,
-                role: "user",
-                time: parent.time,
-                agent: parent.agent,
-                model: { providerID: ref.providerID, modelID: ref.modelID },
-              } satisfies MessageV2.User,
-              sessionID: chat.id,
-              model: mdl,
-              agent: agent(),
-              system: [],
-              messages: [{ role: "user", content: "review" }],
-              tools: { read: tool },
-              failureTracker: tracker,
-              appendPendingDirective: (partID, directive) => {
-                enqueued.push({ partID, directive })
-              },
-            })
-          })
-
-        // 1st and 2nd same-prefix failure.
-        yield* runStep(
-          reply().tool("read", { filePath: "planetiler-examples/src/main/A.java" }),
-          failReadFrom("planetiler-examples/src/main/A.java"),
-        )
-        yield* runStep(
-          reply().tool("read", { filePath: "planetiler-examples/src/main/B.java" }),
-          failReadFrom("planetiler-examples/src/main/B.java"),
-        )
-        expect(enqueued.length).toBe(0)
-
-        // Successful read → isRecovery resets the counter.
-        yield* runStep(
-          reply().tool("read", { filePath: "planetiler-examples/src/main/README.md" }),
-          failReadFrom("does-not-match-so-succeeds"),
-        )
-
-        // New failure after success — streak is at 1, must not fire.
-        yield* runStep(
-          reply().tool("read", { filePath: "planetiler-examples/src/main/C.java" }),
-          failReadFrom("planetiler-examples/src/main/C.java"),
-        )
-        expect(enqueued.length).toBe(0)
       }),
     { git: true, config: (url) => providerCfg(url) },
   ),

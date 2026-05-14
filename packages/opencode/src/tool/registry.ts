@@ -7,6 +7,7 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
+import { TaskStatusTool } from "./task_status"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
@@ -24,7 +25,6 @@ import { ProviderID, type ModelID } from "../provider/schema"
 import { WebSearchTool } from "./websearch"
 import { RepoCloneTool } from "./repo_clone"
 import { RepoOverviewTool } from "./repo_overview"
-import { Flag } from "@opencode-ai/core/flag/flag"
 import * as Log from "@opencode-ai/core/util/log"
 import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
@@ -51,13 +51,13 @@ import { Git } from "@/git"
 import { Skill } from "../skill"
 import { Permission } from "@/permission"
 import { Reference } from "@/reference/reference"
+import { BackgroundJob } from "@/background/job"
+import { SessionStatus } from "@/session/status"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 
 const log = Log.create({ service: "tool.registry" })
 
-export function webSearchEnabled(
-  providerID: ProviderID,
-  flags = { exa: Flag.OPENCODE_ENABLE_EXA, parallel: Flag.OPENCODE_ENABLE_PARALLEL },
-) {
+export function webSearchEnabled(providerID: ProviderID, flags = { exa: false, parallel: false }) {
   return providerID === ProviderID.opencode || flags.exa || flags.parallel
 }
 
@@ -96,6 +96,8 @@ export const layer: Layer.Layer<
   | Agent.Service
   | Skill.Service
   | Session.Service
+  | SessionStatus.Service
+  | BackgroundJob.Service
   | Provider.Service
   | Git.Service
   | Reference.Service
@@ -108,6 +110,7 @@ export const layer: Layer.Layer<
   | Ripgrep.Service
   | Format.Service
   | Truncate.Service
+  | RuntimeFlags.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -116,10 +119,12 @@ export const layer: Layer.Layer<
     const agents = yield* Agent.Service
     const skill = yield* Skill.Service
     const truncate = yield* Truncate.Service
+    const flags = yield* RuntimeFlags.Service
     const providers = yield* Provider.Service
 
     const invalid = yield* InvalidTool
     const task = yield* TaskTool
+    const taskStatus = yield* TaskStatusTool
     const read = yield* ReadTool
     const question = yield* QuestionTool
     const todo = yield* TodoWriteTool
@@ -169,11 +174,13 @@ export const layer: Layer.Layer<
                 const result = yield* Effect.promise(() => def.execute(args as any, pluginCtx))
                 const output = typeof result === "string" ? result : result.output
                 const metadata = typeof result === "string" ? {} : (result.metadata ?? {})
+                const attachments = typeof result === "string" ? undefined : result.attachments
                 const info = yield* agent.get(toolCtx.agent)
                 const out = yield* truncate.output(output, {}, info)
                 return {
-                  title: "",
+                  title: typeof result === "string" ? "" : (result.title ?? ""),
                   output: out.truncated ? out.content : output,
+                  attachments,
                   metadata: {
                     ...metadata,
                     truncated: out.truncated,
@@ -216,8 +223,7 @@ export const layer: Layer.Layer<
         }
 
         yield* config.get()
-        const questionEnabled =
-          ["app", "cli", "desktop"].includes(Flag.OPENCODE_CLIENT) || Flag.OPENCODE_ENABLE_QUESTION_TOOL
+        const questionEnabled = ["app", "cli", "desktop"].includes(flags.client) || flags.enableQuestionTool
 
         const tool = yield* Effect.all({
           invalid: Tool.init(invalid),
@@ -228,6 +234,7 @@ export const layer: Layer.Layer<
           edit: Tool.init(edit),
           write: Tool.init(writetool),
           task: Tool.init(task),
+          task_status: Tool.init(taskStatus),
           fetch: Tool.init(webfetch),
           todo: Tool.init(todo),
           search: Tool.init(websearch),
@@ -253,15 +260,16 @@ export const layer: Layer.Layer<
             tool.edit,
             tool.write,
             tool.task,
+            ...(flags.experimentalBackgroundSubagents ? [tool.task_status] : []),
             tool.fetch,
             tool.todo,
             tool.search,
-            ...(Flag.OPENCODE_EXPERIMENTAL_SCOUT ? [tool.repo_clone, tool.repo_overview] : []),
+            ...(flags.experimentalScout ? [tool.repo_clone, tool.repo_overview] : []),
             tool.skill,
             tool.patch,
             tool.line_edit,
-            ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
-            ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
+            ...(flags.experimentalLspTool ? [tool.lsp] : []),
+            ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],
           task: tool.task,
           read: tool.read,
@@ -344,7 +352,7 @@ export const layer: Layer.Layer<
 
       const filtered = (yield* all()).filter((tool) => {
         if (tool.id === WebSearchTool.id) {
-          return webSearchEnabled(input.providerID)
+          return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
         }
 
         if (tool.id === ApplyPatchTool.id) return usePatch
@@ -397,27 +405,30 @@ export const layer: Layer.Layer<
 )
 
 export const defaultLayer = Layer.suspend(() =>
-  layer.pipe(
-    Layer.provide(Config.defaultLayer),
-    Layer.provide(Plugin.defaultLayer),
-    Layer.provide(Question.defaultLayer),
-    Layer.provide(Todo.defaultLayer),
-    Layer.provide(Skill.defaultLayer),
-    Layer.provide(Agent.defaultLayer),
-    Layer.provide(Session.defaultLayer),
-    Layer.provide(Provider.defaultLayer),
-    Layer.provide(Git.defaultLayer),
-    Layer.provide(Reference.defaultLayer),
-    Layer.provide(LSP.defaultLayer),
-    Layer.provide(Instruction.defaultLayer),
-    Layer.provide(AppFileSystem.defaultLayer),
-    Layer.provide(Bus.layer),
-    Layer.provide(FetchHttpClient.layer),
-    Layer.provide(Format.defaultLayer),
-    Layer.provide(CrossSpawnSpawner.defaultLayer),
-    Layer.provide(Ripgrep.defaultLayer),
-    Layer.provide(Truncate.defaultLayer),
-  ),
+  layer
+    .pipe(
+      Layer.provide(Config.defaultLayer),
+      Layer.provide(Plugin.defaultLayer),
+      Layer.provide(Question.defaultLayer),
+      Layer.provide(Todo.defaultLayer),
+      Layer.provide(Skill.defaultLayer),
+      Layer.provide(Agent.defaultLayer),
+      Layer.provide(Session.defaultLayer),
+      Layer.provide(Layer.mergeAll(SessionStatus.defaultLayer, BackgroundJob.defaultLayer)),
+      Layer.provide(Provider.defaultLayer),
+      Layer.provide(Git.defaultLayer),
+      Layer.provide(Reference.defaultLayer),
+      Layer.provide(LSP.defaultLayer),
+      Layer.provide(Instruction.defaultLayer),
+      Layer.provide(AppFileSystem.defaultLayer),
+      Layer.provide(Bus.layer),
+      Layer.provide(FetchHttpClient.layer),
+      Layer.provide(Format.defaultLayer),
+      Layer.provide(CrossSpawnSpawner.defaultLayer),
+      Layer.provide(Ripgrep.defaultLayer),
+      Layer.provide(Truncate.defaultLayer),
+    )
+    .pipe(Layer.provide(RuntimeFlags.defaultLayer)),
 )
 
 function isZodType(value: unknown): value is z.ZodType {

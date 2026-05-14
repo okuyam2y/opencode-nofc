@@ -12,7 +12,7 @@ import { Language, type Node } from "web-tree-sitter"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { fileURLToPath } from "url"
 import { Config } from "@/config/config"
-import { Flag } from "@opencode-ai/core/flag/flag"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Shell } from "@/shell/shell"
 import { ShellID } from "./shell/id"
 
@@ -85,7 +85,6 @@ function collectDiagnosticArtifacts(output: string, cwd: string, instance: Insta
 
   return parts.length > 0 ? DIAGNOSTIC_DELIMITER + parts.join("") : ""
 }
-const DEFAULT_TIMEOUT = Flag.OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS || 2 * 60 * 1000
 const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
 const FILES = new Set([
   ...CWD,
@@ -404,6 +403,8 @@ export const ShellTool = Tool.define(
     const fs = yield* AppFileSystem.Service
     const trunc = yield* Truncate.Service
     const plugin = yield* Plugin.Service
+    const flags = yield* RuntimeFlags.Service
+    const defaultTimeout = flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000
 
     const cygpath = Effect.fn("ShellTool.cygpath")(function* (shell: string, text: string) {
       const lines = yield* spawner
@@ -507,6 +508,31 @@ export const ShellTool = Tool.define(
       let expired = false
       let aborted = false
 
+      const closeSink = Effect.fnUntraced(function* () {
+        const stream = sink
+        if (!stream) return
+        sink = undefined
+        if (stream.destroyed || stream.closed) return
+        yield* Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              let settled = false
+              const done = () => {
+                if (settled) return
+                settled = true
+                stream.off("close", done)
+                stream.off("error", done)
+                stream.off("finish", done)
+                resolve()
+              }
+              stream.once("close", done)
+              stream.once("error", done)
+              stream.once("finish", done)
+              stream.end(done)
+            }),
+        ).pipe(Effect.catch(() => Effect.void))
+      })
+
       yield* ctx.metadata({
         metadata: {
           output: "",
@@ -516,6 +542,7 @@ export const ShellTool = Tool.define(
 
       const code: number | null = yield* Effect.scoped(
         Effect.gen(function* () {
+          yield* Effect.addFinalizer(closeSink)
           const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
 
           yield* Effect.forkScoped(
@@ -619,17 +646,6 @@ export const ShellTool = Tool.define(
       if (meta.length > 0) {
         output += "\n\n<shell_metadata>\n" + meta.join("\n") + "\n</shell_metadata>"
       }
-      if (sink) {
-        const stream = sink
-        yield* Effect.promise(
-          () =>
-            new Promise<void>((resolve) => {
-              stream.end(() => resolve())
-              stream.on("error", () => resolve())
-            }),
-        )
-      }
-
       // Phase 2: collect diagnostic artifacts on non-zero exit
       if (code !== null && code !== 0) {
         const diagInstance = yield* InstanceState.context
@@ -682,7 +698,7 @@ export const ShellTool = Tool.define(
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
-              const timeout = params.timeout ?? DEFAULT_TIMEOUT
+              const timeout = params.timeout ?? defaultTimeout
               const ps = Shell.ps(shell)
               yield* Effect.scoped(
                 Effect.gen(function* () {

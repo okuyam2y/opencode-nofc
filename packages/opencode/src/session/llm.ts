@@ -9,7 +9,6 @@ import { mergeDeep, pipe } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
-import { Instance } from "@/project/instance"
 import { InstanceRef } from "@/effect/instance-ref"
 import type { Agent } from "@/agent/agent"
 import { MessageV2 } from "./message-v2"
@@ -174,19 +173,10 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
             droppedToolCallsMap.set(input.sessionID, [])
           }
           // Capture project id via InstanceRef so it works in forked fibers
-          // where Instance.project.id (AsyncLocalStorage) would otherwise
-          // throw "No context found for instance" — notably the TUI
-          // promptAsync route forks the prompt fiber.
+          // where AsyncLocalStorage would otherwise throw "No context found for instance"
+          // — notably the TUI promptAsync route forks the prompt fiber.
           const instanceRef = yield* InstanceRef
-          const projectID =
-            instanceRef?.project.id ??
-            (() => {
-              try {
-                return Instance.project.id
-              } catch {
-                return undefined
-              }
-            })()
+          const projectID = instanceRef?.project.id
           const l = log
             .clone()
             .tag("providerID", input.model.providerID)
@@ -406,7 +396,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
 
             const approvedToolsForSession = new Set<string>()
             const bridge = yield* EffectBridge.make()
-            workflowModel.approvalHandler = Instance.bind(async (approvalTools) => {
+            workflowModel.approvalHandler = bridge.bind(async (approvalTools) => {
               const uniqueNames = [...new Set(approvalTools.map((t: { name: string }) => t.name))] as string[]
               // Auto-approve tools that were already approved in this session
               // (prevents infinite approval loops for server-side MCP tools)

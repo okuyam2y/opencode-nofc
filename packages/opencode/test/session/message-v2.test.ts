@@ -60,7 +60,7 @@ const model: Provider.Model = {
 
 function userInfo(id: string): MessageV2.User {
   return {
-    id,
+    id: MessageID.make(id.startsWith("msg") ? id : `msg_${id}`),
     sessionID,
     role: "user",
     time: { created: 0 },
@@ -79,12 +79,12 @@ function assistantInfo(
 ): MessageV2.Assistant {
   const infoModel = meta ?? { providerID: model.providerID, modelID: model.api.id }
   return {
-    id,
+    id: MessageID.make(id.startsWith("msg") ? id : `msg_${id}`),
     sessionID,
     role: "assistant",
     time: { created: 0 },
     error,
-    parentID,
+    parentID: parentID ? MessageID.make(parentID.startsWith("msg") ? parentID : `msg_${parentID}`) : undefined,
     modelID: infoModel.modelID,
     providerID: infoModel.providerID,
     mode: "",
@@ -1255,8 +1255,8 @@ describe("session.message-v2.toModelMessage", () => {
   })
 
   test("prepends soft failure signal for non-zero exit code", async () => {
-    const userID = MessageID.make("u-soft")
-    const assistantID = MessageID.make("a-soft")
+    const userID = MessageID.make("msg_u-soft")
+    const assistantID = MessageID.make("msg_a-soft")
     const input: MessageV2.WithParts[] = [
       {
         info: userInfo(userID),
@@ -1294,8 +1294,8 @@ describe("session.message-v2.toModelMessage", () => {
   })
 
   test("does not prepend soft failure signal for zero exit code", async () => {
-    const userID = MessageID.make("u-ok")
-    const assistantID = MessageID.make("a-ok")
+    const userID = MessageID.make("msg_u-ok")
+    const assistantID = MessageID.make("msg_a-ok")
     const input: MessageV2.WithParts[] = [
       {
         info: userInfo(userID),
@@ -1333,8 +1333,8 @@ describe("session.message-v2.toModelMessage", () => {
   })
 
   test("does not prepend soft failure signal for compacted tool result", async () => {
-    const userID = MessageID.make("u-compact")
-    const assistantID = MessageID.make("a-compact")
+    const userID = MessageID.make("msg_u-compact")
+    const assistantID = MessageID.make("msg_a-compact")
     const input: MessageV2.WithParts[] = [
       {
         info: userInfo(userID),
@@ -1754,7 +1754,7 @@ describe("session.message-v2.fromError", () => {
   test("pendingDirectives: prepends directive to hermes notFound fixed text", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
-    const toolPartID = PartID.make("a1")
+    const toolPartID = PartID.make("prt_a1")
 
     const input: MessageV2.WithParts[] = [
       {
@@ -1769,7 +1769,7 @@ describe("session.message-v2.fromError", () => {
           {
             id: toolPartID,
             sessionID,
-            messageID: MessageID.make(assistantID),
+            messageID: MessageID.make(assistantID.startsWith("msg") ? assistantID : `msg_${assistantID}`),
             type: "tool",
             callID: "call-1",
             tool: "read",
@@ -1797,7 +1797,7 @@ describe("session.message-v2.fromError", () => {
   test("pendingDirectives: prepends directive to normal error text", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
-    const toolPartID = PartID.make("a1")
+    const toolPartID = PartID.make("prt_a1")
 
     const input: MessageV2.WithParts[] = [
       {
@@ -1812,7 +1812,7 @@ describe("session.message-v2.fromError", () => {
           {
             id: toolPartID,
             sessionID,
-            messageID: MessageID.make(assistantID),
+            messageID: MessageID.make(assistantID.startsWith("msg") ? assistantID : `msg_${assistantID}`),
             type: "tool",
             callID: "call-1",
             tool: "grep",
@@ -1839,7 +1839,7 @@ describe("session.message-v2.fromError", () => {
   test("pendingDirectives: unaffected when partID is absent from the map", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
-    const toolPartID = PartID.make("a1")
+    const toolPartID = PartID.make("prt_a1")
 
     const input: MessageV2.WithParts[] = [
       {
@@ -1854,7 +1854,7 @@ describe("session.message-v2.fromError", () => {
           {
             id: toolPartID,
             sessionID,
-            messageID: MessageID.make(assistantID),
+            messageID: MessageID.make(assistantID.startsWith("msg") ? assistantID : `msg_${assistantID}`),
             type: "tool",
             callID: "call-1",
             tool: "grep",
@@ -1870,7 +1870,7 @@ describe("session.message-v2.fromError", () => {
     ]
 
     // Map is present but keyed on a different part ID — must not touch the error.
-    const pending = new Map<string, string>([[PartID.make("other"), "[RESET]"]])
+    const pending = new Map<string, string>([[PartID.make("prt_other"), "[RESET]"]])
     const result = await MessageV2.toModelMessages(input, model, { pendingDirectives: pending })
     const toolMsg = result.find((m) => m.role === "tool")
     expect(toolMsg).toBeDefined()
@@ -1880,7 +1880,7 @@ describe("session.message-v2.fromError", () => {
   test("providerMeta drops internal flags from callProviderMetadata on hermes notFound path", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
-    const toolPartID = PartID.make("a1")
+    const toolPartID = PartID.make("prt_a1")
 
     const input: MessageV2.WithParts[] = [
       {
@@ -1895,7 +1895,7 @@ describe("session.message-v2.fromError", () => {
           {
             id: toolPartID,
             sessionID,
-            messageID: MessageID.make(assistantID),
+            messageID: MessageID.make(assistantID.startsWith("msg") ? assistantID : `msg_${assistantID}`),
             type: "tool",
             callID: "call-1",
             tool: "grep",
@@ -1938,7 +1938,7 @@ describe("session.message-v2.fromError", () => {
   test("providerMeta forwards passthrough metadata on hermes notFound rewrite", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
-    const toolPartID = PartID.make("a1")
+    const toolPartID = PartID.make("prt_a1")
 
     const input: MessageV2.WithParts[] = [
       {
@@ -1953,7 +1953,7 @@ describe("session.message-v2.fromError", () => {
           {
             id: toolPartID,
             sessionID,
-            messageID: MessageID.make(assistantID),
+            messageID: MessageID.make(assistantID.startsWith("msg") ? assistantID : `msg_${assistantID}`),
             type: "tool",
             callID: "call-1",
             tool: "read",
@@ -2003,7 +2003,7 @@ describe("session.message-v2.fromError", () => {
     // and strip invariants hold.
     const userID = "m-user"
     const assistantID = "m-assistant"
-    const toolPartID = PartID.make("a1")
+    const toolPartID = PartID.make("prt_a1")
 
     const input: MessageV2.WithParts[] = [
       {
@@ -2018,7 +2018,7 @@ describe("session.message-v2.fromError", () => {
           {
             id: toolPartID,
             sessionID,
-            messageID: MessageID.make(assistantID),
+            messageID: MessageID.make(assistantID.startsWith("msg") ? assistantID : `msg_${assistantID}`),
             type: "tool",
             callID: "call-1",
             tool: "read",
@@ -2062,7 +2062,7 @@ describe("session.message-v2.fromError", () => {
   test("providerMeta forwards non-internal metadata on normal error path", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
-    const toolPartID = PartID.make("a1")
+    const toolPartID = PartID.make("prt_a1")
 
     const input: MessageV2.WithParts[] = [
       {
@@ -2077,7 +2077,7 @@ describe("session.message-v2.fromError", () => {
           {
             id: toolPartID,
             sessionID,
-            messageID: MessageID.make(assistantID),
+            messageID: MessageID.make(assistantID.startsWith("msg") ? assistantID : `msg_${assistantID}`),
             type: "tool",
             callID: "call-1",
             tool: "grep",

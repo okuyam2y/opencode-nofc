@@ -45,7 +45,7 @@ import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Truncate } from "@/tool/truncate"
 import { decodeDataUrl } from "@/util/data-url"
 import { Process } from "@/util/process"
-import { Cause, Effect, Exit, Layer, Option, Scope, Context, Schema, Types } from "effect"
+import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
 import * as EffectLogger from "@opencode-ai/core/effect/logger"
@@ -53,6 +53,12 @@ import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
 import { EffectBridge } from "@/effect/bridge"
+import { Reference } from "@/reference/reference"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { RuntimeFlags } from "@/effect/runtime-flags"
+import { SessionEvent } from "@opencode-ai/core/session-event"
+import { AgentAttachment, FileAttachment, ReferenceAttachment, Source } from "@opencode-ai/core/session-prompt"
+import * as DateTime from "effect/DateTime"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -102,6 +108,88 @@ function looksIncomplete(text: string): { incomplete: boolean; reason?: string }
   return { incomplete: false }
 }
 
+type ReferencePromptMetadata = {
+  name: string
+  kind: "local" | "git" | "invalid"
+  path?: string
+  repository?: string
+  branch?: string
+  target?: string
+  targetPath?: string
+  problem?: string
+  source: { value: string; start: number; end: number }
+}
+
+function stringField(record: Record<string, unknown>, key: string) {
+  return typeof record[key] === "string" ? (record[key] as string) : undefined
+}
+
+function referencePromptMetadata(input: unknown): ReferencePromptMetadata | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return
+  const record = input as Record<string, unknown>
+  const name = stringField(record, "name")
+  const kind = stringField(record, "kind")
+  if (!name || (kind !== "local" && kind !== "git" && kind !== "invalid")) return
+  if (!record.source || typeof record.source !== "object" || Array.isArray(record.source)) return
+  const source = record.source as Record<string, unknown>
+  const value = stringField(source, "value")
+  if (!value || typeof source.start !== "number" || typeof source.end !== "number") return
+  return {
+    name,
+    kind,
+    path: stringField(record, "path"),
+    repository: stringField(record, "repository"),
+    branch: stringField(record, "branch"),
+    target: stringField(record, "target"),
+    targetPath: stringField(record, "targetPath"),
+    problem: stringField(record, "problem"),
+    source: { value, start: source.start, end: source.end },
+  }
+}
+
+function referenceTextPart(input: {
+  reference: Reference.Resolved
+  source: ReferencePromptMetadata["source"]
+  target?: string
+  targetPath?: string
+  problem?: string
+}): MessageV2.TextPartInput {
+  const metadata: ReferencePromptMetadata = {
+    name: input.reference.name,
+    kind: input.reference.kind,
+    ...(input.reference.kind === "invalid"
+      ? { repository: input.reference.repository }
+      : { path: input.reference.path }),
+    ...(input.reference.kind === "git"
+      ? { repository: input.reference.repository, branch: input.reference.branch }
+      : {}),
+    ...(input.target === undefined ? {} : { target: input.target }),
+    ...(input.targetPath ? { targetPath: input.targetPath } : {}),
+    problem: input.problem ?? (input.reference.kind === "invalid" ? input.reference.message : undefined),
+    source: input.source,
+  }
+  const label = metadata.target === undefined ? `@${metadata.name}` : `@${metadata.name}/${metadata.target}`
+  return {
+    type: "text",
+    synthetic: true,
+    text: [
+      `Referenced configured reference ${label}.`,
+      ...(metadata.kind === "local" ? ["Kind: local directory"] : []),
+      ...(metadata.kind === "git" ? ["Kind: git repository"] : []),
+      ...(metadata.repository ? [`Repository: ${metadata.repository}`] : []),
+      ...(metadata.branch ? [`Branch/ref: ${metadata.branch}`] : []),
+      ...(metadata.path ? [`Reference root: ${metadata.path}`] : []),
+      ...(metadata.targetPath ? [`Resolved path: ${metadata.targetPath}`] : []),
+      ...(metadata.problem
+        ? [`Problem: ${metadata.problem}`]
+        : [
+            "For targeted context, inspect the reference path directly with Read, Glob, and Grep. For broader research, call the task tool with subagent scout and include this reference path.",
+          ]),
+    ].join("\n"),
+    metadata: { reference: metadata },
+  }
+}
+
 const log = Log.create({ service: "session.prompt" })
 const elog = EffectLogger.create({ service: "session.prompt" })
 
@@ -142,6 +230,9 @@ export const layer = Layer.effect(
     const summary = yield* SessionSummary.Service
     const sys = yield* SystemPrompt.Service
     const llm = yield* LLM.Service
+    const references = yield* Reference.Service
+    const events = yield* EventV2Bridge.Service
+    const flags = yield* RuntimeFlags.Service
     const runner = Effect.fn("SessionPrompt.runner")(function* () {
       return yield* EffectBridge.make()
     })
@@ -149,7 +240,7 @@ export const layer = Layer.effect(
       return {
         cancel: (sessionID: SessionID) => cancel(sessionID),
         resolvePromptParts: (template: string) => resolvePromptParts(template),
-        prompt: (input: PromptInput) => prompt(input).pipe(Effect.catch(Effect.die)),
+        prompt: (input: PromptInput) => prompt(input),
         loop: (input: LoopInput) => loop(input),
       } satisfies TaskPromptOps
     })
@@ -202,12 +293,74 @@ export const layer = Layer.effect(
       const parts: Types.DeepMutable<PromptInput["parts"]> = [{ type: "text", text: template }]
       const files = ConfigMarkdown.files(template)
       const seen = new Set<string>()
+      const mentionSource = (match: RegExpMatchArray) => {
+        const start = match.index ?? 0
+        return { value: match[0], start, end: start + match[0].length }
+      }
       yield* Effect.forEach(
         files,
         Effect.fnUntraced(function* (match) {
           const name = match[1]
+          if (!name) return
           if (seen.has(name)) return
           seen.add(name)
+
+          const slash = name.indexOf("/")
+          const alias = slash === -1 ? name : name.slice(0, slash)
+          const reference = yield* references.get(alias)
+          if (reference) {
+            const source = mentionSource(match)
+            if (reference.kind === "invalid") {
+              parts.push(
+                referenceTextPart({ reference, source, target: slash === -1 ? undefined : name.slice(slash + 1) }),
+              )
+              return
+            }
+
+            yield* references.ensure(reference.path)
+            if (slash === -1) {
+              parts.push(referenceTextPart({ reference, source }))
+              return
+            }
+
+            const target = name.slice(slash + 1)
+            const targetPath = path.resolve(reference.path, target)
+            if (!AppFileSystem.contains(reference.path, targetPath)) {
+              parts.push(
+                referenceTextPart({
+                  reference,
+                  source,
+                  target,
+                  targetPath,
+                  problem: `Path escapes configured reference @${alias}: ${target}`,
+                }),
+              )
+              return
+            }
+
+            const info = yield* fsys.stat(targetPath).pipe(Effect.option)
+            if (Option.isNone(info)) {
+              parts.push(
+                referenceTextPart({
+                  reference,
+                  source,
+                  target,
+                  targetPath,
+                  problem: `Path does not exist inside configured reference @${alias}: ${target}`,
+                }),
+              )
+              return
+            }
+
+            parts.push({
+              type: "file",
+              url: pathToFileURL(targetPath).href,
+              filename: name,
+              mime: info.value.type === "Directory" ? "application/x-directory" : "text/plain",
+            })
+            return
+          }
+
           const filepath = name.startsWith("~/")
             ? path.join(os.homedir(), name.slice(2))
             : path.resolve(ctx.worktree, name)
@@ -796,181 +949,185 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       } satisfies MessageV2.TextPart)
     })
 
-    const shellImpl = Effect.fn("SessionPrompt.shellImpl")(function* (input: ShellInput) {
-      const ctx = yield* InstanceState.context
-      const run = yield* runner()
-      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-      if (session.revert) {
-        yield* revert.cleanup(session)
-      }
-      const agent = yield* agents.get(input.agent)
-      if (!agent) {
-        const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
-        const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
-        const error = new NamedError.Unknown({ message: `Agent not found: "${input.agent}".${hint}` })
-        yield* bus.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
-        throw error
-      }
-      const model = input.model ?? agent.model ?? (yield* lastModel(input.sessionID))
-      const userMsg: MessageV2.User = {
-        id: input.messageID ?? MessageID.ascending(),
-        sessionID: input.sessionID,
-        time: { created: Date.now() },
-        role: "user",
-        agent: input.agent,
-        model: { providerID: model.providerID, modelID: model.modelID },
-      }
-      yield* sessions.updateMessage(userMsg)
-      const userPart: MessageV2.Part = {
-        type: "text",
-        id: PartID.ascending(),
-        messageID: userMsg.id,
-        sessionID: input.sessionID,
-        text: "The following tool was executed by the user",
-        synthetic: true,
-      }
-      yield* sessions.updatePart(userPart)
-
-      const msg: MessageV2.Assistant = {
-        id: MessageID.ascending(),
-        sessionID: input.sessionID,
-        parentID: userMsg.id,
-        mode: input.agent,
-        agent: input.agent,
-        cost: 0,
-        path: { cwd: ctx.directory, root: ctx.worktree },
-        time: { created: Date.now() },
-        role: "assistant",
-        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-        modelID: model.modelID,
-        providerID: model.providerID,
-      }
-      yield* sessions.updateMessage(msg)
-      const part: MessageV2.ToolPart = {
-        type: "tool",
-        id: PartID.ascending(),
-        messageID: msg.id,
-        sessionID: input.sessionID,
-        tool: "bash",
-        callID: ulid(),
-        state: {
-          status: "running",
-          time: { start: Date.now() },
-          input: { command: input.command },
-        },
-      }
-      yield* sessions.updatePart(part)
-
-      const sh = Shell.preferred()
-      const shellName = (
-        process.platform === "win32" ? path.win32.basename(sh, ".exe") : path.basename(sh)
-      ).toLowerCase()
-      const invocations: Record<string, { args: string[] }> = {
-        nu: { args: ["-c", input.command] },
-        fish: { args: ["-c", input.command] },
-        zsh: {
-          args: [
-            "-l",
-            "-c",
-            `
-              __oc_cwd=$PWD
-              [[ -f ~/.zshenv ]] && source ~/.zshenv >/dev/null 2>&1 || true
-              [[ -f "\${ZDOTDIR:-$HOME}/.zshrc" ]] && source "\${ZDOTDIR:-$HOME}/.zshrc" >/dev/null 2>&1 || true
-              cd "$__oc_cwd"
-              eval ${JSON.stringify(input.command)}
-            `,
-          ],
-        },
-        bash: {
-          args: [
-            "-l",
-            "-c",
-            `
-              __oc_cwd=$PWD
-              shopt -s expand_aliases
-              [[ -f ~/.bashrc ]] && source ~/.bashrc >/dev/null 2>&1 || true
-              cd "$__oc_cwd"
-              eval ${JSON.stringify(input.command)}
-            `,
-          ],
-        },
-        cmd: { args: ["/c", input.command] },
-        powershell: { args: ["-NoProfile", "-Command", input.command] },
-        pwsh: { args: ["-NoProfile", "-Command", input.command] },
-        "": { args: ["-c", input.command] },
-      }
-
-      const args = (invocations[shellName] ?? invocations[""]).args
-      const cwd = ctx.directory
-      const shellEnv = yield* plugin.trigger(
-        "shell.env",
-        { cwd, sessionID: input.sessionID, callID: part.callID },
-        { env: {} },
-      )
-
-      const cmd = ChildProcess.make(sh, args, {
-        cwd,
-        extendEnv: true,
-        env: { ...shellEnv.env, TERM: "dumb" },
-        stdin: "ignore",
-        forceKillAfter: "3 seconds",
-      })
-
-      let output = ""
-      let aborted = false
-
-      const finish = Effect.uninterruptible(
+    const shellImpl = Effect.fn("SessionPrompt.shellImpl")(function* (input: ShellInput, ready?: Latch.Latch) {
+      return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          if (aborted) {
-            output += "\n\n" + ["<metadata>", "User aborted the command", "</metadata>"].join("\n")
-          }
-          if (!msg.time.completed) {
-            msg.time.completed = Date.now()
+          const markReady = ready ? ready.open.pipe(Effect.asVoid) : Effect.void
+          const { msg, part, cwd, run } = yield* Effect.gen(function* () {
+            const ctx = yield* InstanceState.context
+            const runHandle = yield* runner()
+            const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+            if (session.revert) {
+              yield* revert.cleanup(session)
+            }
+            const agent = yield* agents.get(input.agent)
+            if (!agent) {
+              const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
+              const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
+              const error = new NamedError.Unknown({ message: `Agent not found: "${input.agent}".${hint}` })
+              yield* bus.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+              throw error
+            }
+            const model = input.model ?? agent.model ?? (yield* lastModel(input.sessionID))
+            const userMsg: MessageV2.User = {
+              id: input.messageID ?? MessageID.ascending(),
+              sessionID: input.sessionID,
+              time: { created: Date.now() },
+              role: "user",
+              agent: input.agent,
+              model: { providerID: model.providerID, modelID: model.modelID },
+            }
+            yield* sessions.updateMessage(userMsg)
+            const userPart: MessageV2.Part = {
+              type: "text",
+              id: PartID.ascending(),
+              messageID: userMsg.id,
+              sessionID: input.sessionID,
+              text: "The following tool was executed by the user",
+              synthetic: true,
+            }
+            yield* sessions.updatePart(userPart)
+
+            const msg: MessageV2.Assistant = {
+              id: MessageID.ascending(),
+              sessionID: input.sessionID,
+              parentID: userMsg.id,
+              mode: input.agent,
+              agent: input.agent,
+              cost: 0,
+              path: { cwd: ctx.directory, root: ctx.worktree },
+              time: { created: Date.now() },
+              role: "assistant",
+              tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+              modelID: model.modelID,
+              providerID: model.providerID,
+            }
             yield* sessions.updateMessage(msg)
-          }
-          if (part.state.status === "running") {
-            part.state = {
-              status: "completed",
-              time: { ...part.state.time, end: Date.now() },
-              input: part.state.input,
-              title: "",
-              metadata: { output, description: "" },
-              output,
+            const part: MessageV2.ToolPart = {
+              type: "tool",
+              id: PartID.ascending(),
+              messageID: msg.id,
+              sessionID: input.sessionID,
+              tool: "bash",
+              callID: ulid(),
+              state: {
+                status: "running",
+                time: { start: Date.now() },
+                input: { command: input.command },
+              },
             }
             yield* sessions.updatePart(part)
+            return { msg, part, cwd: ctx.directory, run: runHandle }
+          }).pipe(Effect.ensuring(markReady))
+
+          const sh = Shell.preferred()
+          const shellName = (
+            process.platform === "win32" ? path.win32.basename(sh, ".exe") : path.basename(sh)
+          ).toLowerCase()
+          const invocations: Record<string, { args: string[] }> = {
+            nu: { args: ["-c", input.command] },
+            fish: { args: ["-c", input.command] },
+            zsh: {
+              args: [
+                "-l",
+                "-c",
+                `
+                  __oc_cwd=$PWD
+                  [[ -f ~/.zshenv ]] && source ~/.zshenv >/dev/null 2>&1 || true
+                  [[ -f "\${ZDOTDIR:-$HOME}/.zshrc" ]] && source "\${ZDOTDIR:-$HOME}/.zshrc" >/dev/null 2>&1 || true
+                  cd "$__oc_cwd"
+                  eval ${JSON.stringify(input.command)}
+                `,
+              ],
+            },
+            bash: {
+              args: [
+                "-l",
+                "-c",
+                `
+                  __oc_cwd=$PWD
+                  shopt -s expand_aliases
+                  [[ -f ~/.bashrc ]] && source ~/.bashrc >/dev/null 2>&1 || true
+                  cd "$__oc_cwd"
+                  eval ${JSON.stringify(input.command)}
+                `,
+              ],
+            },
+            cmd: { args: ["/c", input.command] },
+            powershell: { args: ["-NoProfile", "-Command", input.command] },
+            pwsh: { args: ["-NoProfile", "-Command", input.command] },
+            "": { args: ["-c", input.command] },
           }
+
+          const args = (invocations[shellName] ?? invocations[""]).args
+          const shellEnv = yield* plugin.trigger(
+            "shell.env",
+            { cwd, sessionID: input.sessionID, callID: part.callID },
+            { env: {} },
+          )
+
+          const cmd = ChildProcess.make(sh, args, {
+            cwd,
+            extendEnv: true,
+            env: { ...shellEnv.env, TERM: "dumb" },
+            stdin: "ignore",
+            forceKillAfter: "3 seconds",
+          })
+
+          let output = ""
+          let aborted = false
+
+          const finish = Effect.uninterruptible(
+            Effect.gen(function* () {
+              if (aborted) {
+                output += "\n\n" + ["<metadata>", "User aborted the command", "</metadata>"].join("\n")
+              }
+              if (!msg.time.completed) {
+                msg.time.completed = Date.now()
+                yield* sessions.updateMessage(msg)
+              }
+              if (part.state.status === "running") {
+                part.state = {
+                  status: "completed",
+                  time: { ...part.state.time, end: Date.now() },
+                  input: part.state.input,
+                  title: "",
+                  metadata: { output, description: "" },
+                  output,
+                }
+                yield* sessions.updatePart(part)
+              }
+            }),
+          )
+
+          const exit = yield* restore(
+            Effect.gen(function* () {
+              const handle = yield* spawner.spawn(cmd)
+              yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
+                Effect.sync(() => {
+                  output += chunk
+                  if (part.state.status === "running") {
+                    part.state.metadata = { output, description: "" }
+                    void run.fork(sessions.updatePart(part))
+                  }
+                }),
+              )
+              yield* handle.exitCode
+            }).pipe(Effect.scoped, Effect.orDie),
+          ).pipe(Effect.exit)
+
+          if (Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause) && !Cause.hasDies(exit.cause)) {
+            aborted = true
+          }
+          yield* finish
+
+          if (Exit.isFailure(exit) && !aborted && !Cause.hasInterruptsOnly(exit.cause)) {
+            return yield* Effect.failCause(exit.cause)
+          }
+
+          return { info: msg, parts: [part] }
         }),
       )
-
-      const exit = yield* Effect.gen(function* () {
-        const handle = yield* spawner.spawn(cmd)
-        yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
-          Effect.sync(() => {
-            output += chunk
-            if (part.state.status === "running") {
-              part.state.metadata = { output, description: "" }
-              void run.fork(sessions.updatePart(part))
-            }
-          }),
-        )
-        yield* handle.exitCode
-      }).pipe(
-        Effect.scoped,
-        Effect.onInterrupt(() =>
-          Effect.sync(() => {
-            aborted = true
-          }),
-        ),
-        Effect.orDie,
-        Effect.ensuring(finish),
-        Effect.exit,
-      )
-
-      if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)) {
-        return yield* Effect.failCause(exit.cause)
-      }
-
-      return { info: msg, parts: [part] }
     })
 
     const getModel = Effect.fn("SessionPrompt.getModel")(function* (
@@ -1042,6 +1199,30 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       const assign = (part: Draft<MessageV2.Part>): MessageV2.Part => ({
         ...part,
         id: part.id ? PartID.make(part.id) : PartID.ascending(),
+      })
+
+      const referenceContextFromFilePart = Effect.fnUntraced(function* (
+        part: Extract<PromptInput["parts"][number], { type: "file" }>,
+        filepath: string,
+      ) {
+        const name = part.filename?.replace(/#\d+(?:-\d*)?$/, "")
+        if (!name) return
+        const slash = name.indexOf("/")
+        if (slash === -1) return
+
+        const reference = yield* references.get(name.slice(0, slash))
+        if (!reference || reference.kind === "invalid") return
+        if (!AppFileSystem.contains(reference.path, filepath)) return
+
+        const target = path.relative(reference.path, filepath).split(path.sep).join("/")
+        if (!target || target.startsWith("../") || target === "..") return
+
+        return referenceTextPart({
+          reference,
+          source: part.source?.text ?? { value: `@${name}`, start: 0, end: name.length + 1 },
+          target,
+          targetPath: filepath,
+        })
       })
 
       const resolvePart: (part: PromptInput["parts"][number]) => Effect.Effect<Draft<MessageV2.Part>[]> = Effect.fn(
@@ -1126,6 +1307,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             case "file:": {
               log.info("file", { mime: part.mime })
               const filepath = fileURLToPath(part.url)
+              const referenceContext = yield* referenceContextFromFilePart(part, filepath)
               const mime = (yield* fsys.isDir(filepath)) ? "application/x-directory" : part.mime
 
               const { read } = yield* registry.named()
@@ -1173,6 +1355,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 }
                 const args = { filePath: filepath, offset, limit }
                 const pieces: Draft<MessageV2.Part>[] = [
+                  ...(referenceContext
+                    ? [{ ...referenceContext, messageID: info.id, sessionID: input.sessionID }]
+                    : []),
                   {
                     messageID: info.id,
                     sessionID: input.sessionID,
@@ -1238,6 +1423,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                     error: new NamedError.Unknown({ message }).toObject(),
                   })
                   return [
+                    ...(referenceContext
+                      ? [{ ...referenceContext, messageID: info.id, sessionID: input.sessionID }]
+                      : []),
                     {
                       messageID: info.id,
                       sessionID: input.sessionID,
@@ -1248,6 +1436,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   ]
                 }
                 return [
+                  ...(referenceContext
+                    ? [{ ...referenceContext, messageID: info.id, sessionID: input.sessionID }]
+                    : []),
                   {
                     messageID: info.id,
                     sessionID: input.sessionID,
@@ -1267,6 +1458,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               }
 
               return [
+                ...(referenceContext ? [{ ...referenceContext, messageID: info.id, sessionID: input.sessionID }] : []),
                 {
                   messageID: info.id,
                   sessionID: input.sessionID,
@@ -1354,6 +1546,93 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
       yield* sessions.updateMessage(info)
       for (const part of parts) yield* sessions.updatePart(part)
+      const nextPrompt = parts.reduce(
+        (result, part) => {
+          if (part.type === "text") {
+            if (part.synthetic) result.synthetic.push(part.text)
+            else result.text.push(part.text)
+            const reference = referencePromptMetadata(part.metadata?.reference)
+            if (reference) {
+              result.references.push(
+                new ReferenceAttachment({
+                  name: reference.name,
+                  kind: reference.kind,
+                  uri: reference.path ? pathToFileURL(reference.path).href : undefined,
+                  repository: reference.repository,
+                  branch: reference.branch,
+                  target: reference.target,
+                  targetUri: reference.targetPath ? pathToFileURL(reference.targetPath).href : undefined,
+                  problem: reference.problem,
+                  source: new Source({
+                    start: reference.source.start,
+                    end: reference.source.end,
+                    text: reference.source.value,
+                  }),
+                }),
+              )
+            }
+          }
+          if (part.type === "file") {
+            result.files.push(
+              new FileAttachment({
+                uri: part.url,
+                mime: part.mime,
+                name: part.filename,
+                source: part.source
+                  ? new Source({
+                      start: part.source.text.start,
+                      end: part.source.text.end,
+                      text: part.source.text.value,
+                    })
+                  : undefined,
+              }),
+            )
+          }
+          if (part.type === "agent") {
+            result.agents.push(
+              new AgentAttachment({
+                name: part.name,
+                source: part.source
+                  ? new Source({
+                      start: part.source.start,
+                      end: part.source.end,
+                      text: part.source.value,
+                    })
+                  : undefined,
+              }),
+            )
+          }
+          return result
+        },
+        {
+          text: [] as string[],
+          files: [] as FileAttachment[],
+          agents: [] as AgentAttachment[],
+          references: [] as ReferenceAttachment[],
+          synthetic: [] as string[],
+        },
+      )
+      if (flags.experimentalEventSystem) {
+        yield* events.publish(SessionEvent.Prompted, {
+          sessionID: input.sessionID,
+          timestamp: DateTime.makeUnsafe(info.time.created),
+          prompt: {
+            text: nextPrompt.text.join("\n"),
+            files: nextPrompt.files,
+            agents: nextPrompt.agents,
+            references: nextPrompt.references,
+          },
+        })
+      }
+      for (const text of nextPrompt.synthetic) {
+        if (flags.experimentalEventSystem) {
+          yield* events.publish(SessionEvent.Synthetic, {
+            sessionID: input.sessionID,
+            timestamp: DateTime.makeUnsafe(info.time.created),
+            text,
+          })
+        }
+      }
 
       return { info, parts }
     }, Effect.scoped)
@@ -1418,7 +1697,19 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID)
 
-          const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
+          let lastUser: MessageV2.User | undefined
+          let lastAssistant: MessageV2.Assistant | undefined
+          let lastFinished: MessageV2.Assistant | undefined
+          let tasks: (MessageV2.CompactionPart | MessageV2.SubtaskPart)[] = []
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const msg = msgs[i]
+            if (!lastUser && msg.info.role === "user") lastUser = msg.info
+            if (!lastAssistant && msg.info.role === "assistant") lastAssistant = msg.info
+            if (!lastFinished && msg.info.role === "assistant" && msg.info.finish) lastFinished = msg.info
+            if (lastUser && lastFinished) break
+            const task = msg.parts.filter((part) => part.type === "compaction" || part.type === "subtask")
+            if (task && !lastFinished) tasks.push(...task)
+          }
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
@@ -1821,7 +2112,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const shell: (input: ShellInput) => Effect.Effect<MessageV2.WithParts, Session.BusyError> = Effect.fn(
       "SessionPrompt.shell",
     )(function* (input: ShellInput) {
-      return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input))
+      const ready = yield* Latch.make()
+      return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready)
     })
 
     const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
@@ -1977,6 +2269,9 @@ export const defaultLayer = Layer.suspend(() =>
         LLM.defaultLayer,
         Bus.layer,
         CrossSpawnSpawner.defaultLayer,
+        Reference.defaultLayer,
+        EventV2Bridge.defaultLayer,
+        RuntimeFlags.defaultLayer,
       ),
     ),
   ),

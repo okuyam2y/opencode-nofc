@@ -680,19 +680,14 @@ export const ShellTool = Tool.define(
           parameters: prompt.parameters,
           execute: (params: Parameters, ctx: Tool.Context) =>
             Effect.gen(function* () {
-              const executeInstance = yield* InstanceState.context
+              const instanceCtx = yield* InstanceState.context
               const cwd = params.workdir
-                ? yield* resolvePath(params.workdir, executeInstance.directory, shell)
-                : executeInstance.directory
-              // Guard against a non-existent workdir so the tool surfaces an
-              // actionable message instead of the spawner's raw access error
-              // (`NotFound: FileSystem.access (<path>)`), which leaves the
-              // caller guessing why `ls` or `mkdir` failed before any command
-              // is even dispatched.
+                ? yield* resolvePath(params.workdir, instanceCtx.directory, shell)
+                : instanceCtx.directory
               if (params.workdir && !(yield* fs.existsSafe(cwd))) {
                 throw new Error(
                   `workdir "${params.workdir}" (resolved to "${cwd}") does not exist. ` +
-                    `Create it first (for example \`mkdir -p ${cwd}\`) or omit the workdir parameter to run in ${executeInstance.directory}.`,
+                    `Create it first (for example \`mkdir -p ${cwd}\`) or omit the workdir parameter to run in ${instanceCtx.directory}.`,
                 )
               }
               if (params.timeout !== undefined && params.timeout < 0) {
@@ -705,8 +700,8 @@ export const ShellTool = Tool.define(
                   const tree = yield* Effect.acquireRelease(parse(params.command, ps), (tree) =>
                     Effect.sync(() => tree.delete()),
                   )
-                  const scan = yield* collect(tree.rootNode, cwd, ps, shell, executeInstance)
-                  if (!containsPath(cwd, executeInstance)) scan.dirs.add(cwd)
+                  const scan = yield* collect(tree.rootNode, cwd, ps, shell, instanceCtx)
+                  if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
                   yield* ask(ctx, scan)
                 }),
               )

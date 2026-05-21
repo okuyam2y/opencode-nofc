@@ -23,8 +23,9 @@ import * as Log from "@opencode-ai/core/util/log"
 import { isRecord } from "@/util/record"
 import { containsSpamInValues, stripSpam } from "@/util/spam-filter"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { EventV2 } from "@/v2/event"
-import { SessionEvent } from "@/v2/session-event"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionEvent } from "@opencode-ai/core/session-event"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import * as DateTime from "effect/DateTime"
@@ -432,20 +433,7 @@ const log = Log.create({ service: "session.processor" })
 
   export class Service extends Context.Service<Service, Interface>()("@opencode/SessionProcessor") {}
 
-  export const layer: Layer.Layer<
-    Service,
-    never,
-    | Session.Service
-    | Config.Service
-    | Bus.Service
-    | Snapshot.Service
-    | Agent.Service
-    | LLM.Service
-    | Permission.Service
-    | Plugin.Service
-    | SessionSummary.Service
-    | SessionStatus.Service
-  > = Layer.effect(
+  export const layer = Layer.effect(
     Service,
     Effect.gen(function* () {
       const session = yield* Session.Service
@@ -459,6 +447,8 @@ const log = Log.create({ service: "session.processor" })
       const summary = yield* SessionSummary.Service
       const scope = yield* Scope.Scope
       const status = yield* SessionStatus.Service
+      const events = yield* EventV2Bridge.Service
+      const flags = yield* RuntimeFlags.Service
 
       const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
         // Capture instance via InstanceRef (Effect Service) so downstream
@@ -630,7 +620,7 @@ const log = Log.create({ service: "session.processor" })
             case "reasoning-start":
               if (value.id in ctx.reasoningMap) return
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-              EventV2.run(SessionEvent.Reasoning.Started.Sync, {
+              if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Reasoning.Started, {
                 sessionID: ctx.sessionID,
                 reasoningID: value.id,
                 timestamp: DateTime.makeUnsafe(Date.now()),
@@ -663,7 +653,7 @@ const log = Log.create({ service: "session.processor" })
             case "reasoning-end":
               if (!(value.id in ctx.reasoningMap)) return
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-              EventV2.run(SessionEvent.Reasoning.Ended.Sync, {
+              if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Reasoning.Ended, {
                 sessionID: ctx.sessionID,
                 reasoningID: value.id,
                 text: ctx.reasoningMap[value.id].text,
@@ -684,7 +674,7 @@ const log = Log.create({ service: "session.processor" })
                 throw new Error(`Tool call not allowed while generating summary: ${value.toolName}`)
               }
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-              EventV2.run(SessionEvent.Tool.Input.Started.Sync, {
+              if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Tool.Input.Started, {
                 sessionID: ctx.sessionID,
                 callID: value.id,
                 name: value.toolName,
@@ -713,7 +703,7 @@ const log = Log.create({ service: "session.processor" })
 
             case "tool-input-end":
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-              EventV2.run(SessionEvent.Tool.Input.Ended.Sync, {
+              if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Tool.Input.Ended, {
                 sessionID: ctx.sessionID,
                 callID: value.id,
                 text: "",
@@ -730,7 +720,7 @@ const log = Log.create({ service: "session.processor" })
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               {
                 const tcCalled = yield* readToolCall(value.toolCallId)
-                EventV2.run(SessionEvent.Tool.Called.Sync, {
+                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Tool.Called, {
                   sessionID: ctx.sessionID,
                   callID: value.toolCallId,
                   tool: value.toolName,
@@ -923,7 +913,7 @@ const log = Log.create({ service: "session.processor" })
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               {
                 const trCalled = yield* readToolCall(value.toolCallId)
-                EventV2.run(SessionEvent.Tool.Success.Sync, {
+                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Tool.Success, {
                   sessionID: ctx.sessionID,
                   callID: value.toolCallId,
                   structured: value.output.metadata,
@@ -973,7 +963,7 @@ const log = Log.create({ service: "session.processor" })
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               {
                 const teCalled = yield* readToolCall(value.toolCallId)
-                EventV2.run(SessionEvent.Tool.Failed.Sync, {
+                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Tool.Failed, {
                   sessionID: ctx.sessionID,
                   callID: value.toolCallId,
                   error: {
@@ -1000,7 +990,7 @@ const log = Log.create({ service: "session.processor" })
               if (!ctx.snapshot) ctx.snapshot = yield* snapshot.track()
               if (!ctx.assistantMessage.summary) {
                 // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-                EventV2.run(SessionEvent.Step.Started.Sync, {
+                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Step.Started, {
                   sessionID: ctx.sessionID,
                   agent: input.assistantMessage.agent,
                   model: {
@@ -1119,7 +1109,7 @@ const log = Log.create({ service: "session.processor" })
               const completedSnapshot = yield* snapshot.track()
               if (!ctx.assistantMessage.summary) {
                 // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-                EventV2.run(SessionEvent.Step.Ended.Sync, {
+                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Step.Ended, {
                   sessionID: ctx.sessionID,
                   finish: finishReason,
                   cost: usage.cost,
@@ -1182,7 +1172,7 @@ const log = Log.create({ service: "session.processor" })
             case "text-start":
               if (!ctx.assistantMessage.summary) {
                 // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-                EventV2.run(SessionEvent.Text.Started.Sync, {
+                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Text.Started, {
                   sessionID: ctx.sessionID,
                   timestamp: DateTime.makeUnsafe(Date.now()),
                 })
@@ -1271,7 +1261,7 @@ const log = Log.create({ service: "session.processor" })
               )).text
               if (!ctx.assistantMessage.summary) {
                 // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-                EventV2.run(SessionEvent.Text.Ended.Sync, {
+                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Text.Ended, {
                   sessionID: ctx.sessionID,
                   text: ctx.currentText.text,
                   timestamp: DateTime.makeUnsafe(Date.now()),
@@ -1369,7 +1359,7 @@ const log = Log.create({ service: "session.processor" })
           }
           if (!ctx.assistantMessage.summary) {
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-            EventV2.run(SessionEvent.Step.Failed.Sync, {
+            if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Step.Failed, {
               sessionID: ctx.sessionID,
               error: {
                 type: "unknown",
@@ -1492,7 +1482,7 @@ const log = Log.create({ service: "session.processor" })
                         ),
                       )
                       // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-                      EventV2.run(SessionEvent.Retried.Sync, {
+                      if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Retried, {
                         sessionID: ctx.sessionID,
                         attempt: info.attempt,
                         error: {
@@ -1547,6 +1537,8 @@ const log = Log.create({ service: "session.processor" })
       Layer.provide(SessionStatus.defaultLayer),
       Layer.provide(Bus.layer),
       Layer.provide(Config.defaultLayer),
+      Layer.provide(EventV2Bridge.defaultLayer),
+      Layer.provide(RuntimeFlags.defaultLayer),
     ),
   )
 

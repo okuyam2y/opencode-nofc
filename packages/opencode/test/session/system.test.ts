@@ -3,8 +3,6 @@ import fs from "fs/promises"
 import path from "path"
 import { Effect } from "effect"
 import { Agent } from "../../src/agent/agent"
-import { Instance } from "../../src/project/instance"
-import { WithInstance } from "../../src/project/with-instance"
 import { SystemPrompt } from "../../src/session/system"
 import { disposeAllInstances, provideInstance, tmpdir } from "../fixture/fixture"
 
@@ -87,29 +85,24 @@ description: ${description}
     process.env.OPENCODE_TEST_HOME = tmp.path
 
     try {
-      await WithInstance.provide({
-        directory: tmp.path,
-        fn: async () => {
-          const build = await load(tmp.path, (svc) => svc.get("build"))
-          const runSkills = Effect.gen(function* () {
-            const svc = yield* SystemPrompt.Service
-            return yield* svc.skills(build!)
-          }).pipe(Effect.provide(SystemPrompt.defaultLayer))
+      const build = await load(tmp.path, (svc) => svc.get("build"))
+      const runSkills = Effect.gen(function* () {
+        const svc = yield* SystemPrompt.Service
+        return yield* svc.skills(build!)
+      }).pipe(Effect.provide(SystemPrompt.defaultLayer), provideInstance(tmp.path))
 
-          const first = await Effect.runPromise(runSkills)
-          const second = await Effect.runPromise(runSkills)
+      const first = await Effect.runPromise(runSkills)
+      const second = await Effect.runPromise(runSkills)
 
-          expect(first).toBe(second)
+      expect(first).toBe(second)
 
-          const alpha = first!.indexOf("<name>alpha-skill</name>")
-          const middle = first!.indexOf("<name>middle-skill</name>")
-          const zeta = first!.indexOf("<name>zeta-skill</name>")
+      const alpha = first!.indexOf("<name>alpha-skill</name>")
+      const middle = first!.indexOf("<name>middle-skill</name>")
+      const zeta = first!.indexOf("<name>zeta-skill</name>")
 
-          expect(alpha).toBeGreaterThan(-1)
-          expect(middle).toBeGreaterThan(alpha)
-          expect(zeta).toBeGreaterThan(middle)
-        },
-      })
+      expect(alpha).toBeGreaterThan(-1)
+      expect(middle).toBeGreaterThan(alpha)
+      expect(zeta).toBeGreaterThan(middle)
     } finally {
       process.env.OPENCODE_TEST_HOME = home
     }

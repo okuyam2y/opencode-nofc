@@ -105,7 +105,16 @@ export const LineEditTool = Tool.define(
               }
             }
 
-            const newLines = params.newText === "" ? [] : normalizeLineEndings(params.newText).split("\n")
+            // Strip ONE trailing "\n" so models that habitually add a cosmetic
+            // newline at the end of newText (e.g. `"replaced\n"` to swap a
+            // single line) don't inject an extra blank line. Multiple trailing
+            // newlines keep one — `"replaced\n\n"` still inserts one blank line
+            // intentionally.
+            const normalizedNewText = normalizeLineEndings(params.newText)
+            const trimmedNewText = normalizedNewText.endsWith("\n")
+              ? normalizedNewText.slice(0, -1)
+              : normalizedNewText
+            const newLines = trimmedNewText === "" ? [] : trimmedNewText.split("\n")
             lines.splice(params.startLine - 1, params.endLine - params.startLine + 1, ...newLines)
             contentNew = lines.length > 0 ? lines.join("\n") + (hadTrailingNewline ? "\n" : "") : ""
 

@@ -1,5 +1,6 @@
 import { generateId } from "ai"
 import { Cause, Deferred, Effect, Layer, Context, Scope } from "effect"
+import { Usage } from "@opencode-ai/llm"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Bus } from "@/bus"
@@ -32,6 +33,7 @@ import * as DateTime from "effect/DateTime"
 import { Instance } from "@/project/instance"
 import { InstanceRef } from "@/effect/instance-ref"
 import type { ToolFailureEvent } from "./failure-detector"
+import { READ_NOT_FOUND_PREFIX } from "@/tool/read"
 
 /** Tools exempt from same-step dedup (Stage 4).
  *  Only truly read-only, side-effect-free tools belong here.
@@ -571,7 +573,7 @@ const log = Log.create({ service: "session.processor" })
           if (!match || match.part.state.status !== "running") return false
           const errMsg = errorMessage(error)
           const isNotFound = match.part.tool === "read"
-            && errMsg.startsWith("File not found:")
+            && errMsg.startsWith(READ_NOT_FOUND_PREFIX)
             && !!(ctx.lastStreamInput?.toolParserActive)
           yield* session.updatePart({
             ...match.part,
@@ -1014,7 +1016,7 @@ const log = Log.create({ service: "session.processor" })
             case "finish-step": {
               const usage = Session.getUsage({
                 model: ctx.model,
-                usage: value.usage,
+                usage: Usage.from(value.usage as any),
                 metadata: value.providerMetadata,
               })
               // Detect gateways that return per-turn (non-cumulative) usage.

@@ -28,11 +28,27 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
 
+// Escape literal hermes close tags within a JSON-encoded string. JSON.stringify
+// does not escape "/", so a tool output that contains "</tool_response>" or
+// "</tool_call>" passes through unchanged and confuses the parser (it closes
+// the surrounding <tool_response>...</tool_response> early and the rest of
+// the JSON ends up as free-form text). Rewriting "</X>" to "<\/X>" inside
+// the JSON payload breaks the literal tag match while leaving JSON-parse
+// semantics intact ("\/" decodes back to "/").
+function escapeHermesCloseTagsInJson(json: string): string {
+  return json.replace(/<\/(tool_response|tool_call)>/g, "<\\/$1>")
+}
+
+/** Exported for unit testing. */
+export const _escapeHermesCloseTagsInJson = escapeHermesCloseTagsInJson
+
 // Custom hermes middleware with explicit examples for models that don't follow the standard format
 const hermesStrictMiddleware = createToolMiddleware({
   protocol: hermesProtocol(),
   toolResponsePromptTemplate: (toolResult) =>
-    `<tool_response>${JSON.stringify({ name: toolResult.toolName, content: toolResult.output })}</tool_response>`,
+    `<tool_response>${escapeHermesCloseTagsInJson(
+      JSON.stringify({ name: toolResult.toolName, content: toolResult.output }),
+    )}</tool_response>`,
   toolSystemPromptTemplate(tools) {
     const toolsJson = JSON.stringify(tools.map((t) => ({
       type: "function",

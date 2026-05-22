@@ -312,7 +312,7 @@ export const layer: Layer.Layer<Service, never, Git.Service | Bus.Service> = Lay
         const value: State = { current, root, summary: undefined }
         log.info("initialized", { branch: value.current, default_branch: value.root?.name })
 
-        yield* bus.subscribe(FileWatcher.Event.Updated).pipe(
+        yield* (yield* bus.subscribe(FileWatcher.Event.Updated)).pipe(
           Stream.filter((evt) => evt.properties.file.endsWith("HEAD")),
           Stream.runForEach((_evt) =>
             Effect.gen(function* () {

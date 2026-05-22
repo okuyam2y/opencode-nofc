@@ -30,6 +30,7 @@ import { TestConfig } from "../fixture/config"
 import { SyncEvent } from "@/sync"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { LLMEvent, Usage } from "@opencode-ai/llm"
 
 void Log.init({ print: false })
 
@@ -46,6 +47,10 @@ const ref = {
   providerID: ProviderID.make("test"),
   modelID: ModelID.make("test-model"),
 }
+
+const usage = (input: ConstructorParameters<typeof Usage>[0]) => new Usage(input)
+
+const basicUsage = () => usage({ inputTokens: 1, outputTokens: 1, totalTokens: 2 })
 
 afterEach(() => {
   mock.restore()
@@ -287,29 +292,106 @@ function createSummaryCompaction(sessionID: SessionID) {
 }
 
 function readCompactionPart(sessionID: SessionID) {
-  return SessionNs.Service.use((ssn) => ssn.messages({ sessionID })).pipe(
-    Effect.map((messages) =>
-      messages.at(-2)?.parts.find((item): item is MessageV2.CompactionPart => item.type === "compaction"),
-    ),
-  )
+  return SessionNs.use
+    .messages({ sessionID })
+    .pipe(
+      Effect.map((messages) =>
+        messages.at(-2)?.parts.find((item): item is MessageV2.CompactionPart => item.type === "compaction"),
+      ),
+    )
+}
+
+// Convert @opencode-ai/llm LLMEvent (Schema.Class — the test ergonomic shape)
+// into the AI SDK TextStreamPart shape that LLM.Interface.stream returns in
+// this fork. The fork keeps the AI SDK path (no native LLM runtime stack),
+// so processor.ts handleEvent matches on AI SDK type strings like
+// "finish-step" / "start-step" rather than LLMEvent's "step-finish" /
+// "step-start". Only the events the tests actually emit are translated;
+// anything else throws so a future test addition surfaces the gap.
+type LanguageModelUsage = Extract<LLM.Event, { type: "finish-step" }>["usage"]
+function usageToAISDK(u: Usage | undefined): LanguageModelUsage {
+  return {
+    inputTokens: u?.inputTokens,
+    outputTokens: u?.outputTokens,
+    totalTokens: u?.totalTokens,
+    inputTokenDetails: {
+      noCacheTokens: u?.nonCachedInputTokens,
+      cacheReadTokens: u?.cacheReadInputTokens,
+      cacheWriteTokens: u?.cacheWriteInputTokens,
+    },
+    outputTokenDetails: {
+      textTokens: undefined,
+      reasoningTokens: u?.reasoningTokens,
+    },
+  }
+}
+type FinishReason = Extract<LLM.Event, { type: "finish" }>["finishReason"]
+function reasonToAISDK(reason: string): FinishReason {
+  // LLMEvent FinishReason includes "unknown" — AI SDK has "other" instead.
+  return (reason === "unknown" ? "other" : reason) as FinishReason
+}
+function toAISDKEvent(event: LLMEvent): LLM.Event {
+  switch (event.type) {
+    case "text-start":
+      return { type: "text-start", id: event.id }
+    case "text-delta":
+      return { type: "text-delta", id: event.id, text: event.text }
+    case "text-end":
+      return { type: "text-end", id: event.id }
+    case "reasoning-start":
+      return { type: "reasoning-start", id: event.id }
+    case "reasoning-delta":
+      return { type: "reasoning-delta", id: event.id, text: event.text }
+    case "reasoning-end":
+      return { type: "reasoning-end", id: event.id }
+    case "tool-call":
+      return {
+        type: "tool-call",
+        toolCallId: event.id,
+        toolName: event.name,
+        input: event.input,
+        dynamic: false,
+        providerExecuted: event.providerExecuted,
+      } as LLM.Event
+    case "step-start":
+      return { type: "start-step", request: {}, warnings: [] }
+    case "step-finish":
+      return {
+        type: "finish-step",
+        response: { id: "test-response", timestamp: new Date(), modelId: "test-model" },
+        usage: usageToAISDK(event.usage),
+        finishReason: reasonToAISDK(event.reason),
+        rawFinishReason: undefined,
+        providerMetadata: event.providerMetadata as Extract<LLM.Event, { type: "finish-step" }>["providerMetadata"],
+      }
+    case "finish":
+      return {
+        type: "finish",
+        finishReason: reasonToAISDK(event.reason),
+        rawFinishReason: undefined,
+        totalUsage: usageToAISDK(event.usage),
+      }
+    default:
+      throw new Error(`toAISDKEvent: unsupported LLMEvent type: ${(event as { type: string }).type}`)
+  }
 }
 
 function llm() {
   const queue: Array<
-    Stream.Stream<LLM.Event, unknown> | ((input: LLM.StreamInput) => Stream.Stream<LLM.Event, unknown>)
+    Stream.Stream<LLMEvent, unknown> | ((input: LLM.StreamInput) => Stream.Stream<LLMEvent, unknown>)
   > = []
 
   return {
-    push(stream: Stream.Stream<LLM.Event, unknown> | ((input: LLM.StreamInput) => Stream.Stream<LLM.Event, unknown>)) {
+    push(stream: Stream.Stream<LLMEvent, unknown> | ((input: LLM.StreamInput) => Stream.Stream<LLMEvent, unknown>)) {
       queue.push(stream)
     },
     layer: Layer.succeed(
       LLM.Service,
       LLM.Service.of({
-        stream: (input) => {
+        stream: (input: LLM.StreamInput): Stream.Stream<LLM.Event, unknown> => {
           const item = queue.shift() ?? Stream.empty
           const stream = typeof item === "function" ? item(input) : item
-          return stream.pipe(Stream.mapEffect((event) => Effect.succeed(event)))
+          return stream.pipe(Stream.map(toAISDKEvent))
         },
         consumeDroppedToolCalls: () => Effect.succeed([]),
       }),
@@ -320,54 +402,22 @@ function llm() {
 function reply(
   text: string,
   capture?: (input: LLM.StreamInput) => void,
-): (input: LLM.StreamInput) => Stream.Stream<LLM.Event, unknown> {
+): (input: LLM.StreamInput) => Stream.Stream<LLMEvent, unknown> {
   return (input) => {
     capture?.(input)
     return Stream.make(
-      { type: "start" } satisfies LLM.Event,
-      { type: "text-start", id: "txt-0" } satisfies LLM.Event,
-      { type: "text-delta", id: "txt-0", delta: text, text } as LLM.Event,
-      { type: "text-end", id: "txt-0" } satisfies LLM.Event,
-      {
-        type: "finish-step",
-        finishReason: "stop",
-        rawFinishReason: "stop",
-        response: { id: "res", modelId: "test-model", timestamp: new Date() },
-        providerMetadata: undefined,
-        usage: {
-          inputTokens: 1,
-          outputTokens: 1,
-          totalTokens: 2,
-          inputTokenDetails: {
-            noCacheTokens: undefined,
-            cacheReadTokens: undefined,
-            cacheWriteTokens: undefined,
-          },
-          outputTokenDetails: {
-            textTokens: undefined,
-            reasoningTokens: undefined,
-          },
-        },
-      } satisfies LLM.Event,
-      {
-        type: "finish",
-        finishReason: "stop",
-        rawFinishReason: "stop",
-        totalUsage: {
-          inputTokens: 1,
-          outputTokens: 1,
-          totalTokens: 2,
-          inputTokenDetails: {
-            noCacheTokens: undefined,
-            cacheReadTokens: undefined,
-            cacheWriteTokens: undefined,
-          },
-          outputTokenDetails: {
-            textTokens: undefined,
-            reasoningTokens: undefined,
-          },
-        },
-      } satisfies LLM.Event,
+      LLMEvent.textStart({ id: "txt-0" }),
+      LLMEvent.textDelta({ id: "txt-0", text }),
+      LLMEvent.textEnd({ id: "txt-0" }),
+      LLMEvent.stepFinish({
+        index: 0,
+        reason: "stop",
+        usage: basicUsage(),
+      }),
+      LLMEvent.finish({
+        reason: "stop",
+        usage: basicUsage(),
+      }),
     )
   }
 }
@@ -1205,7 +1255,7 @@ describe("session.compaction.process", () => {
         Stream.fromAsyncIterable(
           {
             async *[Symbol.asyncIterator]() {
-              yield { type: "start" } as LLM.Event
+              yield LLMEvent.stepStart({ index: 0 })
               throw new APICallError({
                 message: "boom",
                 url: "https://example.com/v1/chat/completions",
@@ -1292,54 +1342,61 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
+    "silently drops reasoning-delta arriving without prior reasoning-start",
+    () => {
+      // Regression: PR initially auto-created a reasoning Part for orphan deltas (no preceding
+      // reasoning-start). Reverted to match dev — drop silently. Pinned here so any future
+      // change to processor.ts reasoning-delta handling triggers this test.
+      const stub = llm()
+      stub.push(
+        Stream.make(
+          LLMEvent.reasoningDelta({ id: "orphan-1", text: "stray reasoning" }),
+          LLMEvent.textStart({ id: "txt-0" }),
+          LLMEvent.textDelta({ id: "txt-0", text: "summary" }),
+          LLMEvent.textEnd({ id: "txt-0" }),
+          LLMEvent.stepFinish({ index: 0, reason: "stop", usage: basicUsage() }),
+          LLMEvent.finish({ reason: "stop", usage: basicUsage() }),
+        ),
+      )
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const msg = yield* createUserMessage(session.id, "hello")
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        yield* SessionCompaction.use.process({
+          parentID: msg.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        })
+
+        const summary = (yield* ssn.messages({ sessionID: session.id })).find(
+          (item) => item.info.role === "assistant" && item.info.summary,
+        )
+        expect(summary?.parts.some((part) => part.type === "reasoning")).toBe(false)
+        // Sanity: the text part still got through.
+        expect(summary?.parts.some((part) => part.type === "text" && part.text === "summary")).toBe(true)
+      }).pipe(withCompaction({ llm: stub.layer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
     "does not allow tool calls while generating the summary",
     () => {
       const stub = llm()
       stub.push(
         Stream.make(
-          { type: "start" } satisfies LLM.Event,
-          { type: "tool-input-start", id: "call-1", toolName: "_noop" } satisfies LLM.Event,
-          { type: "tool-call", toolCallId: "call-1", toolName: "_noop", input: {} } satisfies LLM.Event,
-          {
-            type: "finish-step",
-            finishReason: "tool-calls",
-            rawFinishReason: "tool_calls",
-            response: { id: "res", modelId: "test-model", timestamp: new Date() },
-            providerMetadata: undefined,
-            usage: {
-              inputTokens: 1,
-              outputTokens: 1,
-              totalTokens: 2,
-              inputTokenDetails: {
-                noCacheTokens: undefined,
-                cacheReadTokens: undefined,
-                cacheWriteTokens: undefined,
-              },
-              outputTokenDetails: {
-                textTokens: undefined,
-                reasoningTokens: undefined,
-              },
-            },
-          } satisfies LLM.Event,
-          {
-            type: "finish",
-            finishReason: "tool-calls",
-            rawFinishReason: "tool_calls",
-            totalUsage: {
-              inputTokens: 1,
-              outputTokens: 1,
-              totalTokens: 2,
-              inputTokenDetails: {
-                noCacheTokens: undefined,
-                cacheReadTokens: undefined,
-                cacheWriteTokens: undefined,
-              },
-              outputTokenDetails: {
-                textTokens: undefined,
-                reasoningTokens: undefined,
-              },
-            },
-          } satisfies LLM.Event,
+          LLMEvent.toolCall({ id: "call-1", name: "_noop", input: {} }),
+          LLMEvent.stepFinish({
+            index: 0,
+            reason: "tool-calls",
+            usage: basicUsage(),
+          }),
+          LLMEvent.finish({
+            reason: "tool-calls",
+            usage: basicUsage(),
+          }),
         ),
       )
       return Effect.gen(function* () {
@@ -1545,20 +1602,7 @@ describe("SessionNs.getUsage", () => {
     const model = createModel({ context: 100_000, output: 32_000 })
     const result = SessionNs.getUsage({
       model,
-      usage: {
-        inputTokens: 1000,
-        outputTokens: 500,
-        totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
-      },
+      usage: usage({ inputTokens: 1000, outputTokens: 500, totalTokens: 1500 }),
     })
 
     expect(result.tokens.input).toBe(1000)
@@ -1572,20 +1616,7 @@ describe("SessionNs.getUsage", () => {
     const model = createModel({ context: 100_000, output: 32_000 })
     const result = SessionNs.getUsage({
       model,
-      usage: {
-        inputTokens: 1000,
-        outputTokens: 500,
-        totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: 800,
-          cacheReadTokens: 200,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
-      },
+      usage: usage({ inputTokens: 1000, outputTokens: 500, totalTokens: 1500, cacheReadInputTokens: 200 }),
     })
 
     expect(result.tokens.input).toBe(800)
@@ -1596,20 +1627,7 @@ describe("SessionNs.getUsage", () => {
     const model = createModel({ context: 100_000, output: 32_000 })
     const result = SessionNs.getUsage({
       model,
-      usage: {
-        inputTokens: 1000,
-        outputTokens: 500,
-        totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
-      },
+      usage: usage({ inputTokens: 1000, outputTokens: 500, totalTokens: 1500 }),
       metadata: {
         anthropic: {
           cacheCreationInputTokens: 300,
@@ -1625,20 +1643,7 @@ describe("SessionNs.getUsage", () => {
     // AI SDK v6 normalizes inputTokens to include cached tokens for all providers
     const result = SessionNs.getUsage({
       model,
-      usage: {
-        inputTokens: 1000,
-        outputTokens: 500,
-        totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: 800,
-          cacheReadTokens: 200,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
-      },
+      usage: usage({ inputTokens: 1000, outputTokens: 500, totalTokens: 1500, cacheReadInputTokens: 200 }),
       metadata: {
         anthropic: {},
       },
@@ -1652,20 +1657,7 @@ describe("SessionNs.getUsage", () => {
     const model = createModel({ context: 100_000, output: 32_000 })
     const result = SessionNs.getUsage({
       model,
-      usage: {
-        inputTokens: 1000,
-        outputTokens: 500,
-        totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: 400,
-          reasoningTokens: 100,
-        },
-      },
+      usage: usage({ inputTokens: 1000, outputTokens: 500, reasoningTokens: 100, totalTokens: 1500 }),
     })
 
     expect(result.tokens.input).toBe(1000)
@@ -1686,20 +1678,7 @@ describe("SessionNs.getUsage", () => {
     })
     const result = SessionNs.getUsage({
       model,
-      usage: {
-        inputTokens: 0,
-        outputTokens: 1_000_000,
-        totalTokens: 1_000_000,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: 750_000,
-          reasoningTokens: 250_000,
-        },
-      },
+      usage: usage({ inputTokens: 0, outputTokens: 1_000_000, reasoningTokens: 250_000, totalTokens: 1_000_000 }),
     })
 
     expect(result.tokens.output).toBe(750_000)
@@ -1711,20 +1690,7 @@ describe("SessionNs.getUsage", () => {
     const model = createModel({ context: 100_000, output: 32_000 })
     const result = SessionNs.getUsage({
       model,
-      usage: {
-        inputTokens: 0,
-        outputTokens: 0,
-        totalTokens: 0,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
-      },
+      usage: usage({ inputTokens: 0, outputTokens: 0, totalTokens: 0 }),
     })
 
     expect(result.tokens.input).toBe(0)
@@ -1747,20 +1713,7 @@ describe("SessionNs.getUsage", () => {
     })
     const result = SessionNs.getUsage({
       model,
-      usage: {
-        inputTokens: 1_000_000,
-        outputTokens: 100_000,
-        totalTokens: 1_100_000,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
-      },
+      usage: usage({ inputTokens: 1_000_000, outputTokens: 100_000, totalTokens: 1_100_000 }),
     })
 
     expect(result.cost).toBe(3 + 1.5)
@@ -1797,20 +1750,12 @@ describe("SessionNs.getUsage", () => {
     })
     const result = SessionNs.getUsage({
       model,
-      usage: {
+      usage: usage({
         inputTokens: 650_000,
         outputTokens: 100_000,
         totalTokens: 750_000,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: 100_000,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
-      },
+        cacheReadInputTokens: 100_000,
+      }),
     })
 
     expect(result.tokens.input).toBe(550_000)
@@ -1842,20 +1787,7 @@ describe("SessionNs.getUsage", () => {
     })
     const result = SessionNs.getUsage({
       model,
-      usage: {
-        inputTokens: 300_000,
-        outputTokens: 100_000,
-        totalTokens: 400_000,
-        inputTokenDetails: {
-          noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
-      },
+      usage: usage({ inputTokens: 300_000, outputTokens: 100_000, totalTokens: 400_000 }),
     })
 
     expect(result.cost).toBe(0.9 + 0.4)
@@ -1866,24 +1798,16 @@ describe("SessionNs.getUsage", () => {
     (npm) => {
       const model = createModel({ context: 100_000, output: 32_000, npm })
       // AI SDK v6: inputTokens includes cached tokens for all providers
-      const usage = {
+      const item = usage({
         inputTokens: 1000,
         outputTokens: 500,
         totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: 800,
-          cacheReadTokens: 200,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
-      }
+        cacheReadInputTokens: 200,
+      })
       if (npm === "@ai-sdk/amazon-bedrock") {
         const result = SessionNs.getUsage({
           model,
-          usage,
+          usage: item,
           metadata: {
             bedrock: {
               usage: {
@@ -1904,7 +1828,7 @@ describe("SessionNs.getUsage", () => {
 
       const result = SessionNs.getUsage({
         model,
-        usage,
+        usage: item,
         metadata: {
           anthropic: {
             cacheCreationInputTokens: 300,
@@ -1925,20 +1849,7 @@ describe("SessionNs.getUsage", () => {
     const model = createModel({ context: 100_000, output: 32_000, npm: "@ai-sdk/google-vertex/anthropic" })
     const result = SessionNs.getUsage({
       model,
-      usage: {
-        inputTokens: 1000,
-        outputTokens: 500,
-        totalTokens: 1500,
-        inputTokenDetails: {
-          noCacheTokens: 800,
-          cacheReadTokens: 200,
-          cacheWriteTokens: undefined,
-        },
-        outputTokenDetails: {
-          textTokens: undefined,
-          reasoningTokens: undefined,
-        },
-      },
+      usage: usage({ inputTokens: 1000, outputTokens: 500, totalTokens: 1500, cacheReadInputTokens: 200 }),
       metadata: {
         vertex: {
           cacheCreationInputTokens: 300,

@@ -22,6 +22,11 @@ const MAX_BYTES = 50 * 1024
 const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 const SAMPLE_BYTES = 4096
 
+/** Prefix used by every `miss()` error variant. processor.ts inspects this
+ *  prefix to attach `metadata.notFound: true` for hermes-path context exclusion
+ *  (docs/designs/hermes-notfound-context-exclusion.md). Keep them in sync. */
+export const READ_NOT_FOUND_PREFIX = "File not found:"
+
 class ReadStop extends Schema.TaggedErrorClass<ReadStop>()("ReadStop", {}) {}
 
 // `offset` and `limit` were originally `z.coerce.number()` — the runtime
@@ -79,7 +84,7 @@ export const ReadTool = Tool.define(
       if (repoExact.length > 0) {
         return yield* Effect.fail(
           new Error(
-            `File not found: ${filepath}
+            `${READ_NOT_FOUND_PREFIX} ${filepath}
 
 Do NOT retry the same path. A file with this basename exists at:
 ${repoExact.slice(0, 5).join("\n")}
@@ -92,7 +97,7 @@ Use one of the paths above, or run a glob (e.g., \`**/${base}\`) before the next
       if (parentSimilar.length > 0) {
         return yield* Effect.fail(
           new Error(
-            `File not found: ${filepath}
+            `${READ_NOT_FOUND_PREFIX} ${filepath}
 
 No file named "${base}" exists. Files with similar names in the same directory (contents may be unrelated):
 ${parentSimilar.slice(0, 5).join("\n")}
@@ -104,7 +109,7 @@ Do NOT retry the same path. Confirm the correct filename with glob or grep befor
 
       return yield* Effect.fail(
         new Error(
-          `File not found: ${filepath}
+          `${READ_NOT_FOUND_PREFIX} ${filepath}
 
 No file named "${base}" exists anywhere in the repository — this file may not exist at all.
 

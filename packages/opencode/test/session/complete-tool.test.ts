@@ -42,128 +42,6 @@ function toolPart(tool: string, state: any): MessageV2.Part {
   } as any
 }
 
-describe("validateComplete", () => {
-  test("passes when no failures", () => {
-    const msgs = [
-      makeMsg("user", [textPart("do something")]),
-      makeMsg("assistant", [
-        textPart("done"),
-        toolPart("bash", {
-          status: "completed",
-          input: { command: "echo ok" },
-          output: "ok",
-          title: "echo",
-          metadata: { exit: 0 },
-          time: { start: 0, end: 1 },
-        }),
-      ]),
-    ]
-    expect(SessionPrompt.validateComplete(msgs)).toBeUndefined()
-  })
-
-  test("rejects when last assistant has error", () => {
-    const msgs = [
-      makeMsg("user", [textPart("do something")]),
-      makeMsg("assistant", [textPart("oops")], { error: "content filter" }),
-    ]
-    const result = SessionPrompt.validateComplete(msgs)
-    expect(result).toContain("Cannot complete")
-    expect(result).toContain("content filter")
-  })
-
-  test("rejects when tool has error state", () => {
-    const msgs = [
-      makeMsg("user", [textPart("do something")]),
-      makeMsg("assistant", [
-        toolPart("write", {
-          status: "error",
-          input: {},
-          error: "Duplicate tool call deduplicated",
-          time: { start: 0, end: 1 },
-        }),
-      ]),
-    ]
-    const result = SessionPrompt.validateComplete(msgs)
-    expect(result).toContain("Cannot complete")
-    expect(result).toContain("Duplicate tool call")
-  })
-
-  test("rejects when bash exits non-zero", () => {
-    const msgs = [
-      makeMsg("user", [textPart("run tests")]),
-      makeMsg("assistant", [
-        toolPart("bash", {
-          status: "completed",
-          input: { command: "npx playwright test" },
-          output: "error: unknown command 'test'",
-          title: "run tests",
-          metadata: { exit: 1 },
-          time: { start: 0, end: 1 },
-        }),
-      ]),
-    ]
-    const result = SessionPrompt.validateComplete(msgs)
-    expect(result).toContain("Cannot complete")
-    expect(result).toContain("exit")
-    expect(result).toContain("1")
-  })
-
-  test("passes when bash exits zero", () => {
-    const msgs = [
-      makeMsg("user", [textPart("run tests")]),
-      makeMsg("assistant", [
-        toolPart("bash", {
-          status: "completed",
-          input: { command: "npm test" },
-          output: "6 passed",
-          title: "run tests",
-          metadata: { exit: 0 },
-          time: { start: 0, end: 1 },
-        }),
-      ]),
-    ]
-    expect(SessionPrompt.validateComplete(msgs)).toBeUndefined()
-  })
-
-  test("only checks last assistant message", () => {
-    const msgs = [
-      makeMsg("user", [textPart("first attempt")]),
-      makeMsg("assistant", [
-        toolPart("bash", {
-          status: "completed",
-          input: { command: "false" },
-          output: "",
-          title: "fail",
-          metadata: { exit: 1 },
-          time: { start: 0, end: 1 },
-        }),
-      ]),
-      makeMsg("user", [textPart("try again")]),
-      makeMsg("assistant", [
-        toolPart("bash", {
-          status: "completed",
-          input: { command: "true" },
-          output: "",
-          title: "success",
-          metadata: { exit: 0 },
-          time: { start: 0, end: 1 },
-        }),
-      ]),
-    ]
-    // Old failure in first assistant should NOT block
-    expect(SessionPrompt.validateComplete(msgs)).toBeUndefined()
-  })
-
-  test("passes with empty messages", () => {
-    expect(SessionPrompt.validateComplete([])).toBeUndefined()
-  })
-
-  test("passes when only user messages", () => {
-    const msgs = [makeMsg("user", [textPart("hello")])]
-    expect(SessionPrompt.validateComplete(msgs)).toBeUndefined()
-  })
-})
-
 describe("validateCompleteFromParts (post-step check)", () => {
   test("catches bash non-zero exit in current step parts", () => {
     // Simulates: model batches bash(exit=1) + complete in one step.
@@ -223,5 +101,24 @@ describe("validateCompleteFromParts (post-step check)", () => {
   test("ignores non-tool parts", () => {
     const parts: MessageV2.Part[] = [textPart("some text")]
     expect(SessionPrompt.validateCompleteFromParts(parts)).toBeUndefined()
+  })
+})
+
+describe("createCompleteTool", () => {
+  test("execute returns Complete and invokes onSuccess (no history check)", async () => {
+    let captured: string | undefined
+    const t = SessionPrompt.createCompleteTool({
+      onSuccess: (s) => {
+        captured = s
+      },
+    })
+    const result = (await (t as any).execute({ summary: "all done" }, {} as any)) as {
+      output: string
+      title: string
+      metadata: Record<string, unknown>
+    }
+    expect(result.title).toBe("Complete")
+    expect(result.output).toBe("all done")
+    expect(captured).toBe("all done")
   })
 })

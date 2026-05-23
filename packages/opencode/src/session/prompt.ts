@@ -81,7 +81,8 @@ const COMPLETE_DESCRIPTION = `Call this tool ONLY when the entire task is finish
 - Mention only files that were actually changed — use exact file paths only, and do not invent, duplicate, or misspell them
 - Mention only commands/tests that actually ran and succeeded
 - Keep the summary concise but readable — break it into short paragraphs, and list changed files one per line using relative paths
-- Write the summary in the same language as the user's latest message — keep file paths, command names, and code identifiers unchanged`
+- Write the summary in the same language as the user's latest message — keep file paths, command names, and code identifiers unchanged
+- Only the latest result of each command matters: if a command failed earlier in this turn and you successfully re-ran it after fixing the issue, the failure is considered resolved`
 
 /**
  * Detect whether the last assistant text output looks incomplete (truncated mid-sentence).
@@ -938,7 +939,7 @@ export const layer = Layer.effect(
         .findMessage(sessionID, (m) => m.info.role === "user" && !!m.info.model)
         .pipe(Effect.orDie)
       if (Option.isSome(match) && match.value.info.role === "user") return match.value.info.model
-      return yield* provider.defaultModel()
+      return yield* provider.defaultModel().pipe(Effect.orDie)
     })
 
     const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (input: PromptInput) {
@@ -1710,7 +1711,6 @@ export const layer = Layer.effect(
                 onSuccess(summary) {
                   completed = summary
                 },
-                messages: () => msgs,
               })
             }
 
@@ -2191,40 +2191,8 @@ export function validateCompleteFromParts(parts: MessageV2.Part[]): string | und
   return undefined
 }
 
-/**
- * Check the current session messages for unresolved failures that should
- * prevent a premature `complete` call.  Returns an error string if the
- * model should NOT be allowed to mark the task as done, undefined otherwise.
- *
- * NOTE: this runs at execute time, so it only sees the pre-step `msgs`
- * snapshot.  Same-step failures (bash + complete batched in one inference)
- * are caught by the post-step check in the break判定.
- */
-export function validateComplete(msgs: MessageV2.WithParts[]): string | undefined {
-  // Scan ALL assistant messages (not just the last) because a failure in an
-  // earlier step may not have been resolved yet.  Walk backwards and stop at
-  // the last user message (everything after it is the current turn).
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    const msg = msgs[i]
-    if (msg.info.role === "user") break
-
-    if (msg.info.role !== "assistant") continue
-
-    // 1. Assistant-level error (e.g. content filter, stream failure)
-    if (msg.info.error) {
-      return `Cannot complete: assistant response has an unresolved error — ${typeof msg.info.error === "string" ? msg.info.error : JSON.stringify(msg.info.error)}`
-    }
-
-    // 2. Scan tool parts for failures
-    const partReject = validateCompleteFromParts(msg.parts)
-    if (partReject) return partReject
-  }
-  return undefined
-}
-
 export function createCompleteTool(input: {
   onSuccess: (summary: string) => void
-  messages: () => MessageV2.WithParts[]
 }): AITool {
   return tool({
     description: COMPLETE_DESCRIPTION,
@@ -2236,14 +2204,6 @@ export function createCompleteTool(input: {
       required: ["summary"],
     } as JSONSchema7),
     async execute(args) {
-      const rejection = validateComplete(input.messages())
-      if (rejection) {
-        return {
-          output: rejection,
-          title: "Complete rejected",
-          metadata: { rejected: true },
-        }
-      }
       input.onSuccess(args.summary)
       return {
         output: args.summary,

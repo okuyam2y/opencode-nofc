@@ -3,6 +3,7 @@ import { Effect, Layer, Stream } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Installation } from "../../src/installation"
+import { testEffect } from "../lib/effect"
 import { AppProcess } from "@opencode-ai/core/process"
 import { InstallationChannel, InstallationVersion } from "@opencode-ai/core/installation/version"
 
@@ -13,19 +14,23 @@ function mockHttpClient(handler: (request: HttpClientRequest.HttpClientRequest) 
   return Layer.succeed(HttpClient.HttpClient, client)
 }
 
-function mockSpawner(handler: (cmd: string, args: readonly string[]) => string = () => "") {
+function mockSpawner(
+  handler: (cmd: string, args: readonly string[]) => string | { code: number; stdout?: string; stderr?: string } = () =>
+    "",
+) {
   const spawner = ChildProcessSpawner.make((command) => {
     const std = ChildProcess.isStandardCommand(command) ? command : undefined
-    const output = handler(std?.command ?? "", std?.args ?? [])
+    const result = handler(std?.command ?? "", std?.args ?? [])
+    const output = typeof result === "string" ? { code: 0, stdout: result, stderr: "" } : result
     return Effect.succeed(
       ChildProcessSpawner.makeHandle({
         pid: ChildProcessSpawner.ProcessId(0),
-        exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+        exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(output.code)),
         isRunning: Effect.succeed(false),
         kill: () => Effect.void,
         stdin: { [Symbol.for("effect/Sink/TypeId")]: Symbol.for("effect/Sink/TypeId") } as any,
-        stdout: output ? Stream.make(encoder.encode(output)) : Stream.empty,
-        stderr: Stream.empty,
+        stdout: output.stdout ? Stream.make(encoder.encode(output.stdout)) : Stream.empty,
+        stderr: output.stderr ? Stream.make(encoder.encode(output.stderr)) : Stream.empty,
         all: Stream.empty,
         getInputFd: () => ({ [Symbol.for("effect/Sink/TypeId")]: Symbol.for("effect/Sink/TypeId") }) as any,
         getOutputFd: () => Stream.empty,
@@ -45,7 +50,7 @@ function jsonResponse(body: unknown) {
 
 function testLayer(
   httpHandler: (request: HttpClientRequest.HttpClientRequest) => Response,
-  spawnHandler?: (cmd: string, args: readonly string[]) => string,
+  spawnHandler?: (cmd: string, args: readonly string[]) => string | { code: number; stdout?: string; stderr?: string },
 ) {
   const appProcess = AppProcess.layer.pipe(Layer.provide(mockSpawner(spawnHandler)))
   return Installation.layer.pipe(Layer.provide(mockHttpClient(httpHandler)), Layer.provide(appProcess))
@@ -283,5 +288,45 @@ describe("installation", () => {
       expect(bunInstall).toBeDefined()
       expect(bunInstall!.args).toContain("opencode-ai-nofc@1.5.0")
     })
+  })
+
+  describe("upgrade", () => {
+    testEffect(
+      testLayer(
+        () => jsonResponse({}),
+        (cmd) => {
+          if (cmd === "npm") return { code: 1, stderr: "token=secret command output" }
+          return ""
+        },
+      ),
+    ).effect("returns sanitized typed errors for failed package upgrades", () =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(Installation.use.upgrade("npm", "9.9.9"))
+        expect(error).toBeInstanceOf(Installation.UpgradeFailedError)
+        expect(error.stderr).toBe("Upgrade failed for npm (exit code 1).")
+        expect(error.message).toBe(error.stderr)
+        expect(error.stderr).not.toContain("secret")
+        expect(error.stderr).not.toContain("command output")
+      }),
+    )
+
+    testEffect(
+      testLayer(
+        () => new Response("install script with token=secret", { status: 200 }),
+        (cmd) => {
+          if (cmd === "bash") return { code: 1, stderr: "script output with token=secret" }
+          return ""
+        },
+      ),
+    ).effect("returns sanitized typed errors when the curl install script fails", () =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(Installation.use.upgrade("curl", "9.9.9"))
+        expect(error).toBeInstanceOf(Installation.UpgradeFailedError)
+        expect(error.stderr).toBe("Upgrade failed for curl (exit code 1).")
+        expect(error.message).toBe(error.stderr)
+        expect(error.stderr).not.toContain("secret")
+        expect(error.stderr).not.toContain("script output")
+      }),
+    )
   })
 })

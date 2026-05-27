@@ -1344,6 +1344,18 @@ function fromErrorInner(
         },
         { cause: e },
       ).toObject()
+    case e instanceof ProviderError.HeaderTimeoutError:
+      return new APIError(
+        {
+          message: e.message,
+          isRetryable: true,
+          metadata: {
+            code: e.name,
+            timeoutMs: String(e.ms),
+          },
+        },
+        { cause: e },
+      ).toObject()
     case e instanceof StreamRetryableError:
       return new APIError(
         {

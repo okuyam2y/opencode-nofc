@@ -27,12 +27,12 @@ export type Event =
   | EventTodoUpdated
   | EventSessionStatus
   | EventSessionIdle
+  | EventVcsBranchUpdated
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventCommandExecuted
   | EventProjectUpdated
   | EventSessionCompacted
-  | EventVcsBranchUpdated
   | EventWorkspaceReady
   | EventWorkspaceFailed
   | EventWorkspaceStatus
@@ -829,12 +829,12 @@ export type GlobalEvent = {
     | EventTodoUpdated
     | EventSessionStatus
     | EventSessionIdle
+    | EventVcsBranchUpdated
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
     | EventCommandExecuted
     | EventProjectUpdated
     | EventSessionCompacted
-    | EventVcsBranchUpdated
     | EventWorkspaceReady
     | EventWorkspaceFailed
     | EventWorkspaceStatus
@@ -991,6 +991,7 @@ export type AgentConfig = {
   variant?: string
   temperature?: number
   top_p?: number
+  maxOutputTokens?: number
   prompt?: string
   tools?: {
     [key: string]: boolean
@@ -1013,6 +1014,7 @@ export type AgentConfig = {
     | unknown
     | string
     | number
+    | number
     | {
         [key: string]: boolean
       }
@@ -1031,7 +1033,6 @@ export type AgentConfig = {
     | "warning"
     | "error"
     | "info"
-    | number
     | PermissionConfig
     | undefined
 }
@@ -1050,15 +1051,30 @@ export type ProviderConfig = {
     enterpriseUrl?: string
     setCacheKey?: boolean
     /**
-     * Timeout in milliseconds for requests to this provider. Default is 300000 (5 minutes). Set to false to disable timeout.
+     * Timeout in milliseconds for full requests to this provider. Set to false to disable timeout.
      */
     timeout?: number | false
-    chunkTimeout?: number
     /**
-     * Enable tool parser middleware for gateways that don't support function calling. 'hermes' uses JSON in <tool_call> tags, 'hermes-strict' adds explicit examples for models that need them, 'xml' uses pure XML format.
+     * Timeout in milliseconds to wait for response headers. Provider integrations may set defaults. Set to false to disable timeout.
      */
+    headerTimeout?: number | false
+    chunkTimeout?: number
     toolParser?: "hermes" | "hermes-strict" | "xml"
-    [key: string]: unknown | string | boolean | number | false | number | "hermes" | "hermes-strict" | "xml" | undefined
+    promptVariant?: "frontier"
+    [key: string]:
+      | unknown
+      | string
+      | boolean
+      | number
+      | false
+      | number
+      | false
+      | number
+      | "hermes"
+      | "hermes-strict"
+      | "xml"
+      | "frontier"
+      | undefined
   }
   models?: {
     [key: string]: {
@@ -1093,8 +1109,8 @@ export type ProviderConfig = {
         output: number
       }
       modalities?: {
-        input: Array<"text" | "audio" | "image" | "video" | "pdf">
-        output: Array<"text" | "audio" | "image" | "video" | "pdf">
+        input?: Array<"text" | "audio" | "image" | "video" | "pdf">
+        output?: Array<"text" | "audio" | "image" | "video" | "pdf">
       }
       experimental?: boolean
       status?: "alpha" | "beta" | "deprecated" | "active"
@@ -1639,6 +1655,7 @@ export type Agent = {
   hidden?: boolean
   topP?: number
   temperature?: number
+  maxOutputTokens?: number
   color?: string
   permission: PermissionRuleset
   model?: {
@@ -2659,6 +2676,14 @@ export type EventSessionIdle = {
   }
 }
 
+export type EventVcsBranchUpdated = {
+  id: string
+  type: "vcs.branch.updated"
+  properties: {
+    branch?: string
+  }
+}
+
 export type EventMcpToolsChanged = {
   id: string
   type: "mcp.tools.changed"
@@ -2698,14 +2723,6 @@ export type EventSessionCompacted = {
   type: "session.compacted"
   properties: {
     sessionID: string
-  }
-}
-
-export type EventVcsBranchUpdated = {
-  id: string
-  type: "vcs.branch.updated"
-  properties: {
-    branch?: string
   }
 }
 
@@ -8201,6 +8218,8 @@ export type PtyConnectData = {
   query?: {
     directory?: string
     workspace?: string
+    cursor?: string
+    ticket?: string
   }
   url: "/pty/{ptyID}/connect"
 }

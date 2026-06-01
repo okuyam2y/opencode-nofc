@@ -1356,6 +1356,17 @@ function fromErrorInner(
         },
         { cause: e },
       ).toObject()
+    case e instanceof ProviderError.ResponseStreamError:
+      return new APIError(
+        {
+          message: e.message,
+          isRetryable: true,
+          metadata: {
+            code: e.name,
+          },
+        },
+        { cause: e },
+      ).toObject()
     case e instanceof StreamRetryableError:
       return new APIError(
         {

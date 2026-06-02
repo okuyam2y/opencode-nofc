@@ -1,3 +1,4 @@
+import semver from "semver"
 import { Config } from "@/config/config"
 import { AppRuntime } from "@/effect/app-runtime"
 import { Flag } from "@opencode-ai/core/flag/flag"
@@ -23,7 +24,11 @@ export async function upgrade() {
     return
   }
 
-  if (InstallationVersion === latest) return
+  // Skip auto-upgrade when current build is already at or ahead of the
+  // published version. Without this, a locally rebuilt binary > published npm
+  // version would auto-"upgrade" to the older release during TUI bootstrap,
+  // corrupting the terminal render.
+  if (semver.lte(latest, InstallationVersion)) return
 
   const kind = Installation.getReleaseType(InstallationVersion, latest)
 

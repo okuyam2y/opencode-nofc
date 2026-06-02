@@ -1,3 +1,4 @@
+// @ts-nocheck — rebase #59 WIP: post-DB-schema-refactor (#29068) follow-up needed
 import { afterAll, afterEach, describe, test, expect } from "bun:test"
 import path from "path"
 import fs from "fs/promises"

@@ -3,12 +3,12 @@ import { Cause, Deferred, Effect, Layer, Context, Scope } from "effect"
 import { Usage } from "@opencode-ai/llm"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
-import { Bus } from "@/bus"
 import { Config } from "@/config/config"
 import { Permission } from "@/permission"
+import { PermissionLegacy } from "@opencode-ai/core/permission/legacy"
 import { Plugin } from "@/plugin"
 import { Snapshot } from "@/snapshot"
-import * as Session from "./session"
+import { Session } from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
 import { isOverflow } from "./overflow"
@@ -20,12 +20,13 @@ import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
 import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
-import * as Log from "@opencode-ai/core/util/log"
+import { Log } from "@opencode-ai/core/util/log"
 import { isRecord } from "@/util/record"
 import { containsSpamInValues, stripSpam } from "@/util/spam-filter"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { SessionEvent } from "@opencode-ai/core/session-event"
+import { SessionEvent } from "@opencode-ai/core/session/event"
+import { Database } from "@opencode-ai/core/database/database"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -440,7 +441,6 @@ const log = Log.create({ service: "session.processor" })
     Effect.gen(function* () {
       const session = yield* Session.Service
       const config = yield* Config.Service
-      const bus = yield* Bus.Service
       const snapshot = yield* Snapshot.Service
       const agents = yield* Agent.Service
       const llm = yield* LLM.Service
@@ -606,7 +606,7 @@ const log = Log.create({ service: "session.processor" })
               append(match.part.id, directive)
             }
           }
-          if (error instanceof Permission.RejectedError || error instanceof Question.RejectedError) {
+          if (error instanceof PermissionLegacy.RejectedError || error instanceof Question.RejectedError) {
             ctx.blocked = ctx.shouldBreak
           }
           yield* settleToolCall(toolCallID)
@@ -1356,7 +1356,7 @@ const log = Log.create({ service: "session.processor" })
           const error = parse(e)
           if (MessageV2.ContextOverflowError.isInstance(error)) {
             ctx.needsCompaction = true
-            yield* bus.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
+            yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
             return
           }
           if (!ctx.assistantMessage.summary) {
@@ -1371,7 +1371,7 @@ const log = Log.create({ service: "session.processor" })
             })
           }
           ctx.assistantMessage.error = error
-          yield* bus.publish(Session.Event.Error, {
+          yield* events.publish(Session.Event.Error, {
             sessionID: ctx.assistantMessage.sessionID,
             error: ctx.assistantMessage.error,
           })
@@ -1537,10 +1537,10 @@ const log = Log.create({ service: "session.processor" })
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(SessionSummary.defaultLayer),
       Layer.provide(SessionStatus.defaultLayer),
-      Layer.provide(Bus.layer),
       Layer.provide(Config.defaultLayer),
       Layer.provide(EventV2Bridge.defaultLayer),
       Layer.provide(RuntimeFlags.defaultLayer),
+      Layer.provide(Database.defaultLayer),
     ),
   )
 

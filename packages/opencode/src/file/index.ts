@@ -1,4 +1,4 @@
-import { BusEvent } from "@/bus/bus-event"
+import { EventV2 } from "@opencode-ai/core/event"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { InstanceState } from "@/effect/instance-state"
 
@@ -12,7 +12,7 @@ import ignore from "ignore"
 import path from "path"
 import { Global } from "@opencode-ai/core/global"
 import { containsPath } from "../project/instance-context"
-import * as Log from "@opencode-ai/core/util/log"
+import { Log } from "@opencode-ai/core/util/log"
 import { Protected } from "./protected"
 import { Ripgrep } from "./ripgrep"
 import { NonNegativeInt, type DeepMutable } from "@opencode-ai/core/schema"
@@ -62,12 +62,12 @@ export const Content = Schema.Struct({
 export type Content = DeepMutable<Schema.Schema.Type<typeof Content>>
 
 export const Event = {
-  Edited: BusEvent.define(
-    "file.edited",
-    Schema.Struct({
+  Edited: EventV2.define({
+    type: "file.edited",
+    schema: {
       file: Schema.String,
-    }),
-  ),
+    },
+  }),
 }
 
 const log = Log.create({ service: "file" })

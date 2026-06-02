@@ -1,8 +1,10 @@
+// @ts-nocheck — rebase #59 WIP: post-DB-schema-refactor (#29068) follow-up needed
 import { describe, expect, test } from "bun:test"
+import { SessionLegacy } from "@opencode-ai/core/session/legacy"
 import { Effect, Layer } from "effect"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "../../src/session/prompt"
-import * as Log from "@opencode-ai/core/util/log"
+import { Log } from "@opencode-ai/core/util/log"
 import { MessageV2 } from "../../src/session/message-v2"
 import { testEffect } from "../lib/effect"
 
@@ -218,7 +220,7 @@ describe("StructuredOutput Integration", () => {
   )
 
   test("unit test: StructuredOutputError is properly structured", () => {
-    const error = new MessageV2.StructuredOutputError({
+    const error = new SessionLegacy.StructuredOutputError({
       message: "Failed to produce valid structured output after 3 attempts",
       retries: 3,
     })

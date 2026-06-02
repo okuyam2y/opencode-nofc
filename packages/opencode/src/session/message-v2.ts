@@ -1,10 +1,9 @@
-import { BusEvent } from "@/bus/bus-event"
+import { EventV2 } from "@opencode-ai/core/event"
 import { SessionID, MessageID, PartID } from "./schema"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError, convertToModelMessages, LoadAPIKeyError, type ModelMessage, type UIMessage } from "ai"
 import { LSP } from "@/lsp/lsp"
 import { Snapshot } from "@/snapshot"
-import { SyncEvent } from "../sync"
 import { Database } from "@/storage/db"
 import { NotFoundError } from "@/storage/storage"
 import { and } from "drizzle-orm"
@@ -500,62 +499,50 @@ export type Assistant = Omit<Types.DeepMutable<Schema.Schema.Type<typeof Assista
 export const Info = Schema.Union([User, Assistant]).annotate({ discriminator: "role", identifier: "Message" })
 export type Info = User | Assistant
 
-const UpdatedEventSchema = Schema.Struct({
-  sessionID: SessionID,
-  info: Info,
-})
-
-const RemovedEventSchema = Schema.Struct({
-  sessionID: SessionID,
-  messageID: MessageID,
-})
-
-const PartUpdatedEventSchema = Schema.Struct({
-  sessionID: SessionID,
-  part: Part,
-  time: NonNegativeInt,
-})
-
-const PartRemovedEventSchema = Schema.Struct({
-  sessionID: SessionID,
-  messageID: MessageID,
-  partID: PartID,
-})
-
 export const Event = {
-  Updated: SyncEvent.define({
+  Updated: EventV2.define({
     type: "message.updated",
-    version: 1,
-    aggregate: "sessionID",
-    schema: UpdatedEventSchema,
+    sync: { version: 1, aggregate: "sessionID" },
+    schema: {
+      sessionID: SessionID,
+      info: Info,
+    },
   }),
-  Removed: SyncEvent.define({
+  Removed: EventV2.define({
     type: "message.removed",
-    version: 1,
-    aggregate: "sessionID",
-    schema: RemovedEventSchema,
+    sync: { version: 1, aggregate: "sessionID" },
+    schema: {
+      sessionID: SessionID,
+      messageID: MessageID,
+    },
   }),
-  PartUpdated: SyncEvent.define({
+  PartUpdated: EventV2.define({
     type: "message.part.updated",
-    version: 1,
-    aggregate: "sessionID",
-    schema: PartUpdatedEventSchema,
+    sync: { version: 1, aggregate: "sessionID" },
+    schema: {
+      sessionID: SessionID,
+      part: Part,
+      time: NonNegativeInt,
+    },
   }),
-  PartDelta: BusEvent.define(
-    "message.part.delta",
-    Schema.Struct({
+  PartDelta: EventV2.define({
+    type: "message.part.delta",
+    schema: {
       sessionID: SessionID,
       messageID: MessageID,
       partID: PartID,
       field: Schema.String,
       delta: Schema.String,
-    }),
-  ),
-  PartRemoved: SyncEvent.define({
+    },
+  }),
+  PartRemoved: EventV2.define({
     type: "message.part.removed",
-    version: 1,
-    aggregate: "sessionID",
-    schema: PartRemovedEventSchema,
+    sync: { version: 1, aggregate: "sessionID" },
+    schema: {
+      sessionID: SessionID,
+      messageID: MessageID,
+      partID: PartID,
+    },
   }),
 }
 

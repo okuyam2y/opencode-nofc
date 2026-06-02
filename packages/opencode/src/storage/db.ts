@@ -1,11 +1,10 @@
 import { type SQLiteBunDatabase } from "drizzle-orm/bun-sqlite"
 import { migrate } from "drizzle-orm/bun-sqlite/migrator"
 import { type SQLiteTransaction } from "drizzle-orm/sqlite-core"
-export * from "drizzle-orm"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LocalContext } from "@/util/local-context"
 import { Global } from "@opencode-ai/core/global"
-import * as Log from "@opencode-ai/core/util/log"
+import { Log } from "@opencode-ai/core/util/log"
 import { NamedError } from "@opencode-ai/core/util/error"
 import path from "path"
 import { readFileSync, readdirSync, existsSync } from "fs"
@@ -70,6 +69,11 @@ function time(tag: string) {
 }
 
 function migrations(dir: string): Journal {
+  // Match build.ts: tolerate the directory not existing so dev (OPENCODE_MIGRATIONS
+  // undefined) and bundled (OPENCODE_MIGRATIONS embedded as []) behave the same
+  // when fork-specific migrations are absent (e.g. all migrations dropped after
+  // an upstream rebase covers them — see post-rebase #59 / upstream #23068).
+  if (!existsSync(dir)) return []
   const dirs = readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)

@@ -1,30 +1,11 @@
-import { Schema } from "effect"
+// Fork compatibility shim: re-export ProviderV2 brand types under the old
+// ProviderID/ModelID names so legacy fork code that imports from
+// "@/provider/schema" continues to work after upstream consolidated brands
+// into ProviderV2 (#29068).
+import { ProviderV2 } from "@opencode-ai/core/provider"
 
-import { withStatics } from "@opencode-ai/core/schema"
+export const ProviderID = ProviderV2.ID
+export type ProviderID = ProviderV2.ID
 
-const providerIdSchema = Schema.String.pipe(Schema.brand("ProviderID"))
-
-export type ProviderID = typeof providerIdSchema.Type
-
-export const ProviderID = providerIdSchema.pipe(
-  withStatics((schema: typeof providerIdSchema) => ({
-    // Well-known providers
-    opencode: schema.make("opencode"),
-    anthropic: schema.make("anthropic"),
-    openai: schema.make("openai"),
-    google: schema.make("google"),
-    googleVertex: schema.make("google-vertex"),
-    githubCopilot: schema.make("github-copilot"),
-    amazonBedrock: schema.make("amazon-bedrock"),
-    azure: schema.make("azure"),
-    openrouter: schema.make("openrouter"),
-    mistral: schema.make("mistral"),
-    gitlab: schema.make("gitlab"),
-  })),
-)
-
-const modelIdSchema = Schema.String.pipe(Schema.brand("ModelID"))
-
-export type ModelID = typeof modelIdSchema.Type
-
-export const ModelID = modelIdSchema
+export const ModelID = ProviderV2.ModelID
+export type ModelID = ProviderV2.ModelID

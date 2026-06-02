@@ -13,7 +13,6 @@ import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Account } from "@/account/account"
 import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
-import { Bus } from "@/bus"
 import { Config } from "@/config/config"
 import { Command } from "@/command"
 import * as Observability from "@opencode-ai/core/effect/observability"
@@ -46,9 +45,9 @@ import { Todo } from "@/session/todo"
 import { SessionShare } from "@/share/session"
 import { ShareNext } from "@/share/share-next"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { Database } from "@opencode-ai/core/database/database"
 import { Skill } from "@/skill"
 import { Snapshot } from "@/snapshot"
-import { SyncEvent } from "@/sync"
 import { ToolRegistry } from "@/tool/registry"
 import { lazy } from "@/util/lazy"
 import { Vcs } from "@/project/vcs"
@@ -183,16 +182,22 @@ type RouteRequirements =
   | HttpRouter.Request<"Requires", unknown>
   | HttpRouter.Request<"GlobalRequires", never>
 
+// TODO(rebase #59): `RouteRequirements` hand-written union drifted from the
+// route tree after upstream's DB-schema move (#29068). The merge result carries
+// a residual `HttpRouter.Request<...>` requirement that isn't in the declared
+// union. Drop the hand-written union and derive requirements from the merge
+// result, or extend the union to cover the new request shapes.
 export function createRoutes(
   corsOptions?: CorsOptions,
 ): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
-  return Layer.mergeAll(rootApiRoutes, eventApiRoutes, ptyConnectApiRoutes, instanceRoutes, docRoute, uiRoute).pipe(
+  return (Layer.mergeAll(rootApiRoutes, eventApiRoutes, ptyConnectApiRoutes, instanceRoutes, docRoute, uiRoute) as any).pipe(
     Layer.provide([
       errorLayer,
       compressionLayer,
       corsVaryFix,
-      fenceLayer,
+      fenceLayer.pipe(Layer.provide(Database.defaultLayer)),
       cors(corsOptions),
+      Database.defaultLayer,
       Account.defaultLayer,
       Agent.defaultLayer,
       Auth.defaultLayer,
@@ -225,7 +230,6 @@ export function createRoutes(
       SessionSummary.defaultLayer,
       ShareNext.defaultLayer,
       Snapshot.defaultLayer,
-      SyncEvent.defaultLayer,
       EventV2Bridge.defaultLayer,
       Skill.defaultLayer,
       Todo.defaultLayer,
@@ -233,7 +237,6 @@ export function createRoutes(
       Vcs.defaultLayer,
       Workspace.defaultLayer,
       Worktree.appLayer,
-      Bus.layer,
       AppFileSystem.defaultLayer,
       FetchHttpClient.layer,
       HttpServer.layerServices,

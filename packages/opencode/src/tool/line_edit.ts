@@ -6,7 +6,7 @@ import { createTwoFilesPatch, diffLines } from "diff"
 import DESCRIPTION from "./line_edit.txt"
 import { File } from "../file"
 import { FileWatcher } from "../file/watcher"
-import { Bus } from "../bus"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { Format } from "../format"
 import { Instance } from "../project/instance"
 import { Snapshot } from "@/snapshot"
@@ -38,7 +38,7 @@ export const LineEditTool = Tool.define(
     const lsp = yield* LSP.Service
     const afs = yield* AppFileSystem.Service
     const format = yield* Format.Service
-    const bus = yield* Bus.Service
+    const bus = yield* EventV2Bridge.Service
 
     return {
       description: DESCRIPTION,

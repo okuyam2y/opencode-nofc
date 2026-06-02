@@ -1,6 +1,6 @@
 import { Provider } from "@/provider/provider"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
-import * as Log from "@opencode-ai/core/util/log"
+import { Log } from "@opencode-ai/core/util/log"
 import { Context, Effect, Layer, Record } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
@@ -18,8 +18,9 @@ import { Plugin } from "@/plugin"
 import { SystemPrompt } from "./system"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Permission } from "@/permission"
-import { PermissionID } from "@/permission/schema"
-import { Bus } from "@/bus"
+import { PermissionLegacy } from "@opencode-ai/core/permission/legacy"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { EventV2 } from "@opencode-ai/core/event"
 import { Wildcard } from "@/util/wildcard"
 import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
@@ -130,7 +131,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
     parentSessionID?: string
     model: Provider.Model
     agent: Agent.Info
-    permission?: Permission.Ruleset
+    permission?: PermissionLegacy.Ruleset
     system: string[]
     messages: ModelMessage[]
     small?: boolean
@@ -167,7 +168,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
   export const layer: Layer.Layer<
     Service,
     never,
-    Auth.Service | Config.Service | Provider.Service | Plugin.Service | Permission.Service | RuntimeFlags.Service
+    Auth.Service | Config.Service | Provider.Service | Plugin.Service | Permission.Service | EventV2Bridge.Service | RuntimeFlags.Service
   > = Layer.effect(
       Service,
       Effect.gen(function* () {
@@ -176,6 +177,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
         const provider = yield* Provider.Service
         const plugin = yield* Plugin.Service
         const perm = yield* Permission.Service
+        const events = yield* EventV2Bridge.Service
         const flags = yield* RuntimeFlags.Service
 
         // Per-session storage for tool calls dropped by the parser.
@@ -421,13 +423,18 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
                 return { approved: true }
               }
 
-              const id = PermissionID.ascending()
-              let reply: Permission.Reply | undefined
-              let unsub: (() => void) | undefined
+              const id = PermissionLegacy.ID.ascending()
+              let reply: PermissionLegacy.Reply | undefined
+              let unsub: EventV2.Unsubscribe | undefined
               try {
-                unsub = Bus.subscribe(Permission.Event.Replied, (evt) => {
-                  if (evt.properties.requestID === id) reply = evt.properties.reply
-                })
+                unsub = await bridge.promise(
+                  events.listen((event) => {
+                    if (event.type !== Permission.Event.Replied.type) return Effect.void
+                    const data = event.data as EventV2.Data<typeof Permission.Event.Replied>
+                    if (data.requestID === id) reply = data.reply
+                    return Effect.void
+                  }),
+                )
                 const toolPatterns = approvalTools.map((t: { name: string; args: string }) => {
                   try {
                     const parsed = JSON.parse(t.args) as Record<string, unknown>
@@ -458,7 +465,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
               } catch {
                 return { approved: false }
               } finally {
-                unsub?.()
+                if (unsub) await bridge.promise(unsub)
               }
             })
           }
@@ -503,6 +510,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
           }
 
           return streamText({
+            includeRawChunks: input.model.providerID.includes("github-copilot"),
             onError(error) {
               const err = (error as any)?.error ?? error
               l.error("stream error", {
@@ -736,6 +744,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
       Layer.provide(Provider.defaultLayer),
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Permission.defaultLayer),
+      Layer.provide(EventV2Bridge.defaultLayer),
       Layer.provide(RuntimeFlags.defaultLayer),
     ),
   )

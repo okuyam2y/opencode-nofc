@@ -17,15 +17,17 @@ const generated = await import("./generate.ts")
 import { Script } from "@opencode-ai/script"
 import pkg from "../package.json"
 
-// Load migrations from migration directories
-const migrationDirs = (
-  await fs.promises.readdir(path.join(dir, "migration"), {
-    withFileTypes: true,
-  })
-)
-  .filter((entry) => entry.isDirectory() && /^\d{4}\d{2}\d{2}\d{2}\d{2}\d{2}/.test(entry.name))
-  .map((entry) => entry.name)
-  .sort()
+// Load migrations from migration directories (fork: legacy DB still uses these).
+// Tolerate the directory not existing — fork-specific migrations are optional
+// and `packages/opencode/migration` may be empty/removed after a rebase that
+// drops a now-redundant migration (e.g. upstream #23068 covers session metadata).
+const migrationDir = path.join(dir, "migration")
+const migrationDirs = fs.existsSync(migrationDir)
+  ? (await fs.promises.readdir(migrationDir, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && /^\d{4}\d{2}\d{2}\d{2}\d{2}\d{2}/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort()
+  : []
 
 const migrations = await Promise.all(
   migrationDirs.map(async (name) => {
@@ -45,7 +47,6 @@ const migrations = await Promise.all(
     return { sql, timestamp, name }
   }),
 )
-console.log(`Loaded ${migrations.length} migrations`)
 
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
@@ -235,6 +236,18 @@ for (const item of targets) {
       console.log(`Smoke test passed: ${versionOutput.trim()}`)
     } catch (e) {
       console.error(`Smoke test failed for ${name}:`, e)
+      process.exit(1)
+    }
+
+    // Coarse TUI smoke: boot the binary in a real pty and assert it paints a frame
+    // and exits cleanly (catches crash-on-launch / never-render / hang-on-quit).
+    // Skippable for CI without a usable HOME/auth via OPENCODE_SKIP_TUI_SMOKE.
+    // NOTE: this does NOT reproduce the v1.15.13 dispose-scope hang (TTY-only) —
+    // see script/smoke-tui-pty.ts header and the investigation docs.
+    try {
+      await $`bun run script/smoke-tui-pty.ts ${binaryPath}`
+    } catch (e) {
+      console.error(`TUI smoke failed for ${name}:`, e)
       process.exit(1)
     }
   }

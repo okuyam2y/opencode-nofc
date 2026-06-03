@@ -18,7 +18,7 @@ import { Plugin } from "@/plugin"
 import { SystemPrompt } from "./system"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Permission } from "@/permission"
-import { PermissionLegacy } from "@opencode-ai/core/permission/legacy"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Wildcard } from "@/util/wildcard"
@@ -131,7 +131,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
     parentSessionID?: string
     model: Provider.Model
     agent: Agent.Info
-    permission?: PermissionLegacy.Ruleset
+    permission?: PermissionV1.Ruleset
     system: string[]
     messages: ModelMessage[]
     small?: boolean
@@ -423,8 +423,8 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
                 return { approved: true }
               }
 
-              const id = PermissionLegacy.ID.ascending()
-              let reply: PermissionLegacy.Reply | undefined
+              const id = PermissionV1.ID.ascending()
+              let reply: PermissionV1.Reply | undefined
               let unsub: EventV2.Unsubscribe | undefined
               try {
                 unsub = await bridge.promise(

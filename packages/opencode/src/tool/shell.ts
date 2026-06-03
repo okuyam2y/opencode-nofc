@@ -9,7 +9,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { lazy } from "@/util/lazy"
 import { Language, type Node } from "web-tree-sitter"
 
-import { AppFileSystem } from "@opencode-ai/core/filesystem"
+import { FSUtil } from "@opencode-ai/core/fs-util"
 import { fileURLToPath } from "url"
 import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -322,17 +322,27 @@ const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boole
   return tree
 })
 
-const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan) {
+const ask = Effect.fn("ShellTool.ask")(function* (
+  ctx: Tool.Context,
+  scan: Scan,
+  input: { command: string; description: string },
+) {
   if (scan.dirs.size > 0) {
-    const globs = Array.from(scan.dirs).map((dir) => {
-      if (process.platform === "win32") return AppFileSystem.normalizePathPattern(path.join(dir, "*"))
+    const directories = Array.from(scan.dirs)
+    const globs = directories.map((dir) => {
+      if (process.platform === "win32") return FSUtil.normalizePathPattern(path.join(dir, "*"))
       return path.join(dir, "*")
     })
     yield* ctx.ask({
       permission: "external_directory",
       patterns: globs,
       always: globs,
-      metadata: {},
+      metadata: {
+        command: input.command,
+        description: input.description,
+        directories,
+        patterns: globs,
+      },
     })
   }
 
@@ -341,7 +351,10 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan)
     permission: ShellID.ToolID,
     patterns: Array.from(scan.patterns),
     always: Array.from(scan.always),
-    metadata: {},
+    metadata: {
+      command: input.command,
+      description: input.description,
+    },
   })
 })
 
@@ -400,7 +413,7 @@ export const ShellTool = Tool.define(
   Effect.gen(function* () {
     const config = yield* Config.Service
     const spawner = yield* ChildProcessSpawner
-    const fs = yield* AppFileSystem.Service
+    const fs = yield* FSUtil.Service
     const trunc = yield* Truncate.Service
     const plugin = yield* Plugin.Service
     const flags = yield* RuntimeFlags.Service
@@ -412,16 +425,16 @@ export const ShellTool = Tool.define(
         .pipe(Effect.catch(() => Effect.succeed([] as string[])))
       const file = lines[0]?.trim()
       if (!file) return
-      return AppFileSystem.normalizePath(file)
+      return FSUtil.normalizePath(file)
     })
 
     const resolvePath = Effect.fn("ShellTool.resolvePath")(function* (text: string, root: string, shell: string) {
       if (process.platform === "win32") {
-        if (Shell.posix(shell) && text.startsWith("/") && AppFileSystem.windowsPath(text) === text) {
+        if (Shell.posix(shell) && text.startsWith("/") && FSUtil.windowsPath(text) === text) {
           const file = yield* cygpath(shell, text)
           if (file) return file
         }
-        return AppFileSystem.normalizePath(path.resolve(root, AppFileSystem.windowsPath(text)))
+        return FSUtil.normalizePath(path.resolve(root, FSUtil.windowsPath(text)))
       }
       return path.resolve(root, text)
     })
@@ -702,7 +715,7 @@ export const ShellTool = Tool.define(
                   )
                   const scan = yield* collect(tree.rootNode, cwd, ps, shell, instanceCtx)
                   if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
-                  yield* ask(ctx, scan)
+                  yield* ask(ctx, scan, params)
                 }),
               )
 

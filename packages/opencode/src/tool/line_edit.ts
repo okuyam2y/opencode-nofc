@@ -4,8 +4,8 @@ import * as Tool from "./tool"
 import { LSP } from "../lsp/lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
 import DESCRIPTION from "./line_edit.txt"
-import { File } from "../file"
-import { FileWatcher } from "../file/watcher"
+import { FileSystem } from "@opencode-ai/core/filesystem"
+import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Format } from "../format"
 import { Instance } from "../project/instance"
@@ -13,7 +13,7 @@ import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { containsSpam } from "@/util/spam-filter"
 import { trimDiff } from "./edit"
-import { AppFileSystem } from "@opencode-ai/core/filesystem"
+import { FSUtil } from "@opencode-ai/core/fs-util"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
 
@@ -36,7 +36,7 @@ export const LineEditTool = Tool.define(
   "line_edit",
   Effect.gen(function* () {
     const lsp = yield* LSP.Service
-    const afs = yield* AppFileSystem.Service
+    const afs = yield* FSUtil.Service
     const format = yield* Format.Service
     const bus = yield* EventV2Bridge.Service
 
@@ -142,8 +142,8 @@ export const LineEditTool = Tool.define(
 
             yield* afs.writeWithDirs(filePath, contentNew).pipe(Effect.orDie)
             yield* format.file(filePath)
-            yield* bus.publish(File.Event.Edited, { file: filePath })
-            yield* bus.publish(FileWatcher.Event.Updated, {
+            yield* bus.publish(FileSystem.Event.Edited, { file: filePath })
+            yield* bus.publish(Watcher.Event.Updated, {
               file: filePath,
               event: "change",
             })
@@ -182,7 +182,7 @@ export const LineEditTool = Tool.define(
           let output = "Edit applied successfully."
           yield* lsp.touchFile(filePath, "document")
           const diagnostics = yield* lsp.diagnostics()
-          const normalizedFilePath = AppFileSystem.normalizePath(filePath)
+          const normalizedFilePath = FSUtil.normalizePath(filePath)
           const issues = diagnostics[normalizedFilePath] ?? []
           const errors = issues.filter((item) => item.severity === 1)
           if (errors.length > 0) {

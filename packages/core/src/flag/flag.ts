@@ -5,11 +5,10 @@ function truthy(key: string) {
   return value === "true" || value === "1"
 }
 
-const OPENCODE_EXPERIMENTAL = truthy("OPENCODE_EXPERIMENTAL")
 const copy = process.env["OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT"]
 
 function enabledByExperimental(key: string) {
-  return process.env[key] === undefined ? OPENCODE_EXPERIMENTAL : truthy(key)
+  return process.env[key] === undefined ? truthy("OPENCODE_EXPERIMENTAL") : truthy(key)
 }
 
 export const Flag = {
@@ -42,7 +41,7 @@ export const Flag = {
   OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT:
     copy === undefined ? process.platform === "win32" : truthy("OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT"),
   OPENCODE_DEBUG_LLM: truthy("OPENCODE_DEBUG_LLM"),
-  OPENCODE_EXPERIMENTAL_PLAN_MODE: OPENCODE_EXPERIMENTAL || truthy("OPENCODE_EXPERIMENTAL_PLAN_MODE"),
+  OPENCODE_EXPERIMENTAL_PLAN_MODE: enabledByExperimental("OPENCODE_EXPERIMENTAL_PLAN_MODE"),
   OPENCODE_MODELS_URL: process.env["OPENCODE_MODELS_URL"],
   OPENCODE_MODELS_PATH: process.env["OPENCODE_MODELS_PATH"],
   OPENCODE_DB: process.env["OPENCODE_DB"],
@@ -55,6 +54,9 @@ export const Flag = {
   // external tooling set these env vars at runtime.
   get OPENCODE_DISABLE_PROJECT_CONFIG() {
     return truthy("OPENCODE_DISABLE_PROJECT_CONFIG")
+  },
+  get OPENCODE_EXPERIMENTAL_REFERENCES() {
+    return enabledByExperimental("OPENCODE_EXPERIMENTAL_REFERENCES")
   },
   get OPENCODE_TUI_CONFIG() {
     return process.env["OPENCODE_TUI_CONFIG"]

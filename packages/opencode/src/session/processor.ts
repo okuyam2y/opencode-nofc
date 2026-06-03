@@ -5,7 +5,7 @@ import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
 import { Permission } from "@/permission"
-import { PermissionLegacy } from "@opencode-ai/core/permission/legacy"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Plugin } from "@/plugin"
 import { Snapshot } from "@/snapshot"
 import { Session } from "./session"
@@ -606,7 +606,7 @@ const log = Log.create({ service: "session.processor" })
               append(match.part.id, directive)
             }
           }
-          if (error instanceof PermissionLegacy.RejectedError || error instanceof Question.RejectedError) {
+          if (error instanceof PermissionV1.RejectedError || error instanceof Question.RejectedError) {
             ctx.blocked = ctx.shouldBreak
           }
           yield* settleToolCall(toolCallID)

@@ -1,6 +1,8 @@
 import { generateId } from "ai"
 import { Cause, Deferred, Effect, Layer, Context, Scope } from "effect"
-import { Usage } from "@opencode-ai/llm"
+import { Usage, toolFileSourceFromUri } from "@opencode-ai/llm"
+import { ToolOutput } from "@opencode-ai/core/tool-output"
+import type { EventV2 } from "@opencode-ai/core/event"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
@@ -430,6 +432,10 @@ const log = Log.create({ service: "session.processor" })
      *  step typically includes system prompt + tool defs and is large,
      *  while subsequent steps drop to near-zero. */
     maxReportedInput: number
+    /** V2 event-system (experimental) — owning assistant-message id for the
+     *  current step.  Created lazily by ensureV2AssistantMessage(), reset on
+     *  step-finish.  Undefined when flags.experimentalEventSystem is off. */
+    v2AssistantMessageID: EventV2.ID | undefined
   }
 
   type StreamEvent = Event
@@ -490,6 +496,7 @@ const log = Log.create({ service: "session.processor" })
           lastStreamInput: undefined,
           maxReportedInput: 0,
           reasoningMap: {},
+          v2AssistantMessageID: undefined,
         }
         let aborted = false
         const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
@@ -510,6 +517,31 @@ const log = Log.create({ service: "session.processor" })
           delete ctx.toolcalls[toolCallID]
           if (done) yield* Deferred.succeed(done, undefined).pipe(Effect.ignore)
         })
+
+        // V2 event-system (experimental) ownership helpers.  All v2 publishes are
+        // gated behind flags.experimentalEventSystem, so these only run when the
+        // flag is on.  ensureV2AssistantMessage lazily publishes Step.Started and
+        // memoizes the owning assistant-message id for the current step.
+        const ensureV2AssistantMessage = Effect.fn("SessionProcessor.ensureV2AssistantMessage")(function* () {
+          if (ctx.v2AssistantMessageID) return ctx.v2AssistantMessageID
+          ctx.v2AssistantMessageID = (yield* events.publish(SessionEvent.Step.Started, {
+            sessionID: ctx.sessionID,
+            agent: input.assistantMessage.agent,
+            model: {
+              id: ModelV2.ID.make(ctx.model.id),
+              providerID: ProviderV2.ID.make(ctx.model.providerID),
+              variant: ModelV2.VariantID.make(input.assistantMessage.variant ?? "default"),
+            },
+            snapshot: ctx.snapshot,
+            timestamp: DateTime.makeUnsafe(Date.now()),
+          })).id
+          return ctx.v2AssistantMessageID
+        })
+
+        const currentV2AssistantMessage = () =>
+          ctx.v2AssistantMessageID === undefined
+            ? Effect.die("V2 step settlement has no owning assistant message")
+            : Effect.succeed(ctx.v2AssistantMessageID)
 
         const readToolCall = Effect.fn("SessionProcessor.readToolCall")(function* (toolCallID: string) {
           const call = ctx.toolcalls[toolCallID]
@@ -676,12 +708,16 @@ const log = Log.create({ service: "session.processor" })
                 throw new Error(`Tool call not allowed while generating summary: ${value.toolName}`)
               }
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-              if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Tool.Input.Started, {
-                sessionID: ctx.sessionID,
-                callID: value.id,
-                name: value.toolName,
-                timestamp: DateTime.makeUnsafe(Date.now()),
-              })
+              if (flags.experimentalEventSystem) {
+                const assistantMessageID = yield* ensureV2AssistantMessage()
+                yield* events.publish(SessionEvent.Tool.Input.Started, {
+                  sessionID: ctx.sessionID,
+                  assistantMessageID,
+                  callID: value.id,
+                  name: value.toolName,
+                  timestamp: DateTime.makeUnsafe(Date.now()),
+                })
+              }
               const part = yield* session.updatePart({
                 id: ctx.toolcalls[value.id]?.partID ?? PartID.ascending(),
                 messageID: ctx.assistantMessage.id,
@@ -705,12 +741,16 @@ const log = Log.create({ service: "session.processor" })
 
             case "tool-input-end":
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-              if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Tool.Input.Ended, {
-                sessionID: ctx.sessionID,
-                callID: value.id,
-                text: "",
-                timestamp: DateTime.makeUnsafe(Date.now()),
-              })
+              if (flags.experimentalEventSystem) {
+                const assistantMessageID = yield* ensureV2AssistantMessage()
+                yield* events.publish(SessionEvent.Tool.Input.Ended, {
+                  sessionID: ctx.sessionID,
+                  assistantMessageID,
+                  callID: value.id,
+                  text: "",
+                  timestamp: DateTime.makeUnsafe(Date.now()),
+                })
+              }
               return
 
             case "tool-call": {
@@ -722,17 +762,21 @@ const log = Log.create({ service: "session.processor" })
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               {
                 const tcCalled = yield* readToolCall(value.toolCallId)
-                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Tool.Called, {
-                  sessionID: ctx.sessionID,
-                  callID: value.toolCallId,
-                  tool: value.toolName,
-                  input: value.input,
-                  provider: {
-                    executed: tcCalled?.part.metadata?.providerExecuted === true,
-                    ...(value.providerMetadata ? { metadata: value.providerMetadata } : {}),
-                  },
-                  timestamp: DateTime.makeUnsafe(Date.now()),
-                })
+                if (flags.experimentalEventSystem) {
+                  const assistantMessageID = yield* ensureV2AssistantMessage()
+                  yield* events.publish(SessionEvent.Tool.Called, {
+                    sessionID: ctx.sessionID,
+                    assistantMessageID,
+                    callID: value.toolCallId,
+                    tool: value.toolName,
+                    input: value.input,
+                    provider: {
+                      executed: tcCalled?.part.metadata?.providerExecuted === true,
+                      ...(value.providerMetadata ? { metadata: value.providerMetadata } : {}),
+                    },
+                    timestamp: DateTime.makeUnsafe(Date.now()),
+                  })
+                }
               }
               // tool-parser middleware (hermes) skips tool-input-start and emits
               // tool-call directly.  Create the tool part on the fly when it
@@ -915,27 +959,31 @@ const log = Log.create({ service: "session.processor" })
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               {
                 const trCalled = yield* readToolCall(value.toolCallId)
-                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Tool.Success, {
-                  sessionID: ctx.sessionID,
-                  callID: value.toolCallId,
-                  structured: value.output.metadata,
-                  content: [
-                    {
-                      type: "text",
-                      text: value.output.output,
+                if (flags.experimentalEventSystem) {
+                  const assistantMessageID = yield* ensureV2AssistantMessage()
+                  const content = [
+                    ToolOutput.text({ type: "text", text: value.output.output }),
+                    ...(value.output.attachments?.map((item: MessageV2.FilePart) =>
+                      ToolOutput.file({
+                        type: "file",
+                        source: toolFileSourceFromUri(item.url),
+                        mime: item.mime,
+                        name: item.filename,
+                      }),
+                    ) ?? []),
+                  ]
+                  yield* events.publish(SessionEvent.Tool.Success, {
+                    sessionID: ctx.sessionID,
+                    assistantMessageID,
+                    callID: value.toolCallId,
+                    structured: value.output.metadata,
+                    content,
+                    provider: {
+                      executed: trCalled?.part.metadata?.providerExecuted === true,
                     },
-                    ...(value.output.attachments?.map((item: MessageV2.FilePart) => ({
-                      type: "file" as const,
-                      uri: item.url,
-                      mime: item.mime,
-                      name: item.filename,
-                    })) ?? []),
-                  ],
-                  provider: {
-                    executed: trCalled?.part.metadata?.providerExecuted === true,
-                  },
-                  timestamp: DateTime.makeUnsafe(Date.now()),
-                })
+                    timestamp: DateTime.makeUnsafe(Date.now()),
+                  })
+                }
               }
               // Read the part before completeToolCall deletes it from ctx.toolcalls,
               // so the tracker sees the actual tool name / input from this call.
@@ -965,18 +1013,22 @@ const log = Log.create({ service: "session.processor" })
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               {
                 const teCalled = yield* readToolCall(value.toolCallId)
-                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Tool.Failed, {
-                  sessionID: ctx.sessionID,
-                  callID: value.toolCallId,
-                  error: {
-                    type: "unknown",
-                    message: errorMessage(value.error),
-                  },
-                  provider: {
-                    executed: teCalled?.part.metadata?.providerExecuted === true,
-                  },
-                  timestamp: DateTime.makeUnsafe(Date.now()),
-                })
+                if (flags.experimentalEventSystem) {
+                  const assistantMessageID = yield* ensureV2AssistantMessage()
+                  yield* events.publish(SessionEvent.Tool.Failed, {
+                    sessionID: ctx.sessionID,
+                    assistantMessageID,
+                    callID: value.toolCallId,
+                    error: {
+                      type: "unknown",
+                      message: errorMessage(value.error),
+                    },
+                    provider: {
+                      executed: teCalled?.part.metadata?.providerExecuted === true,
+                    },
+                    timestamp: DateTime.makeUnsafe(Date.now()),
+                  })
+                }
               }
               yield* failToolCall(value.toolCallId, value.error)
               return
@@ -992,17 +1044,7 @@ const log = Log.create({ service: "session.processor" })
               if (!ctx.snapshot) ctx.snapshot = yield* snapshot.track()
               if (!ctx.assistantMessage.summary) {
                 // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Step.Started, {
-                  sessionID: ctx.sessionID,
-                  agent: input.assistantMessage.agent,
-                  model: {
-                    id: ModelV2.ID.make(ctx.model.id),
-                    providerID: ProviderV2.ID.make(ctx.model.providerID),
-                    variant: ModelV2.VariantID.make(input.assistantMessage.variant ?? "default"),
-                  },
-                  snapshot: ctx.snapshot,
-                  timestamp: DateTime.makeUnsafe(Date.now()),
-                })
+                if (flags.experimentalEventSystem) yield* ensureV2AssistantMessage()
               }
               yield* session.updatePart({
                 id: PartID.ascending(),
@@ -1111,14 +1153,18 @@ const log = Log.create({ service: "session.processor" })
               const completedSnapshot = yield* snapshot.track()
               if (!ctx.assistantMessage.summary) {
                 // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Step.Ended, {
-                  sessionID: ctx.sessionID,
-                  finish: finishReason,
-                  cost: usage.cost,
-                  tokens: usage.tokens,
-                  snapshot: completedSnapshot,
-                  timestamp: DateTime.makeUnsafe(Date.now()),
-                })
+                if (flags.experimentalEventSystem) {
+                  yield* events.publish(SessionEvent.Step.Ended, {
+                    sessionID: ctx.sessionID,
+                    assistantMessageID: yield* currentV2AssistantMessage(),
+                    finish: finishReason,
+                    cost: usage.cost,
+                    tokens: usage.tokens,
+                    snapshot: completedSnapshot,
+                    timestamp: DateTime.makeUnsafe(Date.now()),
+                  })
+                  ctx.v2AssistantMessageID = undefined
+                }
               }
               ctx.assistantMessage.finish = finishReason
               ctx.assistantMessage.cost += usage.cost
@@ -1176,6 +1222,7 @@ const log = Log.create({ service: "session.processor" })
                 // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
                 if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Text.Started, {
                   sessionID: ctx.sessionID,
+                  textID: value.id,
                   timestamp: DateTime.makeUnsafe(Date.now()),
                 })
               }
@@ -1265,6 +1312,7 @@ const log = Log.create({ service: "session.processor" })
                 // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
                 if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Text.Ended, {
                   sessionID: ctx.sessionID,
+                  textID: value.id,
                   text: ctx.currentText.text,
                   timestamp: DateTime.makeUnsafe(Date.now()),
                 })
@@ -1361,14 +1409,18 @@ const log = Log.create({ service: "session.processor" })
           }
           if (!ctx.assistantMessage.summary) {
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-            if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Step.Failed, {
-              sessionID: ctx.sessionID,
-              error: {
-                type: "unknown",
-                message: errorMessage(e),
-              },
-              timestamp: DateTime.makeUnsafe(Date.now()),
-            })
+            if (flags.experimentalEventSystem) {
+              const assistantMessageID = yield* ensureV2AssistantMessage()
+              yield* events.publish(SessionEvent.Step.Failed, {
+                sessionID: ctx.sessionID,
+                assistantMessageID,
+                error: {
+                  type: "unknown",
+                  message: errorMessage(e),
+                },
+                timestamp: DateTime.makeUnsafe(Date.now()),
+              })
+            }
           }
           ctx.assistantMessage.error = error
           yield* events.publish(Session.Event.Error, {

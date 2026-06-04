@@ -1,0 +1,13 @@
+diff --git a/lib/agents.js b/lib/agents.js
+index e9624dfeb9009073693cf84cfebf99f7ce2c4814..394b5b05084b315e57b4a92733cfd1cd7ff8cb37 100644
+--- a/lib/agents.js
++++ b/lib/agents.js
+@@ -32,7 +32,7 @@ module.exports = class Agent extends AgentBase {
+   }
+ 
+   get proxy () {
+-    return this.#proxy ? { url: this.#proxy } : {}
++    return this.#proxy ? { url: this.#proxy.toString() } : {}
+   }
+ 
+   #getProxy (options) {

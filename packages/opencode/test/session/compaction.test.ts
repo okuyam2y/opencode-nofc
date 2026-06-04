@@ -34,6 +34,7 @@ import { TestConfig } from "../fixture/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LLMEvent, Usage } from "@opencode-ai/llm"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
 
 void Log.init({ print: false })
 
@@ -48,7 +49,7 @@ const summary = Layer.succeed(
 
 const ref = {
   providerID: ProviderV2.ID.make("test"),
-  modelID: ProviderV2.ModelID.make("test-model"),
+  modelID: ModelV2.ID.make("test-model"),
 }
 
 const usage = (input: ConstructorParameters<typeof Usage>[0]) => new Usage(input)

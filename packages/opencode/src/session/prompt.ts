@@ -51,6 +51,7 @@ import * as EffectLogger from "@opencode-ai/core/effect/logger"
 import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
+import { ModelV2 } from "@opencode-ai/core/model"
 import { EffectBridge } from "@/effect/bridge"
 import { Reference } from "@/reference/reference"
 import { ReferencePrompt } from "./prompt/reference"
@@ -58,7 +59,7 @@ import { SessionReminders } from "./reminders"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { SessionEvent } from "@opencode-ai/core/session/event"
-import { AgentAttachment, FileAttachment, ReferenceAttachment, Source } from "@opencode-ai/core/session/prompt"
+import { AgentAttachment, FileAttachment, Prompt, ReferenceAttachment, Source } from "@opencode-ai/core/session/prompt"
 import * as DateTime from "effect/DateTime"
 
 // @ts-ignore
@@ -314,7 +315,7 @@ export const layer = Layer.effect(
       session: Session.Info
       history: MessageV2.WithParts[]
       providerID: ProviderV2.ID
-      modelID: ProviderV2.ModelID
+      modelID: ModelV2.ID
     }) {
       if (input.session.parentID) return
       if (!Session.isDefaultTitle(input.session.title)) return
@@ -420,7 +421,7 @@ export const layer = Layer.effect(
       })
 
       for (const item of yield* registry.tools({
-        modelID: ProviderV2.ModelID.make(input.model.api.id),
+        modelID: ModelV2.ID.make(input.model.api.id),
         configModelID: input.model.id,
         providerID: input.model.providerID,
         agent: input.agent,
@@ -921,7 +922,7 @@ export const layer = Layer.effect(
 
     const getModel = Effect.fn("SessionPrompt.getModel")(function* (
       providerID: ProviderV2.ID,
-      modelID: ProviderV2.ModelID,
+      modelID: ModelV2.ID,
       sessionID: SessionID,
     ) {
       const exit = yield* provider.getModel(providerID, modelID).pipe(Effect.exit)
@@ -1405,12 +1406,13 @@ export const layer = Layer.effect(
         yield* events.publish(SessionEvent.Prompted, {
           sessionID: input.sessionID,
           timestamp: DateTime.makeUnsafe(info.time.created),
-          prompt: {
+          delivery: "steer",
+          prompt: new Prompt({
             text: nextPrompt.text.join("\n"),
             files: nextPrompt.files,
             agents: nextPrompt.agents,
             references: nextPrompt.references,
-          },
+          }),
         })
       }
       for (const text of nextPrompt.synthetic) {
@@ -2080,7 +2082,7 @@ export const defaultLayer = Layer.suspend(() =>
 )
 const ModelRef = Schema.Struct({
   providerID: ProviderV2.ID,
-  modelID: ProviderV2.ModelID,
+  modelID: ModelV2.ID,
 })
 
 export const PromptInput = Schema.Struct({

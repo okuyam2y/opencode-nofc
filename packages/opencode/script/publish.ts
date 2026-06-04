@@ -101,32 +101,48 @@ await Bun.file(`${wrapperDir}/package.json`).write(
   ),
 )
 
-// Publish a package, skipping if already published (for retry support)
+// Already-published markers: idempotent skip (safe to re-run after a partial publish).
+const PUBLISHED = ["EPUBLISHCONFLICT", "Cannot publish over", "cannot publish over", "previously published version"]
+// Transient upload/network failures worth retrying. Large platform binaries
+// (~37-96MB) intermittently time out mid-upload even when the registry is healthy.
+const RETRYABLE = ["FETCH_ERROR", "ENOTFOUND", "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN", "network timeout"]
+
+// Publish a package, skipping if already published (idempotent for retries) and
+// retrying transient network errors with exponential backoff (5s → 15s → 45s).
 async function publishDir(distDir: string) {
   if (process.platform !== "win32") {
     await $`chmod -R 755 .`.cwd(distDir)
   }
   await $`rm -f *.tgz`.cwd(distDir).nothrow()
   await $`bun pm pack`.cwd(distDir)
-  try {
-    await $`npm publish *.tgz --access public --tag latest`.cwd(distDir)
-  } catch (e: any) {
-    const msg = String(e?.stderr ?? e?.message ?? e)
-    if (msg.includes("EPUBLISHCONFLICT") || msg.includes("Cannot publish over") || msg.includes("cannot publish over") || msg.includes("previously published version")) {
-      console.log(`Already published, skipping: ${distDir}`)
-    } else {
-      throw e
+  const backoff = [5_000, 15_000, 45_000]
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await $`npm publish *.tgz --access public --tag latest`.cwd(distDir)
+      return
+    } catch (e: any) {
+      const msg = String(e?.stderr ?? e?.message ?? e)
+      if (PUBLISHED.some((m) => msg.includes(m))) {
+        console.log(`Already published, skipping: ${distDir}`)
+        return
+      }
+      if (!RETRYABLE.some((m) => msg.includes(m)) || attempt >= backoff.length) throw e
+      const wait = backoff[attempt]
+      console.log(`Network error publishing ${distDir} (attempt ${attempt + 1}), retrying in ${wait / 1000}s...`)
+      await Bun.sleep(wait)
     }
   }
 }
 
-// Publish platform binary packages
-// dist directories are still named opencode-* (from build.ts), so map back
-const tasks = Object.entries(binaries).map(async ([newName]) => {
+// Publish platform binary packages sequentially (NOT Promise.all).
+// dist directories are still named opencode-* (from build.ts), so map back.
+// Parallel publish of 6 large packages (~37-96MB each) saturates upload
+// bandwidth and stalls — every connection hangs and the run never completes.
+// See docs/lessons/deploy.md "Promise.all で npm publish を並列化するな".
+for (const [newName] of Object.entries(binaries)) {
   const oldName = "opencode-" + newName.slice(`${PREFIX}-`.length)
   await publishDir(`./dist/${oldName}`)
-})
-await Promise.all(tasks)
+}
 
 // Publish wrapper package
 await publishDir(wrapperDir)

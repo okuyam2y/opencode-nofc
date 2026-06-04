@@ -15,8 +15,12 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Glob } from "@opencode-ai/core/util/glob"
 import { Log } from "@opencode-ai/core/util/log"
 import { Discovery } from "./discovery"
-import CUSTOMIZE_OPENCODE_SKILL_BODY from "./prompt/customize-opencode.md" with { type: "text" }
 import { isRecord } from "@/util/record"
+// Build-time text import so the skill body is inlined into the compiled binary.
+// A runtime `Bun.file(new URL(..., import.meta.url))` read breaks under
+// `bun build --compile`: import.meta.url flattens to the bundle root and the
+// relative path resolves to a non-existent absolute `/core/src/...` (ENOENT).
+import CUSTOMIZE_OPENCODE_SKILL_BODY from "../../../core/src/plugin/skill/customize-opencode.md" with { type: "text" }
 
 const log = Log.create({ service: "skill" })
 const CLAUDE_EXTERNAL_DIR = ".claude"

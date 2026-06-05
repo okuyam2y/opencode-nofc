@@ -6,6 +6,7 @@ import type { Agent } from "@/agent/agent"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { Global } from "@opencode-ai/core/global"
+import { SkillPlugin } from "@opencode-ai/core/plugin/skill"
 import { Permission } from "@/permission"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Config } from "@/config/config"
@@ -16,11 +17,6 @@ import { Glob } from "@opencode-ai/core/util/glob"
 import { Log } from "@opencode-ai/core/util/log"
 import { Discovery } from "./discovery"
 import { isRecord } from "@/util/record"
-// Build-time text import so the skill body is inlined into the compiled binary.
-// A runtime `Bun.file(new URL(..., import.meta.url))` read breaks under
-// `bun build --compile`: import.meta.url flattens to the bundle root and the
-// relative path resolves to a non-existent absolute `/core/src/...` (ENOENT).
-import CUSTOMIZE_OPENCODE_SKILL_BODY from "../../../core/src/plugin/skill/customize-opencode.md" with { type: "text" }
 
 const log = Log.create({ service: "skill" })
 const CLAUDE_EXTERNAL_DIR = ".claude"
@@ -37,6 +33,7 @@ const SKILL_PATTERN = "**/SKILL.md"
 const CUSTOMIZE_OPENCODE_SKILL_NAME = "customize-opencode"
 const CUSTOMIZE_OPENCODE_SKILL_DESCRIPTION =
   "Use ONLY when the user is editing or creating opencode's own configuration: opencode.json, opencode.jsonc, files under .opencode/, or files under ~/.config/opencode/. Also use when creating or fixing opencode agents, subagents, skills, plugins, MCP servers, or permission rules. Do not use for the user's own application code, or for any project that is not configuring opencode itself."
+const CUSTOMIZE_OPENCODE_SKILL_BODY = SkillPlugin.CustomizeOpencodeContent
 
 export const Info = Schema.Struct({
   name: Schema.String,

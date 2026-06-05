@@ -2,7 +2,7 @@ import { generateId } from "ai"
 import { Cause, Deferred, Effect, Layer, Context, Scope } from "effect"
 import { Usage, toolFileSourceFromUri } from "@opencode-ai/llm"
 import { ToolOutput } from "@opencode-ai/core/tool-output"
-import type { EventV2 } from "@opencode-ai/core/event"
+import { SessionMessage } from "@opencode-ai/core/session/message"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
@@ -309,6 +309,29 @@ const log = Log.create({ service: "session.processor" })
   }
 
   /**
+   * Detect overlapping retransmission of streaming text. Returns the number of
+   * leading characters of `delta` that duplicate the tail of `accumulated` and
+   * should be sliced off, or 0 when there is no dedup-worthy overlap.
+   *
+   * Fires only for a >=15-char exact suffix/prefix match, and NEVER for a uniform
+   * run of a single character (e.g. "----" rules, "====" separators, blank-line
+   * runs): a uniform run trivially matches the buffer tail without being a real
+   * retransmission, and slicing it would permanently corrupt legitimate content.
+   * Exported for unit testing.
+   */
+  export function dedupStreamOverlap(accumulated: string, delta: string): number {
+    if (accumulated.length < 15 || delta.length < 15) return 0
+    const tail = accumulated.slice(-200)
+    for (let len = Math.min(tail.length, delta.length); len >= 15; len--) {
+      if (tail.endsWith(delta.slice(0, len))) {
+        const seg = delta.slice(0, len)
+        return [...seg].some((c) => c !== seg[0]) ? len : 0
+      }
+    }
+    return 0
+  }
+
+  /**
    * Check whether an identical tool call (same name + input) was already
    * accepted in this step.  Uses a Set that survives tool-result deletions
    * from ctx.toolcalls (which clears entries on completion).
@@ -434,8 +457,8 @@ const log = Log.create({ service: "session.processor" })
     maxReportedInput: number
     /** V2 event-system (experimental) — owning assistant-message id for the
      *  current step.  Created lazily by ensureV2AssistantMessage(), reset on
-     *  step-finish.  Undefined when flags.experimentalEventSystem is off. */
-    v2AssistantMessageID: EventV2.ID | undefined
+     *  step-finish.  Undefined when mirrorAssistant is off. */
+    v2AssistantMessageID: SessionMessage.ID | undefined
   }
 
   type StreamEvent = Event
@@ -498,6 +521,9 @@ const log = Log.create({ service: "session.processor" })
           reasoningMap: {},
           v2AssistantMessageID: undefined,
         }
+        // V2 dual-write gate: mirror to v2 events only when the experimental event
+        // system is on AND this is not a summary message (matches upstream #30785).
+        const mirrorAssistant = flags.experimentalEventSystem && !input.assistantMessage.summary
         let aborted = false
         const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
         /** Attempt-scoped flag: set to true when any tool reaches completed or error state.
@@ -519,13 +545,15 @@ const log = Log.create({ service: "session.processor" })
         })
 
         // V2 event-system (experimental) ownership helpers.  All v2 publishes are
-        // gated behind flags.experimentalEventSystem, so these only run when the
+        // gated behind mirrorAssistant, so these only run when the
         // flag is on.  ensureV2AssistantMessage lazily publishes Step.Started and
         // memoizes the owning assistant-message id for the current step.
         const ensureV2AssistantMessage = Effect.fn("SessionProcessor.ensureV2AssistantMessage")(function* () {
           if (ctx.v2AssistantMessageID) return ctx.v2AssistantMessageID
-          ctx.v2AssistantMessageID = (yield* events.publish(SessionEvent.Step.Started, {
+          ctx.v2AssistantMessageID = SessionMessage.ID.create()
+          yield* events.publish(SessionEvent.Step.Started, {
             sessionID: ctx.sessionID,
+            assistantMessageID: ctx.v2AssistantMessageID,
             agent: input.assistantMessage.agent,
             model: {
               id: ModelV2.ID.make(ctx.model.id),
@@ -534,7 +562,7 @@ const log = Log.create({ service: "session.processor" })
             },
             snapshot: ctx.snapshot,
             timestamp: DateTime.makeUnsafe(Date.now()),
-          })).id
+          })
           return ctx.v2AssistantMessageID
         })
 
@@ -654,8 +682,9 @@ const log = Log.create({ service: "session.processor" })
             case "reasoning-start":
               if (value.id in ctx.reasoningMap) return
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-              if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Reasoning.Started, {
+              if (mirrorAssistant) yield* events.publish(SessionEvent.Reasoning.Started, {
                 sessionID: ctx.sessionID,
+                assistantMessageID: yield* ensureV2AssistantMessage(),
                 reasoningID: value.id,
                 timestamp: DateTime.makeUnsafe(Date.now()),
               })
@@ -687,8 +716,9 @@ const log = Log.create({ service: "session.processor" })
             case "reasoning-end":
               if (!(value.id in ctx.reasoningMap)) return
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-              if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Reasoning.Ended, {
+              if (mirrorAssistant) yield* events.publish(SessionEvent.Reasoning.Ended, {
                 sessionID: ctx.sessionID,
+                assistantMessageID: yield* currentV2AssistantMessage(),
                 reasoningID: value.id,
                 text: ctx.reasoningMap[value.id].text,
                 timestamp: DateTime.makeUnsafe(Date.now()),
@@ -708,7 +738,7 @@ const log = Log.create({ service: "session.processor" })
                 throw new Error(`Tool call not allowed while generating summary: ${value.toolName}`)
               }
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-              if (flags.experimentalEventSystem) {
+              if (mirrorAssistant) {
                 const assistantMessageID = yield* ensureV2AssistantMessage()
                 yield* events.publish(SessionEvent.Tool.Input.Started, {
                   sessionID: ctx.sessionID,
@@ -741,7 +771,7 @@ const log = Log.create({ service: "session.processor" })
 
             case "tool-input-end":
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-              if (flags.experimentalEventSystem) {
+              if (mirrorAssistant) {
                 const assistantMessageID = yield* ensureV2AssistantMessage()
                 yield* events.publish(SessionEvent.Tool.Input.Ended, {
                   sessionID: ctx.sessionID,
@@ -762,7 +792,7 @@ const log = Log.create({ service: "session.processor" })
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               {
                 const tcCalled = yield* readToolCall(value.toolCallId)
-                if (flags.experimentalEventSystem) {
+                if (mirrorAssistant) {
                   const assistantMessageID = yield* ensureV2AssistantMessage()
                   yield* events.publish(SessionEvent.Tool.Called, {
                     sessionID: ctx.sessionID,
@@ -959,7 +989,7 @@ const log = Log.create({ service: "session.processor" })
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               {
                 const trCalled = yield* readToolCall(value.toolCallId)
-                if (flags.experimentalEventSystem) {
+                if (mirrorAssistant) {
                   const assistantMessageID = yield* ensureV2AssistantMessage()
                   const content = [
                     ToolOutput.text({ type: "text", text: value.output.output }),
@@ -1013,7 +1043,7 @@ const log = Log.create({ service: "session.processor" })
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               {
                 const teCalled = yield* readToolCall(value.toolCallId)
-                if (flags.experimentalEventSystem) {
+                if (mirrorAssistant) {
                   const assistantMessageID = yield* ensureV2AssistantMessage()
                   yield* events.publish(SessionEvent.Tool.Failed, {
                     sessionID: ctx.sessionID,
@@ -1044,7 +1074,7 @@ const log = Log.create({ service: "session.processor" })
               if (!ctx.snapshot) ctx.snapshot = yield* snapshot.track()
               if (!ctx.assistantMessage.summary) {
                 // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-                if (flags.experimentalEventSystem) yield* ensureV2AssistantMessage()
+                if (mirrorAssistant) yield* ensureV2AssistantMessage()
               }
               yield* session.updatePart({
                 id: PartID.ascending(),
@@ -1153,7 +1183,7 @@ const log = Log.create({ service: "session.processor" })
               const completedSnapshot = yield* snapshot.track()
               if (!ctx.assistantMessage.summary) {
                 // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-                if (flags.experimentalEventSystem) {
+                if (mirrorAssistant) {
                   yield* events.publish(SessionEvent.Step.Ended, {
                     sessionID: ctx.sessionID,
                     assistantMessageID: yield* currentV2AssistantMessage(),
@@ -1220,8 +1250,9 @@ const log = Log.create({ service: "session.processor" })
             case "text-start":
               if (!ctx.assistantMessage.summary) {
                 // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Text.Started, {
+                if (mirrorAssistant) yield* events.publish(SessionEvent.Text.Started, {
                   sessionID: ctx.sessionID,
+                  assistantMessageID: yield* ensureV2AssistantMessage(),
                   textID: value.id,
                   timestamp: DateTime.makeUnsafe(Date.now()),
                 })
@@ -1241,30 +1272,19 @@ const log = Log.create({ service: "session.processor" })
 
             case "text-delta":
               if (!ctx.currentText) return
-              // Deduplicate overlapping chunks from LLM/gateway stream retransmission.
-              // Detects when the start of a new delta matches the end of accumulated text
-              // (15+ chars). This pattern occurs when the gateway resends part of the
-              // previous chunk. Legitimate text rarely has 15+ char exact suffix-prefix
-              // overlap with the accumulated buffer at a chunk boundary.
+              // Deduplicate overlapping chunks from LLM/gateway stream retransmission
+              // (see dedupStreamOverlap — excludes uniform runs to avoid corrupting
+              // markdown rules / separators / blank-line runs).
               let deduped = value.text
-              if (ctx.currentText.text.length >= 15 && deduped.length >= 15) {
-                const tail = ctx.currentText.text.slice(-200)
-                let overlap = 0
-                for (let len = Math.min(tail.length, deduped.length); len >= 15; len--) {
-                  if (tail.endsWith(deduped.slice(0, len))) {
-                    overlap = len
-                    break
-                  }
-                }
-                if (overlap > 0) {
-                  log.warn("text-delta-dedup", {
-                    overlap,
-                    tail: tail.slice(-50),
-                    deltaStart: deduped.slice(0, 50),
-                  })
-                  deduped = deduped.slice(overlap)
-                  if (!deduped) return
-                }
+              const overlap = dedupStreamOverlap(ctx.currentText.text, deduped)
+              if (overlap > 0) {
+                log.warn("text-delta-dedup", {
+                  overlap,
+                  tail: ctx.currentText.text.slice(-50),
+                  deltaStart: deduped.slice(0, 50),
+                })
+                deduped = deduped.slice(overlap)
+                if (!deduped) return
               }
               ctx.currentText.text += deduped
               if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
@@ -1310,8 +1330,9 @@ const log = Log.create({ service: "session.processor" })
               )).text
               if (!ctx.assistantMessage.summary) {
                 // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-                if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Text.Ended, {
+                if (mirrorAssistant) yield* events.publish(SessionEvent.Text.Ended, {
                   sessionID: ctx.sessionID,
+                  assistantMessageID: yield* currentV2AssistantMessage(),
                   textID: value.id,
                   text: ctx.currentText.text,
                   timestamp: DateTime.makeUnsafe(Date.now()),
@@ -1403,13 +1424,20 @@ const log = Log.create({ service: "session.processor" })
           slog.error("process", { error: errorMessage(e), stack: e instanceof Error ? e.stack : undefined })
           const error = parse(e)
           if (MessageV2.ContextOverflowError.isInstance(error)) {
+            if ((yield* config.get()).compaction?.auto === false && !ctx.assistantMessage.summary) {
+              ctx.assistantMessage.error = error
+              ctx.assistantMessage.finish = "error"
+              yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
+              yield* status.set(ctx.sessionID, { type: "idle" })
+              return
+            }
             ctx.needsCompaction = true
             yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
             return
           }
           if (!ctx.assistantMessage.summary) {
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-            if (flags.experimentalEventSystem) {
+            if (mirrorAssistant) {
               const assistantMessageID = yield* ensureV2AssistantMessage()
               yield* events.publish(SessionEvent.Step.Failed, {
                 sessionID: ctx.sessionID,
@@ -1451,9 +1479,11 @@ const log = Log.create({ service: "session.processor" })
 
           const rollbackAttempt = Effect.fn("SessionProcessor.rollbackAttempt")(function* () {
             if (hasExecutedTool) {
-              // This should never happen: fromError() sets forceNonRetryable which
-              // makes retryable() return undefined → Cause.done before set() is called.
-              // If we get here anyway, fail hard to prevent unsafe retry.
+              // forceNonRetryable makes retryable() veto APIError retries after a tool
+              // ran, but the non-APIError rate-limit-text path (retry.ts) has no such
+              // veto, so this guard can still fire. Fail hard — the caller's catchCauseIf
+              // does not absorb failures while hasExecutedTool, so this propagates and the
+              // retry aborts instead of re-running already-executed tool side effects.
               throw new Error("rollbackAttempt called after tool execution — aborting retry")
             }
             log.info("rollback-attempt", { partsBefore: baselinePartIDs.size })
@@ -1530,13 +1560,17 @@ const log = Log.create({ service: "session.processor" })
                       // always runs, but re-throw any cause containing interrupts.
                       yield* rollbackAttempt().pipe(
                         Effect.catchCauseIf(
-                          (cause) => !Cause.hasInterrupts(cause),
+                          // Absorb genuine best-effort rollback failures so status.set
+                          // still runs — but never absorb the post-tool-execution safety
+                          // abort (hasExecutedTool guard); let it propagate so the retry
+                          // fails hard instead of silently re-running tool side effects.
+                          (cause) => !Cause.hasInterrupts(cause) && !hasExecutedTool,
                           (cause) =>
                             Effect.sync(() => log.warn("rollback-attempt-failed", { error: Cause.squash(cause) })),
                         ),
                       )
                       // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-                      if (flags.experimentalEventSystem) yield* events.publish(SessionEvent.Retried, {
+                      if (mirrorAssistant) yield* events.publish(SessionEvent.Retried, {
                         sessionID: ctx.sessionID,
                         attempt: info.attempt,
                         error: {

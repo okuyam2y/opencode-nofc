@@ -194,3 +194,39 @@ describe("SessionProcessor.isDuplicate + dedupKey", () => {
     expect(toolcalls["call-2"]).toBeUndefined()
   })
 })
+
+describe("SessionProcessor.dedupStreamOverlap", () => {
+  test("varied retransmission overlap is detected", () => {
+    const acc = "prefix text 0123456789ABCDEF"
+    const delta = "0123456789ABCDEF and then more"
+    expect(SessionProcessor.dedupStreamOverlap(acc, delta)).toBe(16)
+  })
+
+  test("no overlap returns 0", () => {
+    expect(SessionProcessor.dedupStreamOverlap("the quick brown fox jumps", "completely different content")).toBe(0)
+  })
+
+  test("short overlap (<15 chars) is ignored", () => {
+    // "lmnop" overlap is only 5 chars — below the 15-char threshold
+    expect(SessionProcessor.dedupStreamOverlap("abcdefghijklmnop", "lmnopqrstuvwxyz0")).toBe(0)
+  })
+
+  test("regression: uniform dash run is NOT deduped (markdown HR corruption)", () => {
+    const acc = "intro paragraph\n" + "-".repeat(20)
+    const delta = "-".repeat(20) + "\nnext paragraph"
+    // Before the fix this returned 20 and silently halved a 40-dash rule.
+    expect(SessionProcessor.dedupStreamOverlap(acc, delta)).toBe(0)
+  })
+
+  test("regression: uniform blank-line run is NOT deduped", () => {
+    const acc = "section one" + "\n".repeat(16)
+    const delta = "\n".repeat(16) + "section two"
+    expect(SessionProcessor.dedupStreamOverlap(acc, delta)).toBe(0)
+  })
+
+  test("regression: uniform '=' separator run is NOT deduped", () => {
+    const acc = "title\n" + "=".repeat(18)
+    const delta = "=".repeat(18) + " trailing"
+    expect(SessionProcessor.dedupStreamOverlap(acc, delta)).toBe(0)
+  })
+})

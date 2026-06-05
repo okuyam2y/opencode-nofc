@@ -436,9 +436,14 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
       // Document extraction: PDF, .docx, .xlsx, .pptx
       const ext = path.extname(filepath).toLowerCase()
       if (isDocumentFile(ext)) {
-        const result = yield* Effect.promise(() => extractDocumentText(filepath)).pipe(
-          Effect.catch(() => Effect.succeed(undefined)),
-        )
+        // extractDocumentText rejects on corrupt/mislabeled archives (zip parse
+        // throws). Effect.promise turns a rejection into an unrecoverable defect
+        // that Effect.catch cannot handle, so use tryPromise to route it into the
+        // error channel and fall back to undefined → binary/text handling.
+        const result = yield* Effect.tryPromise({
+          try: () => extractDocumentText(filepath),
+          catch: (cause) => cause,
+        }).pipe(Effect.catch(() => Effect.succeed(undefined)))
         if (result && result.text.trim()) {
           const content = result.text
           const preview = content.slice(0, 500)

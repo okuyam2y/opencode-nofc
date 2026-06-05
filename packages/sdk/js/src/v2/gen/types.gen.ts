@@ -17,7 +17,11 @@ export type Event =
   | EventMessagePartRemoved
   | EventSessionNextAgentSwitched
   | EventSessionNextModelSwitched
+  | EventSessionNextMoved
   | EventSessionNextPrompted
+  | EventSessionNextPromptAdmitted
+  | EventSessionNextPromptPromoted
+  | EventSessionNextContextUpdated
   | EventSessionNextSynthetic
   | EventSessionNextShellStarted
   | EventSessionNextShellEnded
@@ -134,6 +138,13 @@ export type InvalidRequestError = {
   message: string
   kind?: string
   field?: string
+}
+
+export type MoveSessionError = {
+  name: "MoveSessionError"
+  data: {
+    message: string
+  }
 }
 
 export type SnapshotFileDiff = {
@@ -797,6 +808,7 @@ export type GlobalEvent = {
         properties: {
           timestamp: number
           sessionID: string
+          messageID: string
           agent: string
         }
       }
@@ -806,6 +818,7 @@ export type GlobalEvent = {
         properties: {
           timestamp: number
           sessionID: string
+          messageID: string
           model: {
             id: string
             providerID: string
@@ -815,12 +828,55 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "session.next.moved"
+        properties: {
+          timestamp: number
+          sessionID: string
+          location: LocationRef
+          subdirectory?: string
+        }
+      }
+    | {
+        id: string
         type: "session.next.prompted"
         properties: {
           timestamp: number
           sessionID: string
+          messageID: string
           prompt: Prompt
           delivery: "steer" | "queue"
+        }
+      }
+    | {
+        id: string
+        type: "session.next.prompt.admitted"
+        properties: {
+          timestamp: number
+          sessionID: string
+          messageID: string
+          prompt: Prompt
+          delivery: "steer" | "queue"
+        }
+      }
+    | {
+        id: string
+        type: "session.next.prompt.promoted"
+        properties: {
+          timestamp: number
+          sessionID: string
+          messageID: string
+          prompt: Prompt
+          timeCreated: number
+        }
+      }
+    | {
+        id: string
+        type: "session.next.context.updated"
+        properties: {
+          timestamp: number
+          sessionID: string
+          messageID: string
+          text: string
         }
       }
     | {
@@ -829,6 +885,7 @@ export type GlobalEvent = {
         properties: {
           timestamp: number
           sessionID: string
+          messageID: string
           text: string
         }
       }
@@ -838,6 +895,7 @@ export type GlobalEvent = {
         properties: {
           timestamp: number
           sessionID: string
+          messageID: string
           callID: string
           command: string
         }
@@ -858,6 +916,7 @@ export type GlobalEvent = {
         properties: {
           timestamp: number
           sessionID: string
+          assistantMessageID: string
           agent: string
           model: {
             id: string
@@ -904,6 +963,7 @@ export type GlobalEvent = {
         properties: {
           timestamp: number
           sessionID: string
+          assistantMessageID: string
           textID: string
         }
       }
@@ -913,6 +973,7 @@ export type GlobalEvent = {
         properties: {
           timestamp: number
           sessionID: string
+          assistantMessageID: string
           textID: string
           delta: string
         }
@@ -923,6 +984,7 @@ export type GlobalEvent = {
         properties: {
           timestamp: number
           sessionID: string
+          assistantMessageID: string
           textID: string
           text: string
         }
@@ -933,6 +995,7 @@ export type GlobalEvent = {
         properties: {
           timestamp: number
           sessionID: string
+          assistantMessageID: string
           reasoningID: string
           providerMetadata?: {
             [key: string]: {
@@ -947,6 +1010,7 @@ export type GlobalEvent = {
         properties: {
           timestamp: number
           sessionID: string
+          assistantMessageID: string
           reasoningID: string
           delta: string
         }
@@ -957,6 +1021,7 @@ export type GlobalEvent = {
         properties: {
           timestamp: number
           sessionID: string
+          assistantMessageID: string
           reasoningID: string
           text: string
           providerMetadata?: {
@@ -1094,6 +1159,7 @@ export type GlobalEvent = {
         properties: {
           timestamp: number
           sessionID: string
+          messageID: string
           reason: "auto" | "manual"
         }
       }
@@ -1557,7 +1623,11 @@ export type GlobalEvent = {
     | SyncEventMessagePartRemoved
     | SyncEventSessionNextAgentSwitched
     | SyncEventSessionNextModelSwitched
+    | SyncEventSessionNextMoved
     | SyncEventSessionNextPrompted
+    | SyncEventSessionNextPromptAdmitted
+    | SyncEventSessionNextPromptPromoted
+    | SyncEventSessionNextContextUpdated
     | SyncEventSessionNextSynthetic
     | SyncEventSessionNextShellStarted
     | SyncEventSessionNextShellEnded
@@ -2398,6 +2468,13 @@ export type ProjectNotFoundError = {
   message: string
 }
 
+export type ProjectCopyError = {
+  name: "ProjectCopyError"
+  data: {
+    message: string
+  }
+}
+
 export type PtyNotFoundError = {
   _tag: "PtyNotFoundError"
   ptyID: string
@@ -2752,6 +2829,10 @@ export type EventTuiSessionSelect2 = {
   }
 }
 
+export type MoveSessionDestination = {
+  directory: string
+}
+
 export type ModelV2Info = {
   id: string
   providerID: string
@@ -2820,6 +2901,11 @@ export type ModelV2Info = {
     input?: number
     output: number
   }
+}
+
+export type LocationRef = {
+  directory: string
+  workspaceID?: string
 }
 
 export type PromptSource = {
@@ -3088,6 +3174,7 @@ export type SyncEventSessionNextAgentSwitched = {
     data: {
       timestamp: number
       sessionID: string
+      messageID: string
       agent: string
     }
   }
@@ -3104,11 +3191,29 @@ export type SyncEventSessionNextModelSwitched = {
     data: {
       timestamp: number
       sessionID: string
+      messageID: string
       model: {
         id: string
         providerID: string
         variant?: string
       }
+    }
+  }
+}
+
+export type SyncEventSessionNextMoved = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.moved.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      location: LocationRef
+      subdirectory?: string
     }
   }
 }
@@ -3124,8 +3229,62 @@ export type SyncEventSessionNextPrompted = {
     data: {
       timestamp: number
       sessionID: string
+      messageID: string
       prompt: Prompt
       delivery: "steer" | "queue"
+    }
+  }
+}
+
+export type SyncEventSessionNextPromptAdmitted = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.prompt.admitted.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      messageID: string
+      prompt: Prompt
+      delivery: "steer" | "queue"
+    }
+  }
+}
+
+export type SyncEventSessionNextPromptPromoted = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.prompt.promoted.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      messageID: string
+      prompt: Prompt
+      timeCreated: number
+    }
+  }
+}
+
+export type SyncEventSessionNextContextUpdated = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.context.updated.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      messageID: string
+      text: string
     }
   }
 }
@@ -3141,6 +3300,7 @@ export type SyncEventSessionNextSynthetic = {
     data: {
       timestamp: number
       sessionID: string
+      messageID: string
       text: string
     }
   }
@@ -3157,6 +3317,7 @@ export type SyncEventSessionNextShellStarted = {
     data: {
       timestamp: number
       sessionID: string
+      messageID: string
       callID: string
       command: string
     }
@@ -3191,6 +3352,7 @@ export type SyncEventSessionNextStepStarted = {
     data: {
       timestamp: number
       sessionID: string
+      assistantMessageID: string
       agent: string
       model: {
         id: string
@@ -3258,6 +3420,7 @@ export type SyncEventSessionNextTextStarted = {
     data: {
       timestamp: number
       sessionID: string
+      assistantMessageID: string
       textID: string
     }
   }
@@ -3274,6 +3437,7 @@ export type SyncEventSessionNextTextEnded = {
     data: {
       timestamp: number
       sessionID: string
+      assistantMessageID: string
       textID: string
       text: string
     }
@@ -3291,6 +3455,7 @@ export type SyncEventSessionNextReasoningStarted = {
     data: {
       timestamp: number
       sessionID: string
+      assistantMessageID: string
       reasoningID: string
       providerMetadata?: {
         [key: string]: {
@@ -3312,6 +3477,7 @@ export type SyncEventSessionNextReasoningEnded = {
     data: {
       timestamp: number
       sessionID: string
+      assistantMessageID: string
       reasoningID: string
       text: string
       providerMetadata?: {
@@ -3494,6 +3660,7 @@ export type SyncEventSessionNextCompactionStarted = {
     data: {
       timestamp: number
       sessionID: string
+      messageID: string
       reason: "auto" | "manual"
     }
   }
@@ -3589,11 +3756,6 @@ export type AgentV2Info = {
   permissions: PermissionV2Ruleset
 }
 
-export type LocationRef = {
-  directory: string
-  workspaceID?: string
-}
-
 export type SessionV2Info = {
   id: string
   parentID?: string
@@ -3624,19 +3786,14 @@ export type SessionV2Info = {
   subpath?: string
 }
 
-export type SessionMessageUser = {
+export type SessionInputAdmitted = {
+  admittedSeq: number
   id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  time: {
-    created: number
-  }
-  text: string
-  files?: Array<PromptFileAttachment>
-  agents?: Array<PromptAgentAttachment>
-  references?: Array<PromptReferenceAttachment>
-  type: "user"
+  sessionID: string
+  prompt: Prompt
+  delivery: "steer" | "queue"
+  timeCreated: number
+  promotedSeq?: number
 }
 
 export type SessionMessageAgentSwitched = {
@@ -3667,6 +3824,21 @@ export type SessionMessageModelSwitched = {
   }
 }
 
+export type SessionMessageUser = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+  }
+  text: string
+  files?: Array<PromptFileAttachment>
+  agents?: Array<PromptAgentAttachment>
+  references?: Array<PromptReferenceAttachment>
+  type: "user"
+}
+
 export type SessionMessageSynthetic = {
   id: string
   metadata?: {
@@ -3678,6 +3850,18 @@ export type SessionMessageSynthetic = {
   sessionID: string
   text: string
   type: "synthetic"
+}
+
+export type SessionMessageSystem = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+  }
+  type: "system"
+  text: string
 }
 
 export type SessionMessageShell = {
@@ -3838,6 +4022,7 @@ export type SessionMessage =
   | SessionMessageModelSwitched
   | SessionMessageUser
   | SessionMessageSynthetic
+  | SessionMessageSystem
   | SessionMessageShell
   | SessionMessageAssistant
   | SessionMessageCompaction
@@ -4130,6 +4315,7 @@ export type EventSessionNextAgentSwitched = {
   properties: {
     timestamp: number
     sessionID: string
+    messageID: string
     agent: string
   }
 }
@@ -4140,11 +4326,23 @@ export type EventSessionNextModelSwitched = {
   properties: {
     timestamp: number
     sessionID: string
+    messageID: string
     model: {
       id: string
       providerID: string
       variant?: string
     }
+  }
+}
+
+export type EventSessionNextMoved = {
+  id: string
+  type: "session.next.moved"
+  properties: {
+    timestamp: number
+    sessionID: string
+    location: LocationRef
+    subdirectory?: string
   }
 }
 
@@ -4154,8 +4352,44 @@ export type EventSessionNextPrompted = {
   properties: {
     timestamp: number
     sessionID: string
+    messageID: string
     prompt: Prompt
     delivery: "steer" | "queue"
+  }
+}
+
+export type EventSessionNextPromptAdmitted = {
+  id: string
+  type: "session.next.prompt.admitted"
+  properties: {
+    timestamp: number
+    sessionID: string
+    messageID: string
+    prompt: Prompt
+    delivery: "steer" | "queue"
+  }
+}
+
+export type EventSessionNextPromptPromoted = {
+  id: string
+  type: "session.next.prompt.promoted"
+  properties: {
+    timestamp: number
+    sessionID: string
+    messageID: string
+    prompt: Prompt
+    timeCreated: number
+  }
+}
+
+export type EventSessionNextContextUpdated = {
+  id: string
+  type: "session.next.context.updated"
+  properties: {
+    timestamp: number
+    sessionID: string
+    messageID: string
+    text: string
   }
 }
 
@@ -4165,6 +4399,7 @@ export type EventSessionNextSynthetic = {
   properties: {
     timestamp: number
     sessionID: string
+    messageID: string
     text: string
   }
 }
@@ -4175,6 +4410,7 @@ export type EventSessionNextShellStarted = {
   properties: {
     timestamp: number
     sessionID: string
+    messageID: string
     callID: string
     command: string
   }
@@ -4197,6 +4433,7 @@ export type EventSessionNextStepStarted = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     agent: string
     model: {
       id: string
@@ -4246,6 +4483,7 @@ export type EventSessionNextTextStarted = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     textID: string
   }
 }
@@ -4256,6 +4494,7 @@ export type EventSessionNextTextDelta = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     textID: string
     delta: string
   }
@@ -4267,6 +4506,7 @@ export type EventSessionNextTextEnded = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     textID: string
     text: string
   }
@@ -4278,6 +4518,7 @@ export type EventSessionNextReasoningStarted = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     reasoningID: string
     providerMetadata?: {
       [key: string]: {
@@ -4293,6 +4534,7 @@ export type EventSessionNextReasoningDelta = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     reasoningID: string
     delta: string
   }
@@ -4304,6 +4546,7 @@ export type EventSessionNextReasoningEnded = {
   properties: {
     timestamp: number
     sessionID: string
+    assistantMessageID: string
     reasoningID: string
     text: string
     providerMetadata?: {
@@ -4450,6 +4693,7 @@ export type EventSessionNextCompactionStarted = {
   properties: {
     timestamp: number
     sessionID: string
+    messageID: string
     reason: "auto" | "manual"
   }
 }
@@ -5002,6 +5246,37 @@ export type AppLogResponses = {
 }
 
 export type AppLogResponse = AppLogResponses[keyof AppLogResponses]
+
+export type ExperimentalControlPlaneMoveSessionData = {
+  body?: {
+    sessionID: string
+    destination: MoveSessionDestination
+    moveChanges?: boolean
+  }
+  path?: never
+  query?: never
+  url: "/experimental/control-plane/move-session"
+}
+
+export type ExperimentalControlPlaneMoveSessionErrors = {
+  /**
+   * MoveSessionError | InvalidRequestError
+   */
+  400: MoveSessionError | InvalidRequestError
+}
+
+export type ExperimentalControlPlaneMoveSessionError =
+  ExperimentalControlPlaneMoveSessionErrors[keyof ExperimentalControlPlaneMoveSessionErrors]
+
+export type ExperimentalControlPlaneMoveSessionResponses = {
+  /**
+   * Session moved
+   */
+  204: void
+}
+
+export type ExperimentalControlPlaneMoveSessionResponse =
+  ExperimentalControlPlaneMoveSessionResponses[keyof ExperimentalControlPlaneMoveSessionResponses]
 
 export type GlobalHealthData = {
   body?: never
@@ -5575,6 +5850,38 @@ export type ExperimentalSessionListResponses = {
 }
 
 export type ExperimentalSessionListResponse = ExperimentalSessionListResponses[keyof ExperimentalSessionListResponses]
+
+export type ExperimentalSessionBackgroundData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/session/{sessionID}/background"
+}
+
+export type ExperimentalSessionBackgroundErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type ExperimentalSessionBackgroundError =
+  ExperimentalSessionBackgroundErrors[keyof ExperimentalSessionBackgroundErrors]
+
+export type ExperimentalSessionBackgroundResponses = {
+  /**
+   * Backgrounded subagents
+   */
+  200: boolean
+}
+
+export type ExperimentalSessionBackgroundResponse =
+  ExperimentalSessionBackgroundResponses[keyof ExperimentalSessionBackgroundResponses]
 
 export type ExperimentalResourceListData = {
   body?: never
@@ -6597,9 +6904,9 @@ export type ExperimentalProjectCopyRemoveData = {
 
 export type ExperimentalProjectCopyRemoveErrors = {
   /**
-   * BadRequest | InvalidRequestError
+   * ProjectCopyError | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: ProjectCopyError | InvalidRequestError
 }
 
 export type ExperimentalProjectCopyRemoveError =
@@ -6619,12 +6926,13 @@ export type ExperimentalProjectCopyCreateData = {
   body?: {
     strategy: "git_worktree"
     directory: string
+    name?: string
+    context?: string
   }
   path: {
     projectID: string
   }
   query?: {
-    directory?: string
     workspace?: string
   }
   url: "/experimental/project/{projectID}/copy"
@@ -6632,9 +6940,9 @@ export type ExperimentalProjectCopyCreateData = {
 
 export type ExperimentalProjectCopyCreateErrors = {
   /**
-   * BadRequest | InvalidRequestError
+   * ProjectCopyError | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: ProjectCopyError | InvalidRequestError
 }
 
 export type ExperimentalProjectCopyCreateError =
@@ -6664,9 +6972,9 @@ export type ExperimentalProjectCopyRefreshData = {
 
 export type ExperimentalProjectCopyRefreshErrors = {
   /**
-   * BadRequest | InvalidRequestError
+   * ProjectCopyError | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: ProjectCopyError | InvalidRequestError
 }
 
 export type ExperimentalProjectCopyRefreshError =
@@ -9174,7 +9482,7 @@ export type V2SessionPromptResponses = {
    * Success
    */
   200: {
-    data: SessionMessageUser
+    data: SessionInputAdmitted
   }
 }
 

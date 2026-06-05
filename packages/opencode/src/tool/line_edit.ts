@@ -14,6 +14,7 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import { containsSpam } from "@/util/spam-filter"
 import { trimDiff } from "./edit"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import * as Bom from "@/util/bom"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
 
@@ -81,7 +82,11 @@ export const LineEditTool = Tool.define(
             if (!stats) throw new Error(`File ${filePath} not found`)
             if (stats.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
 
-            contentOld = yield* afs.readFileString(filePath).pipe(Effect.orDie)
+            // Strip-and-preserve a leading UTF-8 BOM (mirrors edit.ts/write.ts): the
+            // line operations run on BOM-free text so a line-1 oldText check doesn't
+            // false-mismatch on the BOM, and the BOM is restored on write.
+            const source = yield* Bom.readFile(afs, filePath)
+            contentOld = source.text
             const normalizedOld = normalizeLineEndings(contentOld)
             const lines = normalizedOld.split("\n")
 
@@ -140,14 +145,14 @@ export const LineEditTool = Tool.define(
               },
             })
 
-            yield* afs.writeWithDirs(filePath, contentNew).pipe(Effect.orDie)
+            yield* afs.writeWithDirs(filePath, Bom.join(contentNew, source.bom)).pipe(Effect.orDie)
             yield* format.file(filePath)
             yield* bus.publish(FileSystem.Event.Edited, { file: filePath })
             yield* bus.publish(Watcher.Event.Updated, {
               file: filePath,
               event: "change",
             })
-            contentNew = yield* afs.readFileString(filePath).pipe(Effect.orDie)
+            contentNew = yield* Bom.syncFile(afs, filePath, source.bom)
             diff = trimDiff(
               createTwoFilesPatch(
                 filePath,

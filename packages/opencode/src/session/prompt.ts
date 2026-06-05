@@ -59,6 +59,7 @@ import { SessionReminders } from "./reminders"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { SessionEvent } from "@opencode-ai/core/session/event"
+import { SessionMessage } from "@opencode-ai/core/session/message"
 import { AgentAttachment, FileAttachment, Prompt, ReferenceAttachment, Source } from "@opencode-ai/core/session/prompt"
 import * as DateTime from "effect/DateTime"
 
@@ -1405,6 +1406,7 @@ export const layer = Layer.effect(
       if (flags.experimentalEventSystem) {
         yield* events.publish(SessionEvent.Prompted, {
           sessionID: input.sessionID,
+          messageID: SessionMessage.ID.create(),
           timestamp: DateTime.makeUnsafe(info.time.created),
           delivery: "steer",
           prompt: new Prompt({
@@ -1419,6 +1421,7 @@ export const layer = Layer.effect(
         if (flags.experimentalEventSystem) {
           yield* events.publish(SessionEvent.Synthetic, {
             sessionID: input.sessionID,
+            messageID: SessionMessage.ID.create(),
             timestamp: DateTime.makeUnsafe(info.time.created),
             text,
           })

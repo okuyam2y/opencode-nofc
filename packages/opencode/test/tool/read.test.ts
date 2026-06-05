@@ -609,6 +609,21 @@ root_type Monster;`
       }
     }),
   )
+
+  it.live("corrupt .docx fails gracefully instead of crashing the Read tool", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const file = path.join(dir, "broken.docx")
+      // Plain bytes mislabeled as .docx: the zip extractor rejects. Before the fix
+      // (Effect.promise) that rejection became an uncatchable defect (a Die) that
+      // crashed the tool; tryPromise routes it to a recoverable failure that falls
+      // through to the binary-file guard. The graceful guard message (not the raw
+      // zip error a defect would surface) confirms the rejection was caught.
+      yield* put(file, "this is not a real docx, just plain text content here")
+      const err = yield* fail(dir, { filePath: file })
+      expect(err.message).toContain("Cannot read binary file")
+    }),
+  )
 })
 
 describe("tool.read loaded instructions", () => {

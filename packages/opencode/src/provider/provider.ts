@@ -851,6 +851,93 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
           },
         },
       }),
+    "snowflake-cortex": Effect.fnUntraced(function* (input: Info) {
+      const env = yield* dep.env()
+      const auth = yield* dep.auth(input.id)
+
+      const account =
+        env["SNOWFLAKE_ACCOUNT"] ??
+        (auth?.type === "api" ? auth.metadata?.account : undefined) ??
+        input.options?.account
+
+      const pat = env["SNOWFLAKE_CORTEX_PAT"] ?? (auth?.type === "api" ? auth.key : undefined) ?? input.options?.apiKey
+
+      if (!account || !pat) {
+        const missing = [!account && "SNOWFLAKE_ACCOUNT", !pat && "SNOWFLAKE_CORTEX_PAT"].filter(Boolean).join(", ")
+        return {
+          autoload: false,
+          async getModel() {
+            throw new Error(
+              `Snowflake Cortex: missing credentials (${missing}). Set via env var, opencode auth, or provider options.`,
+            )
+          },
+        }
+      }
+
+      const baseURL = `https://${account}.snowflakecomputing.com/api/v2/cortex/v1`
+
+      return {
+        autoload: input.source === "config",
+        options: {
+          baseURL,
+          apiKey: pat,
+          fetch: async (url: RequestInfo | URL, init?: RequestInit) => {
+            if (init?.body && typeof init.body === "string") {
+              try {
+                const body = JSON.parse(init.body)
+                if ("max_tokens" in body) {
+                  body.max_completion_tokens = body.max_tokens
+                  delete body.max_tokens
+                  init = { ...init, body: JSON.stringify(body) }
+                }
+              } catch {}
+            }
+
+            const response = await fetch(url, init)
+
+            // Cortex returns 400 "conversation complete" as a normal stop condition
+            if (!response.ok && response.status === 400) {
+              try {
+                const errorData = await response.clone().json()
+                const errorMessage = String(errorData.message || errorData.error || "")
+                if (errorMessage.toLowerCase().includes("conversation complete")) {
+                  return new Response(
+                    JSON.stringify({
+                      choices: [{ finish_reason: "stop", message: { content: "", role: "assistant" } }],
+                    }),
+                    { status: 200, headers: new Headers({ "content-type": "application/json" }) },
+                  )
+                }
+              } catch {}
+            }
+
+            // Cortex returns role:"" in streaming deltas; the AI SDK schema requires "assistant"
+            if (response.body && response.headers.get("content-type")?.includes("text/event-stream")) {
+              const reader = response.body.getReader()
+              const encoder = new TextEncoder()
+              const decoder = new TextDecoder()
+              const stream = new ReadableStream({
+                async pull(ctrl) {
+                  const { done, value } = await reader.read()
+                  if (done) {
+                    ctrl.close()
+                    return
+                  }
+                  const text = decoder.decode(value, { stream: true })
+                  ctrl.enqueue(encoder.encode(text.replace(/"role"\s*:\s*""/g, '"role":"assistant"')))
+                },
+                cancel() {
+                  reader.cancel()
+                },
+              })
+              return new Response(stream, { headers: response.headers, status: response.status })
+            }
+
+            return response
+          },
+        },
+      }
+    }),
   }
 }
 
@@ -1654,17 +1741,16 @@ export const layer = Layer.effect(
               const body = JSON.parse(opts.body as string)
               const requestedModelID = body?.model as string | undefined
               // body.model is the SDK-facing api.id, but s.providers[...].models is keyed by
-              // config modelID. For aliased configs (api.id !== config key), fall back to
-              // searching by api.id. When multiple aliases share the same api.id with
-              // divergent options, picking a first-match would silently apply an unrelated
-              // override — fall back to provider-level instead.
+              // config modelID, so resolve by matching api.id — NOT a direct map lookup with
+              // the api.id. A direct `providerModels[api.id]` keys the config-keyed map with an
+              // api.id and could resolve a DIFFERENT model whose config key happens to equal
+              // this api.id, silently applying an unrelated override. Only a unique api.id
+              // match is safe; 0 or >1 matches fall back to the provider-level option.
               const providerModels = s.providers[model.providerID]?.models
               const apiIdMatches = requestedModelID
                 ? Object.values(providerModels ?? {}).filter((m) => m.api.id === requestedModelID)
                 : []
-              const requestedModel = requestedModelID
-                ? (providerModels?.[requestedModelID] ?? (apiIdMatches.length === 1 ? apiIdMatches[0] : undefined))
-                : undefined
+              const requestedModel = apiIdMatches.length === 1 ? apiIdMatches[0] : undefined
               const useMaxCompletionTokens =
                 requestedModel?.options?.["useMaxCompletionTokens"] ??
                 provider.options?.["useMaxCompletionTokens"]

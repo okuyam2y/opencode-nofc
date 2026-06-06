@@ -21,7 +21,7 @@ import { useSync } from "@tui/context/sync"
 import { useEvent } from "@tui/context/event"
 import { SplitBorder } from "@tui/component/border"
 import { Spinner } from "@tui/component/spinner"
-import { generateSubtleSyntax, selectedForeground, useTheme } from "@tui/context/theme"
+import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "@tui/context/theme"
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "@tui/component/prompt"
 import type {
@@ -80,6 +80,7 @@ import { QuestionPrompt } from "./question"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
 import * as Model from "../../util/model"
 import { formatTranscript } from "../../util/transcript"
+import { setPreLayoutSiblingMargin } from "../../util/layout"
 import { UI } from "@/cli/ui.ts"
 import { useTuiConfig } from "../../context/tui-config"
 import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode } from "../../context/thinking"
@@ -170,6 +171,7 @@ const context = createContext<{
   showTimestamps: () => boolean
   showDetails: () => boolean
   showGenericToolOutput: () => boolean
+  userMessageIDs: () => ReadonlySet<string>
   diffWrapMode: () => "word" | "none"
   providers: () => ReadonlyMap<string, Provider>
   sync: ReturnType<typeof useSync>
@@ -210,6 +212,14 @@ export function Session() {
           part.state.metadata?.background !== true,
       ),
     ),
+  )
+  const userMessageIDs = createMemo(
+    () =>
+      new Set(
+        messages()
+          .filter((message) => message.role === "user")
+          .map((message) => message.id),
+      ),
   )
   const permissions = createMemo(() => {
     if (session()?.parentID) return []
@@ -1162,6 +1172,7 @@ export function Session() {
           showTimestamps,
           showDetails,
           showGenericToolOutput,
+          userMessageIDs,
           diffWrapMode,
           providers,
           sync,
@@ -1605,7 +1616,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     return end === undefined ? 0 : Math.max(0, end - props.part.time.start)
   })
   const summary = createMemo(() => reasoningSummary(content()))
-  const syntax = createMemo(() => generateSubtleSyntax(theme))
+  const syntax = createSyntaxStyleMemo(() => generateSubtleSyntax(theme))
 
   const toggle = () => {
     if (!inMinimal()) return
@@ -1904,9 +1915,7 @@ function InlineTool(props: {
       pending={props.pending}
       spinner={props.spinner}
       subagent={props.subagent}
-      separateAfter={(id) =>
-        sync.data.message[ctx.sessionID]?.some((message) => message.role === "user" && message.id === id) ?? false
-      }
+      separateAfter={(id) => id !== undefined && ctx.userMessageIDs().has(id)}
       onMouseOver={() => clickable() && setHover(true)}
       onMouseOut={() => setHover(false)}
       onMouseUp={() => {
@@ -1943,35 +1952,24 @@ export function InlineToolRow(props: {
   onMouseOut?: () => void
   onMouseUp?: () => void
 }) {
-  const [margin, setMargin] = createSignal(0)
-
   return (
     <box
       id={props.id}
-      marginTop={margin()}
       paddingLeft={3}
       onMouseOver={props.onMouseOver}
       onMouseOut={props.onMouseOut}
       onMouseUp={props.onMouseUp}
-      renderBefore={function () {
-        const el = this as BoxRenderable
-        const parent = el.parent
-        if (!parent) {
-          return
-        }
-        const children = parent.getChildren()
-        const index = children.indexOf(el)
-        const previous = children[index - 1]
-        const previousInline = previous?.id.startsWith("tool-inline-") ?? false
-        const previousSubagent = previous?.id.startsWith("tool-inline-subagent-") ?? false
-        setMargin(
-          previous?.id.startsWith("text-") ||
+      ref={(el: BoxRenderable) => {
+        setPreLayoutSiblingMargin(el, (previous) => {
+          const previousInline = previous?.id.startsWith("tool-inline-") ?? false
+          const previousSubagent = previous?.id.startsWith("tool-inline-subagent-") ?? false
+          return previous?.id.startsWith("text-") ||
             previous?.id.startsWith("tool-block-") ||
             (previousInline && previousSubagent !== Boolean(props.subagent)) ||
             props.separateAfter?.(previous?.id)
             ? 1
-            : 0,
-        )
+            : 0
+        })
       }}
     >
       <Switch>
@@ -2543,7 +2541,7 @@ function Skill(props: ToolProps<typeof SkillTool>) {
 function Diagnostics(props: { diagnostics?: Record<string, Record<string, any>[]>; filePath: string }) {
   const { theme } = useTheme()
   const errors = createMemo(() => {
-    const normalized = Filesystem.normalizePath(props.filePath)
+    const normalized = Filesystem.normalizePath(typeof props.filePath === "string" ? props.filePath : "")
     const arr = props.diagnostics?.[normalized] ?? []
     return arr.filter((x) => x.severity === 1).slice(0, 3)
   })
@@ -2573,7 +2571,7 @@ function input(input: Record<string, any>, omit?: string[]): string {
 }
 
 function filetype(input?: string) {
-  if (!input) return "none"
+  if (typeof input !== "string" || !input) return "none"
   const ext = path.extname(input)
   const language = LANGUAGE_EXTENSIONS[ext]
   if (["typescriptreact", "javascriptreact", "javascript"].includes(language)) return "typescript"

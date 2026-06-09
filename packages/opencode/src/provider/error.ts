@@ -162,6 +162,27 @@ export type ParsedAPICallError =
       metadata?: Record<string, string>
     }
 
+// Minimum request-body size (bytes) for a generic 400 with no structured error to get the
+// proxy-rejection hint appended. Small malformed requests keep the terse message; only
+// large requests — the ones a proxy size/content filter plausibly rejects — get the hint.
+const PROXY_REJECTION_MIN_REQUEST_BYTES = 96 * 1024
+
+// A 4xx whose body is an HTML error page (nginx/cloudflare etc.) or empty carries no
+// model-level error code — it was rejected at the proxy layer in front of the gateway,
+// not by the model service (which returns structured JSON errors).
+function isProxyErrorBody(body: string | undefined): boolean {
+  if (!body || body.trim() === "") return true
+  return /^\s*(<!doctype|<html)/i.test(body)
+}
+
+function requestBodyBytes(error: APICallError): number {
+  try {
+    return error.requestBodyValues ? JSON.stringify(error.requestBodyValues).length : 0
+  } catch {
+    return 0
+  }
+}
+
 export function parseAPICallError(input: { providerID: ProviderV2.ID; error: APICallError }): ParsedAPICallError {
   const m = message(input.providerID, input.error)
   const body = json(input.error.responseBody)
@@ -170,6 +191,32 @@ export function parseAPICallError(input: { providerID: ProviderV2.ID; error: API
       type: "context_overflow",
       message: m,
       responseBody: input.error.responseBody,
+    }
+  }
+
+  // Proxy-layer rejection of a large request: a generic 400 with an HTML/empty body
+  // (no structured model error) on a large request body. Observed: a ~260KB reviewer
+  // request rejected by an nginx HTML 400 while far below the model's token window.
+  // Whether the trigger is size or content is unconfirmed, so do NOT auto-compact-and-
+  // retry — compaction mid-task discards verbatim tool output and made the model
+  // confabulate findings from thin air (docs/devlog 2026-06-10 §1). Fail loud with an
+  // actionable message instead; classification stays api_error (non-retryable).
+  if (
+    input.error.statusCode === 400 &&
+    isProxyErrorBody(input.error.responseBody) &&
+    requestBodyBytes(input.error) >= PROXY_REJECTION_MIN_REQUEST_BYTES
+  ) {
+    return {
+      type: "api_error",
+      message:
+        `${m} — the request (~${Math.round(requestBodyBytes(input.error) / 1024)}KB) was rejected by a gateway/proxy before reaching the model (unstructured HTTP 400 with an HTML or empty body). ` +
+        `This is typically a gateway request-size or content restriction, not the model's context window. ` +
+        `Retry with a smaller scope: fewer files, smaller diffs, or less verbose command output.`,
+      statusCode: input.error.statusCode,
+      isRetryable: false,
+      responseHeaders: input.error.responseHeaders,
+      responseBody: input.error.responseBody,
+      metadata: input.error.url ? { url: input.error.url } : undefined,
     }
   }
 

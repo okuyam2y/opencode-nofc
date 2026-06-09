@@ -9,6 +9,7 @@ import DESCRIPTION from "./read.txt"
 import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
+import { Search } from "@opencode-ai/core/filesystem/search"
 import { isImageAttachment, sniffAttachmentMime } from "@/util/media"
 import { Reference } from "@/reference/reference"
 import { extractDocumentText, extractImageText, isDocumentFile } from "./document"
@@ -73,7 +74,7 @@ type Metadata = {
 export const ReadTool = Tool.define<
   typeof Parameters,
   Metadata,
-  FSUtil.Service | Instruction.Service | LSP.Service | Reference.Service | Scope.Scope
+  FSUtil.Service | Instruction.Service | LSP.Service | Reference.Service | Search.Service | Scope.Scope
 >(
   "read",
   Effect.gen(function* () {
@@ -81,6 +82,7 @@ export const ReadTool = Tool.define<
     const instruction = yield* Instruction.Service
     const lsp = yield* LSP.Service
     const reference = yield* Reference.Service
+    const search = yield* Search.Service
     const scope = yield* Scope.Scope
 
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
@@ -167,6 +169,7 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
     })
 
     const warm = Effect.fn("ReadTool.warm")(function* (filepath: string) {
+      yield* search.open({ file: filepath }).pipe(Effect.ignore)
       // LSP warm-up is optional; do not let a background defect fail an otherwise successful read.
       yield* lsp.touchFile(filepath).pipe(Effect.ignoreCause, Effect.forkIn(scope))
     })

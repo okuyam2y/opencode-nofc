@@ -4,7 +4,7 @@ import { type SQLiteTransaction } from "drizzle-orm/sqlite-core"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LocalContext } from "@/util/local-context"
 import { Global } from "@opencode-ai/core/global"
-import { Log } from "@opencode-ai/core/util/log"
+import * as log from "@/util/log-sync"
 import { NamedError } from "@opencode-ai/core/util/error"
 import path from "path"
 import { readFileSync, readdirSync, existsSync } from "fs"
@@ -19,8 +19,6 @@ declare const OPENCODE_MIGRATIONS: { sql: string; timestamp: number; name: strin
 export const NotFoundError = NamedError.create("NotFoundError", {
   message: Schema.String,
 })
-
-const log = Log.create({ service: "db" })
 
 type DatabaseFlags = Pick<RuntimeFlags.Info, "disableChannelDb" | "skipMigrations">
 

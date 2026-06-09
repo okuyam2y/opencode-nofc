@@ -1620,6 +1620,64 @@ describe("session.message-v2.fromError", () => {
     expect(SessionV1.APIError.isInstance(result)).toBe(true)
   })
 
+  const nginx400 = "<html>\r\n<head><title>400 Bad Request</title></head>\r\n<body>\r\n<center><h1>400 Bad Request</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
+
+  test("explains a generic nginx 400 with a large request body as a proxy rejection (api_error, no auto-compact)", () => {
+    // A proxy in front of the gateway can reject a large request with an unstructured
+    // HTML 400 while far below the model's token window. Stay api_error (do NOT compact —
+    // mid-task compaction discards verbatim tool output and causes confabulated findings,
+    // docs/devlog 2026-06-10 §1) but make the message actionable.
+    const error = new APICallError({
+      message: "Bad Request",
+      url: "https://example.com",
+      requestBodyValues: { messages: [{ role: "user", content: "x".repeat(200 * 1024) }] },
+      statusCode: 400,
+      responseHeaders: { "content-type": "text/html", server: "cloudflare" },
+      responseBody: nginx400,
+      isRetryable: false,
+    })
+    const result = MessageV2.fromError(error, { providerID })
+    expect(SessionV1.ContextOverflowError.isInstance(result)).toBe(false)
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    expect(JSON.stringify(result)).toContain("rejected by a gateway/proxy")
+    expect(JSON.stringify(result)).toContain("smaller scope")
+  })
+
+  test("keeps the terse message for a generic nginx 400 with a small request body", () => {
+    // Small malformed requests are genuine bad requests, not proxy size/content rejections.
+    const error = new APICallError({
+      message: "Bad Request",
+      url: "https://example.com",
+      requestBodyValues: { messages: [{ role: "user", content: "hello" }] },
+      statusCode: 400,
+      responseHeaders: { "content-type": "text/html" },
+      responseBody: nginx400,
+      isRetryable: false,
+    })
+    const result = MessageV2.fromError(error, { providerID })
+    expect(SessionV1.ContextOverflowError.isInstance(result)).toBe(false)
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    expect(JSON.stringify(result)).not.toContain("rejected by a gateway/proxy")
+  })
+
+  test("does not add the proxy hint to a large 400 that carries a structured JSON error", () => {
+    // A structured model-service error (JSON body, not HTML/empty) is a real bad request
+    // even when the request is large — leave the message as-is.
+    const error = new APICallError({
+      message: "Bad Request",
+      url: "https://example.com",
+      requestBodyValues: { messages: [{ role: "user", content: "x".repeat(200 * 1024) }] },
+      statusCode: 400,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: JSON.stringify({ error: { message: "unsupported parameter", type: "invalid_request_error" } }),
+      isRetryable: false,
+    })
+    const result = MessageV2.fromError(error, { providerID })
+    expect(SessionV1.ContextOverflowError.isInstance(result)).toBe(false)
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    expect(JSON.stringify(result)).not.toContain("rejected by a gateway/proxy")
+  })
+
   test("serializes unknown inputs", () => {
     const result = MessageV2.fromError(123, { providerID })
 

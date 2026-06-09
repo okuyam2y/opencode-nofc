@@ -4,7 +4,7 @@ import z from "zod"
 import * as EffectZod from "@/util/effect-zod"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
-import { Log } from "@opencode-ai/core/util/log"
+import * as log from "@/util/log-sync"
 import { SessionFailureTracker, READ_PREFIX_MATCHER } from "./failure-detector"
 import { SessionRevert } from "./revert"
 import { Session } from "./session"
@@ -47,7 +47,6 @@ import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
 import { zod } from "@/util/effect-zod"
 import { withStatics } from "@/util/schema"
-import * as EffectLogger from "@opencode-ai/core/effect/logger"
 import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
@@ -113,9 +112,6 @@ function looksIncomplete(text: string): { incomplete: boolean; reason?: string }
 }
 
 const { referencePromptMetadata, referenceTextPart } = ReferencePrompt
-
-const log = Log.create({ service: "session.prompt" })
-const elog = EffectLogger.create({ service: "session.prompt" })
 
 function isOrphanedInterruptedTool(part: MessageV2.ToolPart) {
   // cleanup() marks abandoned tool_use blocks this way after retries/aborts.
@@ -353,7 +349,7 @@ export const layer = Layer.effect(
       const t = cleaned.length > 100 ? cleaned.substring(0, 97) + "..." : cleaned
       yield* sessions
         .setTitle({ sessionID: input.session.id, title: t })
-        .pipe(Effect.catchCause((cause) => elog.error("failed to generate title", { error: Cause.squash(cause) })))
+        .pipe(Effect.catchCause((cause) => Effect.logError("failed to generate title", { error: Cause.squash(cause) })))
     })
 
     const resolveTools = Effect.fn("SessionPrompt.resolveTools")(function* (input: {
@@ -1405,8 +1401,11 @@ export const layer = Layer.effect(
           permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
         }
         if (permissions.length > 0) {
-          session.permission = permissions
-          yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
+          // Merge so per-call tool rules don't clobber inherited session rules
+          // (e.g. external_directory allows from the parent session).
+          const merged = Permission.merge(session.permission ?? [], permissions)
+          session.permission = merged
+          yield* sessions.setPermission({ sessionID: session.id, permission: merged })
         }
 
         if (input.noReply === true) return message
@@ -1425,7 +1424,7 @@ export const layer = Layer.effect(
     const runLoop: (sessionID: SessionID) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
-        const slog = elog.with({ sessionID })
+        const slogTags = { sessionID }
         let structured: unknown | undefined
         let completed: string | undefined
         let step = 0
@@ -1550,7 +1549,8 @@ export const layer = Layer.effect(
               (part): part is MessageV2.ToolPart => part.type === "tool" && isOrphanedInterruptedTool(part),
             )
             if (orphan) {
-              yield* slog.warn("loop exit with orphaned interrupted tool", {
+              yield* Effect.logWarning("loop exit with orphaned interrupted tool", {
+                ...slogTags,
                 messageID: lastAssistant.id,
                 tool: orphan.tool,
                 callID: orphan.callID,
@@ -1887,7 +1887,7 @@ export const layer = Layer.effect(
     })
 
     const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
-      yield* elog.info("command", { sessionID: input.sessionID, command: input.command, agent: input.agent })
+      yield* Effect.logInfo("command", { sessionID: input.sessionID, command: input.command, agent: input.agent })
       const cmd = yield* commands.get(input.command)
       if (!cmd) {
         const available = (yield* commands.list()).map((c) => c.name)

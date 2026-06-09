@@ -98,4 +98,65 @@ describe("stripToolTags", () => {
       expect(strip("text\u200bwith zws")).toBe("text\u200bwith zws")
     })
   })
+
+  // Full-width-bracket degraded variants \u2014 emitted by models under CJK /
+  // non-ASCII pressure. Recognized by neither the parser nor the legacy strip
+  // rules, so without normalization the raw markup persists and few-shot-poisons
+  // subsequent turns (anthropics/claude-code#62123 failure class).
+  describe("full-width-bracket degraded tags", () => {
+    test("removes complete full-width tag pair", () => {
+      expect(strip('before \uff1ctool_call\uff1e{"name":"bash"}\uff1c\uff0ftool_call\uff1e after')).toBe("before  after")
+    })
+
+    test("removes full-width pair with ASCII slash in close tag", () => {
+      expect(strip('a\uff1ctool_call\uff1e{"name":"bash"}\uff1c/tool_call\uff1eb')).toBe("ab")
+    })
+
+    test("removes unclosed full-width open tag at end of string", () => {
+      expect(strip('text\n\uff1ctool_call\uff1e\n{"name":"bash","arguments":{}}')).toBe("text")
+    })
+
+    test("removes orphaned full-width close tag", () => {
+      expect(strip("text\uff1c\uff0ftool_response\uff1emore")).toBe("textmore")
+    })
+
+    test("handles mixed full-width and ASCII brackets", () => {
+      // \uff1c ASCII> open, ASCII< \uff1e close \u2014 both degraded shapes normalize.
+      expect(strip('a\uff1ctool_call>x</tool_call\uff1eb')).toBe("ab")
+    })
+
+    // Regression (Codex review): ASCII brackets + full-width slash in the CLOSE
+    // tag. Without \uff0f in the fast-path guard this slipped through and the
+    // unclosed-open rule deleted the trailing "b" too.
+    test("removes pair whose close tag has ASCII brackets + full-width slash", () => {
+      expect(strip('a<tool_call>x<\uff0ftool_call>b')).toBe("ab")
+    })
+
+    test("removes orphaned close tag with ASCII brackets + full-width slash", () => {
+      expect(strip("a<\uff0ftool_response>b")).toBe("ab")
+    })
+
+    test("removes full-width multi_tool_use.parallel pair", () => {
+      expect(strip("a\uff1cmulti_tool_use.parallel\uff1ex\uff1c\uff0fmulti_tool_use.parallel\uff1eb")).toBe("ab")
+    })
+
+    test("removes full-width pair with ZWS after the slash", () => {
+      expect(strip('a\uff1ctool_call\uff1ex\uff1c\uff0f\u200btool_call\uff1eb')).toBe("ab")
+    })
+
+    test("removes full-width tool_response pair", () => {
+      expect(strip('text\uff1ctool_response\uff1e{"result":"ok"}\uff1c\uff0ftool_response\uff1emore')).toBe("textmore")
+    })
+
+    // False-positive guard: full-width brackets NOT wrapping a known tag name
+    // must survive untouched (e.g. Japanese prose using full-width parens).
+    test("preserves ordinary full-width brackets without a tag name", () => {
+      expect(strip("\u65e5\u672c\u8a9e\u306e\uff1c\u6ce8\u91c8\uff1e\u30c6\u30ad\u30b9\u30c8")).toBe("\u65e5\u672c\u8a9e\u306e\uff1c\u6ce8\u91c8\uff1e\u30c6\u30ad\u30b9\u30c8")
+      expect(strip("\u6bd4\u8f03 \uff1c \u3068 \uff1e \u306e\u8a18\u53f7")).toBe("\u6bd4\u8f03 \uff1c \u3068 \uff1e \u306e\u8a18\u53f7")
+    })
+
+    test("preserves full-width brackets around a non-tool word", () => {
+      expect(strip("\uff1ctool\uff1e and \uff1ccall\uff1e separately")).toBe("\uff1ctool\uff1e and \uff1ccall\uff1e separately")
+    })
+  })
 })

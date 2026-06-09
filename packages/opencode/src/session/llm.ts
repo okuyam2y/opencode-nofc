@@ -1,6 +1,6 @@
 import { Provider } from "@/provider/provider"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
-import { Log } from "@opencode-ai/core/util/log"
+import * as log from "@/util/log-sync"
 import { Context, Effect, Layer, Record } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
@@ -120,7 +120,6 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
   return message
 }
 
-  const log = Log.create({ service: "llm" })
   
   export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
   type Result = Awaited<ReturnType<typeof streamText>>
@@ -196,18 +195,15 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
           // — notably the TUI promptAsync route forks the prompt fiber.
           const instanceRef = yield* InstanceRef
           const projectID = instanceRef?.project.id
-          const l = log
-            .clone()
-            .tag("providerID", input.model.providerID)
-            .tag("modelID", input.model.id)
-            .tag("session.id", input.sessionID)
-            .tag("small", (input.small ?? false).toString())
-            .tag("agent", input.agent.name)
-            .tag("mode", input.agent.mode)
-          l.info("stream", {
-            modelID: input.model.id,
+          const lTags = {
             providerID: input.model.providerID,
-          })
+            modelID: input.model.id,
+            "session.id": input.sessionID,
+            small: (input.small ?? false).toString(),
+            agent: input.agent.name,
+            mode: input.agent.mode,
+          }
+          log.info("stream", lTags)
 
           const [language, cfg, item, info] = yield* Effect.all(
             [
@@ -513,7 +509,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
             includeRawChunks: input.model.providerID.includes("github-copilot"),
             onError(error) {
               const err = (error as any)?.error ?? error
-              l.error("stream error", {
+              log.error("stream error", { ...lTags, 
                 error: typeof err === "object" && err !== null && "message" in err ? (err as any).message : err,
                 raw: typeof err === "object" ? (() => { try { return JSON.stringify(err, null, 0) } catch { return "[unserializable]" } })() : undefined,
               })
@@ -521,7 +517,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
             async experimental_repairToolCall(failed) {
               const name = failed.toolCall?.toolName
               if (!name) {
-                l.warn("repairToolCall: missing toolName", {
+                log.warn("repairToolCall: missing toolName", { ...lTags, 
                   error: failed.error?.message,
                 })
                 return {
@@ -533,7 +529,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
               }
               const lower = name.toLowerCase()
               if (lower !== name && tools[lower]) {
-                l.info("repairing tool call", { tool: name, repaired: lower })
+                log.info("repairing tool call", { ...lTags,  tool: name, repaired: lower })
                 return { ...failed.toolCall, toolName: lower }
               }
               return {
@@ -569,7 +565,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
                     }
                     let ctx: string | undefined
                     try { ctx = context ? JSON.stringify(context).slice(0, 200) : undefined } catch { ctx = "[unserializable]" }
-                    l.warn("tool-parser", { message, ...(ctx && { context: ctx }) })
+                    log.warn("tool-parser", { ...lTags,  message, ...(ctx && { context: ctx }) })
                   },
                 } as any,
               }
@@ -678,7 +674,7 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
                           transform(part, controller) {
                             const escalated = MessageV2.tryEscalateStreamError(part)
                             if (escalated) {
-                              l.info("stream-error-escalation", {
+                              log.info("stream-error-escalation", { ...lTags, 
                                 statusCode: escalated.statusCode,
                                 code: MessageV2.extractConnectionErrorCode((part as { error?: unknown }).error),
                                 message: escalated.message,

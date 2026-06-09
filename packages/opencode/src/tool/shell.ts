@@ -3,7 +3,6 @@ import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
 import path from "path"
-import { Log } from "@opencode-ai/core/util/log"
 import { containsPath, type InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
 import { lazy } from "@/util/lazy"
@@ -28,6 +27,16 @@ export { Parameters } from "./shell/prompt"
 import * as fs from "fs"
 
 const MAX_METADATA_LENGTH = 30_000
+
+// Cap the bytes of shell output kept in the model context, independent of (and never
+// above) the shared tool_output.max_bytes file-save threshold. bash is the noisiest tool
+// — verbose build/test runs (mvn/pytest [INFO] spam) inflate context the fastest — so the
+// in-context tail is bounded here while the full output is still written to the truncation
+// directory and surfaced via a "Full output saved to:" hint. Keeps accumulated requests
+// small enough to avoid proxy-layer rejections of large request bodies (an observed
+// reviewer failure: ~22 accumulated tool results rejected with an unstructured HTML 400).
+// See docs/devlog 2026-06-10 §1.
+export const SHELL_CONTEXT_MAX_BYTES = 30 * 1024
 
 // --- Diagnostic artifact collection (Phase 2) ---
 // When bash exits non-zero, auto-collect error-context files and test reports
@@ -140,8 +149,6 @@ type Chunk = {
   text: string
   size: number
 }
-
-export const log = Log.create({ service: "shell-tool" })
 
 const resolveWasm = (asset: string) => {
   if (asset.startsWith("file://")) return fileURLToPath(asset)
@@ -470,7 +477,7 @@ export const ShellTool = Tool.define(
         if (cmd && (FILES.has(cmd) || (shellKind === "cmd" && CMD_FILES.has(cmd)))) {
           for (const arg of pathArgs(command, ps, shellKind === "cmd")) {
             const resolved = yield* argPath(arg, cwd, ps, shell)
-            log.info("resolved path", { arg, resolved })
+            yield* Effect.logInfo("resolved path", { arg, resolved })
             if (!resolved || containsPath(resolved, instance)) continue
             const dir = (yield* fs.isDir(resolved)) ? resolved : path.dirname(resolved)
             scan.dirs.add(dir)
@@ -643,7 +650,8 @@ export const ShellTool = Tool.define(
       }
       if (aborted) meta.push("User aborted the command")
       const raw = list.map((item) => item.text).join("")
-      const end = tail(raw, limits.maxLines, limits.maxBytes)
+      const contextMaxBytes = Math.min(limits.maxBytes, SHELL_CONTEXT_MAX_BYTES)
+      const end = tail(raw, limits.maxLines, contextMaxBytes)
       if (end.cut) cut = true
       if (!file && end.cut) {
         file = yield* trunc.write(raw)
@@ -686,7 +694,7 @@ export const ShellTool = Tool.define(
         const name = Shell.name(shell)
         const limits = yield* trunc.limits()
         const prompt = ShellPrompt.render(name, process.platform, limits, defaultTimeoutMs)
-        log.info("shell tool using shell", { shell })
+        yield* Effect.logInfo("shell tool using shell", { shell })
 
         return {
           description: prompt.description,

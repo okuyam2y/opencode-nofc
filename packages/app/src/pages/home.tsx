@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/solid-query"
 import { Button } from "@opencode-ai/ui/button"
 import { Logo } from "@opencode-ai/ui/logo"
 import { Spinner } from "@opencode-ai/ui/spinner"
+import { ScrollView } from "@opencode-ai/ui/scroll-view"
 import { ProjectAvatar } from "@opencode-ai/ui/v2/project-avatar-v2"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
@@ -18,7 +19,7 @@ import { Icon } from "@opencode-ai/ui/icon"
 import { usePlatform } from "@/context/platform"
 import { DateTime } from "luxon"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
-import { DialogSelectDirectory } from "@/components/dialog-select-directory"
+import { useDirectoryPicker } from "@/components/directory-picker"
 import { DialogSelectServer, useServerManagementController } from "@/components/dialog-select-server"
 import { DialogServerV2 } from "@/components/settings-v2/dialog-server-v2"
 import { ServerConnection, useServer } from "@/context/server"
@@ -125,6 +126,7 @@ function HomeDesign() {
   const sync = useServerSync()
   const layout = useLayout()
   const platform = usePlatform()
+  const pickDirectory = useDirectoryPicker()
   const dialog = useDialog()
   const navigate = useNavigate()
   const server = useServer()
@@ -314,26 +316,19 @@ function HomeDesign() {
     navigateOnServer(conn, `/${base64Encode(session.directory)}/session/${session.id}`)
   }
 
-  async function chooseProject(conn: ServerConnection.Any) {
+  function chooseProject(conn: ServerConnection.Any) {
     function resolve(result: string | string[] | null) {
       addProjects(conn, homeProjectDirectories(result))
     }
 
     const server = global.createServerCtx(conn)
 
-    if (platform.openDirectoryPickerDialog && server.isLocal) {
-      const result = await platform.openDirectoryPickerDialog?.({
-        title: language.t("command.project.open"),
-        multiple: true,
-      })
-      resolve(result)
-      return
-    }
-
-    dialog.show(
-      () => <DialogSelectDirectory multiple={true} onSelect={resolve} server={conn} />,
-      () => resolve(null),
-    )
+    pickDirectory({
+      server: conn,
+      title: language.t("command.project.open"),
+      multiple: true,
+      onSelect: resolve,
+    })
   }
 
   function openSettings() {
@@ -390,7 +385,7 @@ function HomeDesign() {
             onClose={closeSearch}
             onSelect={selectSearchSession}
           />
-          <div class="mt-3 min-h-0 flex-1 overflow-y-auto">
+          <ScrollView class="mt-3 min-h-0 flex-1">
             <div class="pt-3 flex flex-col gap-6">
               <Show
                 when={!sessionLoad.isLoading}
@@ -432,7 +427,7 @@ function HomeDesign() {
                 </Show>
               </Show>
             </div>
-          </div>
+          </ScrollView>
         </section>
       </div>
     </div>
@@ -550,7 +545,16 @@ function HomeServerRow(props: {
         <div class="flex size-4 shrink-0 items-center justify-center">
           <ServerHealthIndicator health={props.health} />
         </div>
-        <span class={HOME_PROJECT_NAV_LABEL}>{props.server.displayName ?? new URL(props.server.http.url).host}</span>
+        <span class="flex min-w-0 items-center gap-1">
+          <span class={HOME_PROJECT_NAV_LABEL}>{props.server.displayName ?? new URL(props.server.http.url).host}</span>
+          <Show when={props.server.label}>
+            {(label) => (
+              <span class="shrink-0 rounded-[3px] border border-v2-border-border-base px-1 py-0.5 text-[9px] leading-none text-v2-text-text-muted">
+                {label()}
+              </span>
+            )}
+          </Show>
+        </span>
       </button>
       <div
         class="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover/server:opacity-100 focus-within:opacity-100 data-[menu=true]:opacity-100"
@@ -1092,6 +1096,7 @@ function groupSessions(records: HomeSessionRecord[], language: ReturnType<typeof
 function LegacyHome() {
   const sync = useServerSync()
   const platform = usePlatform()
+  const pickDirectory = useDirectoryPicker()
   const dialog = useDialog()
   const navigate = useNavigate()
   const global = useGlobal()
@@ -1119,7 +1124,7 @@ function LegacyHome() {
     navigate(`/${base64Encode(directory)}`)
   }
 
-  async function chooseProject() {
+  function chooseProject() {
     const s = server.current
     if (!s) return
 
@@ -1133,18 +1138,12 @@ function LegacyHome() {
       }
     }
 
-    if (platform.openDirectoryPickerDialog && server.isLocal()) {
-      const result = await platform.openDirectoryPickerDialog?.({
-        title: language.t("command.project.open"),
-        multiple: true,
-      })
-      resolve(result)
-    } else {
-      dialog.show(
-        () => <DialogSelectDirectory multiple={true} onSelect={resolve} server={s} />,
-        () => resolve(null),
-      )
-    }
+    pickDirectory({
+      server: s,
+      title: language.t("command.project.open"),
+      multiple: true,
+      onSelect: resolve,
+    })
   }
 
   return (

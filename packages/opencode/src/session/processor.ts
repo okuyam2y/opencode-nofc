@@ -22,7 +22,7 @@ import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
 import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
-import { Log } from "@opencode-ai/core/util/log"
+import * as log from "@/util/log-sync"
 import { isRecord } from "@/util/record"
 import { containsSpamInValues, stripSpam } from "@/util/spam-filter"
 import { Flag } from "@opencode-ai/core/flag/flag"
@@ -50,7 +50,7 @@ const DEDUP_SKIP_TOOLS = new Set(["read", "glob", "grep", "webfetch", "websearch
  * hermes escape middleware (see llm.ts escapeHermesTagsInMessage).
  */
 function stripToolTags(text: string): string {
-  return text
+  return normalizeDegradedToolTags(text)
     // 1. Remove complete tag pairs (open...close)
     .replace(/<\u200b?tool_call>[\s\S]*?<\/\u200b?tool_call>/g, "")
     .replace(/<\u200b?tool_result>[\s\S]*?<\/\u200b?tool_result>/g, "")
@@ -91,6 +91,33 @@ const STRIP_TAG_FORMS = STRIP_TAG_NAMES.flatMap((t) => [
   `</${t}>`,
   `</\u200b${t}>`,
 ])
+
+// Full-width-bracket degraded forms. Models under CJK / non-ASCII pressure
+// occasionally emit tool tags with full-width brackets (\uff1ctool_call\uff1e) or a
+// full-width slash (\uff1c\uff0ftool_call\uff1e). Such a tag is recognized by NEITHER the
+// tool-parser middleware (so no tool runs) NOR the strip rules in
+// stripToolTags (so the raw markup persists into the assistant text and
+// few-shot-poisons every subsequent turn until /clear \u2014 the same failure class
+// as anthropics/claude-code#62123). normalizeDegradedToolTags rewrites them to
+// the ASCII canonical form before the strip chain runs. Only brackets that wrap
+// a KNOWN tag name are rewritten, so ordinary full-width text is untouched.
+// Hyphen/space variants (<tool-call>, < tool_call>) are deliberately NOT
+// normalized: "tool-call" is legitimate kebab-case English and matching it
+// would false-positive on prose/docs that discuss tool calls.
+const DEGRADED_TAG_RE = new RegExp(
+  `[\uff1c<]([\uff0f/]?)\\u200b?(${STRIP_TAG_NAMES.map(escapeForRegex).join("|")})[\uff1e>]`,
+  "g",
+)
+function normalizeDegradedToolTags(text: string): string {
+  // Fast path: only forms containing a full-width bracket (\uff1c \uff1e) or a full-width
+  // slash (\uff0f) need rewriting; pure-ASCII tags are handled directly by
+  // stripToolTags. The slash check matters for ASCII-bracketed close tags with a
+  // full-width slash (<\uff0ftool_call>): without it the guard returns early, the tag
+  // survives normalization, and stripToolTags' unclosed-open rule deletes through
+  // end-of-string \u2014 eating trailing legitimate text.
+  if (!text.includes("\uff1c") && !text.includes("\uff1e") && !text.includes("\uff0f")) return text
+  return text.replace(DEGRADED_TAG_RE, (_m, slash: string, name: string) => `<${slash ? "/" : ""}${name}>`)
+}
 
 // Builds a regex that matches a trailing partial tag (open or close) at end of string.
 // For tag "tool_call", generates open: <(?:t(?:o(...)?)?)?$ and close: <(?:/(?:t(?:o(...)?)?)?)?$
@@ -298,7 +325,6 @@ function estimateTokensFromInput(input: { messages: unknown[]; system: string[];
 }
 
 const DOOM_LOOP_THRESHOLD = 3
-const log = Log.create({ service: "session.processor" })
 
   /**
    * Build a dedup key from tool name and input.
@@ -342,6 +368,28 @@ const log = Log.create({ service: "session.processor" })
   export const _stripToolTags = stripToolTags
   /** Re-export for unit testing. */
   export const _createStreamingTagFilter = createStreamingTagFilter
+
+  // Unicode blocks for scripts that are effectively never expected in this fork's
+  // Japanese/English sessions: Indic block run (Devanagari..Sinhala), Thai/Lao,
+  // Myanmar, Georgian (+extended), Ethiopic, Khmer, Armenian. The model occasionally
+  // emits a semantically correct word in an unrelated language (multilingual
+  // token-sampling glitch, e.g. Georgian "შემდეგ" where 「次に」 was meant — observed
+  // twice in reviewer runs, docs/devlog/2026-06-10.md §3).
+  const FOREIGN_SCRIPT_RE =
+    // Devanagari..Sinhala | Thai+Lao | Myanmar | Georgian | Ethiopic | Khmer | Armenian | Georgian-ext
+    /[\u0900-\u0DFF\u0E00-\u0EFF\u1000-\u109F\u10A0-\u10FF\u1200-\u137F\u1780-\u17FF\u0530-\u058F\u1C90-\u1CBF]+/gu
+
+  /**
+   * Detect runs of unexpected foreign scripts in assistant text. Detection only —
+   * the text is NEVER rewritten (a silent auto-correction could corrupt legitimate
+   * quoted content, e.g. i18n test data under review); callers log a warning so the
+   * glitch frequency can be tracked. Exported for unit testing.
+   */
+  export function detectForeignScript(text: string): { sample: string; count: number } | undefined {
+    const matches = text.match(FOREIGN_SCRIPT_RE)
+    if (!matches) return undefined
+    return { sample: matches[0].slice(0, 40), count: matches.length }
+  }
 
   export function isDuplicate(
     acceptedKeys: Map<string, string>,
@@ -525,7 +573,7 @@ const log = Log.create({ service: "session.processor" })
         // system is on AND this is not a summary message (matches upstream #30785).
         const mirrorAssistant = flags.experimentalEventSystem && !input.assistantMessage.summary
         let aborted = false
-        const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
+        const slogTags = { "session.id": input.sessionID, messageID: input.assistantMessage.id }
         /** Attempt-scoped flag: set to true when any tool reaches completed or error state.
          *  Unlike ctx.hasToolCalls (step-scoped, reset on start-step), this persists
          *  across steps within a single attempt and prevents retry after tool execution. */
@@ -1319,6 +1367,17 @@ const log = Log.create({ service: "session.processor" })
               ctx.tagFilter = undefined
               ctx.currentText.text = stripToolTags(ctx.currentText.text)
               ctx.currentText.text = stripSpam(ctx.currentText.text)
+              {
+                // Model-side language-mixing glitch tracking (detection only, never rewrites)
+                const foreign = detectForeignScript(ctx.currentText.text)
+                if (foreign) {
+                  log.warn("text-foreign-script", {
+                    sample: foreign.sample,
+                    count: foreign.count,
+                    partID: ctx.currentText.id,
+                  })
+                }
+              }
               ctx.currentText.text = (yield* plugin.trigger(
                 "experimental.text.complete",
                 {
@@ -1351,7 +1410,7 @@ const log = Log.create({ service: "session.processor" })
               return
 
             default:
-              slog.info("unhandled", { event: value.type, value })
+              log.info("unhandled", { ...slogTags,  event: value.type, value })
               return
           }
         })
@@ -1421,7 +1480,7 @@ const log = Log.create({ service: "session.processor" })
         })
 
         const halt = Effect.fn("SessionProcessor.halt")(function* (e: unknown) {
-          slog.error("process", { error: errorMessage(e), stack: e instanceof Error ? e.stack : undefined })
+          log.error("process", { ...slogTags,  error: errorMessage(e), stack: e instanceof Error ? e.stack : undefined })
           const error = parse(e)
           if (MessageV2.ContextOverflowError.isInstance(error)) {
             if ((yield* config.get()).compaction?.auto === false && !ctx.assistantMessage.summary) {
@@ -1459,7 +1518,7 @@ const log = Log.create({ service: "session.processor" })
         })
 
         const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
-          slog.info("process")
+          log.info("process", slogTags)
           ctx.lastStreamInput = streamInput
           ctx.hasToolCalls = false
           ctx.acceptedToolKeys.clear()

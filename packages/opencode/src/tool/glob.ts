@@ -3,7 +3,7 @@ import { Effect, Option, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { InstanceState } from "@/effect/instance-state"
 import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Ripgrep } from "@opencode-ai/core/filesystem/ripgrep"
+import { Search } from "@opencode-ai/core/filesystem/search"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import DESCRIPTION from "./glob.txt"
 import * as Tool from "./tool"
@@ -41,9 +41,9 @@ const isMatchAll = (pattern: string) => MATCH_ALL_PATTERN.test(pattern)
 export const GlobTool = Tool.define(
   "glob",
   Effect.gen(function* () {
-    const rg = yield* Ripgrep.Service
     const fs = yield* FSUtil.Service
     const reference = yield* Reference.Service
+    const searchSvc = yield* Search.Service
 
     return {
       description: DESCRIPTION,
@@ -87,7 +87,11 @@ export const GlobTool = Tool.define(
           // Match-all patterns → drop the --glob override so ripgrep still
           // respects .gitignore.  See MATCH_ALL_PATTERN at top of file.
           const rgGlob = isMatchAll(params.pattern) ? undefined : [params.pattern]
-          const files = yield* rg.files({ cwd: search, glob: rgGlob, signal: ctx.abort }).pipe(
+          // searchSvc.files is a passthrough to Ripgrep.files. The fork keeps
+          // ripgrep here (not searchSvc.glob) because searchSvc.glob forces
+          // glob:[pattern] internally and would reintroduce the build-output
+          // leak the rgGlob drop above prevents.
+          const files = yield* searchSvc.files({ cwd: search, glob: rgGlob, signal: ctx.abort }).pipe(
             Stream.mapEffect((file) =>
               Effect.gen(function* () {
                 const full = path.resolve(search, file)

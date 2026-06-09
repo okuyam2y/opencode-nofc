@@ -6,7 +6,7 @@ import os from "os"
 import path from "path"
 import { Config } from "@/config/config"
 import { Shell } from "../../src/shell/shell"
-import { ShellTool } from "../../src/tool/shell"
+import { ShellTool, SHELL_CONTEXT_MAX_BYTES } from "../../src/tool/shell"
 import { Filesystem } from "@/util/filesystem"
 import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import type { Permission } from "../../src/permission"
@@ -1195,6 +1195,32 @@ describe("tool.shell truncation", () => {
         mustTruncate(result)
         expect(result.output).toMatch(/\.\.\.output truncated\.\.\./)
         expect(result.output).toMatch(/Full output saved to:\s+\S+/)
+      }),
+    ),
+  )
+
+  it.live("caps in-context output at the shell context budget while saving full output", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        // Between the shell context cap (30KB) and the shared file-save threshold (50KB):
+        // previously kept verbatim in context, now truncated to the shell cap with the
+        // full output preserved on disk.
+        const byteCount = SHELL_CONTEXT_MAX_BYTES + 10000
+        const result = yield* run({
+          command: fill("bytes", byteCount),
+          description: "Generate bytes exceeding the shell context cap",
+        })
+        mustTruncate(result)
+        expect(result.output).toMatch(/\.\.\.output truncated\.\.\./)
+        expect(result.output).toMatch(/Full output saved to:\s+\S+/)
+        // in-context output stays within the shell cap (plus small truncation-hint overhead)
+        expect(Buffer.byteLength(result.output, "utf-8")).toBeLessThan(SHELL_CONTEXT_MAX_BYTES + 2000)
+        // full, untruncated output is preserved on disk
+        const filepath = (result.metadata as { outputPath?: string }).outputPath
+        expect(filepath).toBeTruthy()
+        const saved = yield* (yield* FSUtil.Service).readFileString(filepath!)
+        expect(Buffer.byteLength(saved, "utf-8")).toBe(byteCount)
       }),
     ),
   )

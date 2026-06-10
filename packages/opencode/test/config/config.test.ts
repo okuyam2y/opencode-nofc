@@ -722,6 +722,35 @@ it.instance("migrates mode field to agent field", () =>
   }),
 )
 
+it.instance("migrates legacy reference key to references (upstream #31601)", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* writeConfigEffect(test.directory, {
+      $schema: "https://opencode.ai/config.json",
+      reference: { effect: "github.com/Effect-TS/effect-smol" },
+    })
+
+    const config = yield* Config.use.get()
+    expect(config.references).toEqual({ effect: "github.com/Effect-TS/effect-smol" })
+    expect("reference" in config).toBe(false)
+  }),
+)
+
+it.instance("legacy reference is ignored when references is already set", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* writeConfigEffect(test.directory, {
+      $schema: "https://opencode.ai/config.json",
+      reference: { old: "github.com/old/repo" },
+      references: { kept: "github.com/kept/repo" },
+    })
+
+    const config = yield* Config.use.get()
+    expect(config.references).toEqual({ kept: "github.com/kept/repo" })
+    expect("reference" in config).toBe(false)
+  }),
+)
+
 it.instance("loads config from .opencode directory", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance

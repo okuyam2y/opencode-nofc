@@ -1,3 +1,5 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { llmClient } from "@opencode-ai/core/effect/layer-node-platform"
 import { Provider } from "@/provider/provider"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import * as log from "@/util/log-sync"
@@ -764,5 +766,16 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
     }
     return false
   }
+
+export const node = LayerNode.make(layer, [
+  Auth.node,
+  Config.node,
+  Provider.node,
+  Plugin.node,
+  Permission.node,
+  EventV2Bridge.node,
+  llmClient,
+  RuntimeFlags.node,
+])
 
 export * as LLM from "./llm"

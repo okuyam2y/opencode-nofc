@@ -1,3 +1,5 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { httpClient } from "@opencode-ai/core/effect/layer-node-platform"
 import * as log from "@/util/log-sync"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import path from "path"
@@ -59,6 +61,7 @@ function normalizeLoadedConfig(data: unknown, source: string) {
     log.warn("tui keys in opencode config are deprecated; move them to tui.json", { path: source })
   }
   copy = migrateCompactionKeys(copy, source)
+  copy = migrateReferenceKey(copy, source)
   return copy
 }
 
@@ -118,6 +121,28 @@ function migrateCompactionKeys(data: Record<string, unknown>, source: string): R
     log.warn("compaction.tail_tokens is deprecated; renamed to preserve_recent_tokens", { path: source })
   }
   return { ...data, compaction: nextCompaction }
+}
+
+// Upstream #31601 renamed the top-level `reference` config key to `references`
+// (and broadened the value type to a union that still accepts the legacy
+// string-map form). Config is parsed with strict top-level key checking
+// (ConfigParse.schema rejects unrecognized keys), so existing user configs
+// with `reference` would otherwise fail to load with "Unrecognized key:
+// reference". Map the legacy key on read and emit a warning. The value is left
+// untouched — the new `references` schema's String|Git|Local union validates
+// the old string-valued entries unchanged.
+function migrateReferenceKey(data: Record<string, unknown>, source: string): Record<string, unknown> {
+  if (!("reference" in data)) return data
+  const next: Record<string, unknown> = { ...data }
+  const legacyValue = next.reference
+  delete next.reference
+  if ("references" in next) {
+    log.warn("reference is deprecated and ignored; references already set", { path: source })
+  } else {
+    next.references = legacyValue
+    log.warn("reference is deprecated; renamed to references", { path: source })
+  }
+  return next
 }
 
 async function resolveLoadedPlugins<T extends { plugin?: ConfigPluginV1.Spec[] }>(config: T, filepath: string) {
@@ -696,5 +721,7 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Npm.defaultLayer),
   Layer.provide(FetchHttpClient.layer),
 )
+
+export const node = LayerNode.make(layer, [FSUtil.node, Auth.node, Account.node, Env.node, Npm.node, httpClient])
 
 export * as Config from "./config"

@@ -5,15 +5,13 @@ import { Cause, Effect, Exit, Layer } from "effect"
 import { GlobTool } from "../../src/tool/glob"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { Search } from "@opencode-ai/core/filesystem/search"
+import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
 import { Truncate } from "@/tool/truncate"
 import { Agent } from "../../src/agent/agent"
 import { TestInstance, tmpdirScoped, provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { Reference } from "@/reference/reference"
-import { RepositoryCache } from "@/reference/repository-cache"
 import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Git } from "@/git"
@@ -21,26 +19,17 @@ import { Filesystem } from "@/util/filesystem"
 import { Permission } from "../../src/permission"
 import type * as Tool from "../../src/tool/tool"
 
-const referenceLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
-  Reference.layer.pipe(
-    Layer.provide(Config.defaultLayer),
-    Layer.provide(RepositoryCache.defaultLayer),
-    Layer.provide(RuntimeFlags.layer(flags)),
-  )
-
 const toolLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   Layer.mergeAll(
     CrossSpawnSpawner.defaultLayer,
     FSUtil.defaultLayer,
-    Search.defaultLayer,
+    Ripgrep.defaultLayer,
     Truncate.defaultLayer,
     Agent.defaultLayer,
     Git.defaultLayer,
-    referenceLayer(flags),
   )
 
 const it = testEffect(toolLayer())
-const references = testEffect(toolLayer({ experimentalReferences: true }))
 const full = (p: string) => (process.platform === "win32" ? Filesystem.normalizePath(p) : p)
 
 const ctx = {
@@ -145,60 +134,55 @@ describe("tool.glob", () => {
     }),
   )
 
-  references.instance(
-    "does not ask for external_directory permission inside configured git references",
-    () =>
-      Effect.gen(function* () {
-        yield* TestInstance
-        const fs = yield* FSUtil.Service
-        const cache = path.join(Global.Path.repos, "github.com", "opencode-glob-reference", "repo")
-        yield* fs.remove(cache, { recursive: true }).pipe(Effect.ignore)
-        yield* Effect.addFinalizer(() => fs.remove(cache, { recursive: true }).pipe(Effect.ignore))
-
-        const source = yield* tmpdirScoped({ git: true })
-        const remoteRoot = yield* tmpdirScoped()
-        const remoteDir = path.join(remoteRoot, "opencode-glob-reference")
-        const remoteRepo = path.join(remoteDir, "repo.git")
-        yield* fs.writeWithDirs(path.join(source, "src", "index.ts"), "export const value = 1\n")
-        yield* git(source, ["add", "."])
-        yield* git(source, ["commit", "-m", "add source"])
-        yield* fs.makeDirectory(remoteDir, { recursive: true }).pipe(Effect.orDie)
-        yield* git(remoteRoot, ["clone", "--bare", source, remoteRepo])
-
-        const { items, next } = asks()
-        const info = yield* GlobTool
-        const glob = yield* info.init()
-        const result = yield* githubBase(
-          `file://${remoteRoot}/`,
-          glob.execute({ pattern: "*.ts", path: path.join(cache, "src") }, next),
+  it.instance("rejects a non-existent path with an actionable message", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const missing = path.join(test.directory, "does-not-exist")
+      const info = yield* GlobTool
+      const glob = yield* info.init()
+      const exit = yield* glob
+        .execute(
+          {
+            pattern: "*",
+            path: missing,
+          },
+          ctx,
         )
-
-        expect(result.metadata.count).toBe(1)
-        expect(full(result.output)).toContain(full(path.join(cache, "src", "index.ts")))
-        expect(items.find((item) => item.permission === "external_directory")).toBeUndefined()
-      }),
-    {
-      config: {
-        reference: {
-          docs: "opencode-glob-reference/repo",
-        },
-      },
-    },
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const err = Cause.squash(exit.cause)
+        expect(err instanceof Error ? err.message : String(err)).toMatch(/glob path .* does not exist/)
+      }
+    }),
   )
 
-  it.live("rejects a non-existent path with an actionable message", () =>
-    provideTmpdirInstance((dir) =>
-      Effect.gen(function* () {
-        const info = yield* GlobTool
-        const glob = yield* info.init()
-        const missing = path.join(dir, "does-not-exist-" + Math.random().toString(36).slice(2))
-        const exit = yield* Effect.exit(glob.execute({ pattern: "*", path: missing }, ctx))
-        expect(Exit.isFailure(exit)).toBe(true)
-        if (Exit.isFailure(exit)) {
-          const message = Cause.pretty(exit.cause)
-          expect(message).toMatch(/glob path .* does not exist/)
-        }
-      }),
-    ),
+  // Regression: the new Ripgrep.glob API (#31566) discards the truncated flag,
+  // so a naive `entries.length === limit` check reports truncated at exactly
+  // the limit. glob.ts over-fetches by one to keep the flag precise.
+  it.instance("reports truncated only when matches exceed the 100 result limit", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const info = yield* GlobTool
+      const glob = yield* info.init()
+
+      // Exactly 100 matches: complete result set, must NOT be flagged truncated.
+      yield* Effect.forEach(
+        Array.from({ length: 100 }, (_, i) => i),
+        (i) => Effect.promise(() => Bun.write(path.join(test.directory, `f${String(i).padStart(3, "0")}.ts`), "x\n")),
+        { concurrency: 16, discard: true },
+      )
+      const exact = yield* glob.execute({ pattern: "*.ts", path: test.directory }, ctx)
+      expect(exact.metadata.count).toBe(100)
+      expect(exact.metadata.truncated).toBe(false)
+      expect(exact.output).not.toContain("truncated")
+
+      // 101 matches: now genuinely truncated.
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "f100.ts"), "x\n"))
+      const over = yield* glob.execute({ pattern: "*.ts", path: test.directory }, ctx)
+      expect(over.metadata.count).toBe(100)
+      expect(over.metadata.truncated).toBe(true)
+      expect(over.output).toContain("truncated")
+    }),
   )
 })

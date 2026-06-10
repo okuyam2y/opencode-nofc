@@ -1,3 +1,4 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import os from "os"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import fuzzysort from "fuzzysort"
@@ -34,7 +35,29 @@ import { ProviderError } from "./error"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 10_000
 
-function wrapSSE(res: Response, ms: number, ctl: AbortController) {
+// Default inter-chunk timeout for SSE bodies. macOS sleep (and silent network
+// drops) tear down the TCP stream without raising ECONNRESET — the pending read
+// blocks forever and the session hangs until manually interrupted (observed:
+// a 27-minute hang when the laptop went to idle sleep 5s after the request;
+// docs/devlog/2026-06-10.md §4, third documented incident of this class).
+// When the timer fires (immediately on wake, since timers are frozen during
+// sleep), wrapSSE aborts with ResponseStreamError, which is classified
+// retryable — the session re-sends and recovers without user intervention.
+// 5 minutes is far above any healthy inter-chunk gap (longest observed ~19s),
+// and a false positive only costs one retried request. Opt out per provider
+// with `chunkTimeout: false` (or 0); override with any positive number.
+const SSE_CHUNK_TIMEOUT_DEFAULT = 300_000
+
+/** Resolve the provider `chunkTimeout` option to an effective timeout in ms,
+ * or undefined when disabled. Unset/null → default; false/0/negative → off.
+ * Exported for unit testing. */
+export function resolveChunkTimeout(value: unknown): number | undefined {
+  if (value === undefined || value === null) return SSE_CHUNK_TIMEOUT_DEFAULT
+  if (typeof value === "number" && value > 0) return value
+  return undefined
+}
+
+function wrapSSE(res: Response, ms: number | undefined, ctl: AbortController) {
   if (typeof ms !== "number" || ms <= 0) return res
   if (!res.body) return res
   if (!res.headers.get("content-type")?.includes("text/event-stream")) return res
@@ -1697,7 +1720,7 @@ export const layer = Layer.effect(
         if (existing) return existing
 
         const customFetch = options["fetch"]
-        const chunkTimeout = options["chunkTimeout"]
+        const chunkTimeout = resolveChunkTimeout(options["chunkTimeout"])
         const headerTimeout = options["headerTimeout"]
         delete options["chunkTimeout"]
         delete options["headerTimeout"]
@@ -2059,5 +2082,15 @@ export function parseModel(model: string) {
     modelID: ModelV2.ID.make(rest.join("/")),
   }
 }
+
+export const node = LayerNode.make(layer, [
+  FSUtil.node,
+  Config.node,
+  Auth.node,
+  Env.node,
+  Plugin.node,
+  ModelsDev.node,
+  RuntimeFlags.node,
+])
 
 export * as Provider from "./provider"

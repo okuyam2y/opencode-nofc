@@ -1,7 +1,7 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { generateId } from "ai"
 import { Cause, Deferred, Effect, Layer, Context, Scope } from "effect"
-import { Usage, toolFileSourceFromUri } from "@opencode-ai/llm"
-import { ToolOutput } from "@opencode-ai/core/tool-output"
+import { Usage } from "@opencode-ai/llm"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
@@ -391,6 +391,27 @@ const DOOM_LOOP_THRESHOLD = 3
     return { sample: matches[0].slice(0, 40), count: matches.length }
   }
 
+  /** Max consecutive stall→step-end conversions before failing loud (reset on any
+   * normally finished step). A persistently stalling gateway must surface an error
+   * instead of silently looping. */
+  export const MAX_CONSECUTIVE_STALL_STEP_ENDS = 2
+
+  /**
+   * Decide whether a stream failure should be converted into a graceful step end
+   * instead of a session error. Applies only to SSE inter-chunk timeouts
+   * (ProviderResponseStreamError from the chunkTimeout guard — matched by name so
+   * bundling cannot break instanceof) and only after at least one tool executed in
+   * the attempt: pre-tool stalls are already retried automatically, while post-tool
+   * stalls cannot be retried (re-running tool side effects is unsafe) but their
+   * completed tool results are persisted — ending the step lets the loop continue
+   * and the model resumes from the results. Exported for unit testing.
+   */
+  export function shouldEndStepAfterStall(e: unknown, hasExecutedTool: boolean, consecutiveStallEnds: number): boolean {
+    if (!hasExecutedTool) return false
+    if (consecutiveStallEnds >= MAX_CONSECUTIVE_STALL_STEP_ENDS) return false
+    return e instanceof Error && e.name === "ProviderResponseStreamError"
+  }
+
   export function isDuplicate(
     acceptedKeys: Map<string, string>,
     toolName: string,
@@ -578,6 +599,8 @@ const DOOM_LOOP_THRESHOLD = 3
          *  Unlike ctx.hasToolCalls (step-scoped, reset on start-step), this persists
          *  across steps within a single attempt and prevents retry after tool execution. */
         let hasExecutedTool = false
+        // Consecutive post-tool stall→step-end conversions; reset on finish-step.
+        let consecutiveStallStepEnds = 0
 
         const parse = (e: unknown) =>
           MessageV2.fromError(e, {
@@ -1040,14 +1063,15 @@ const DOOM_LOOP_THRESHOLD = 3
                 if (mirrorAssistant) {
                   const assistantMessageID = yield* ensureV2AssistantMessage()
                   const content = [
-                    ToolOutput.text({ type: "text", text: value.output.output }),
-                    ...(value.output.attachments?.map((item: MessageV2.FilePart) =>
-                      ToolOutput.file({
-                        type: "file",
-                        source: toolFileSourceFromUri(item.url),
-                        mime: item.mime,
-                        name: item.filename,
-                      }),
+                    { type: "text" as const, text: value.output.output },
+                    ...(value.output.attachments?.map(
+                      (item: MessageV2.FilePart) =>
+                        ({
+                          type: "file",
+                          uri: item.url,
+                          mime: item.mime,
+                          name: item.filename,
+                        }) as const,
                     ) ?? []),
                   ]
                   yield* events.publish(SessionEvent.Tool.Success, {
@@ -1134,6 +1158,9 @@ const DOOM_LOOP_THRESHOLD = 3
               return
 
             case "finish-step": {
+              // A normally finished step proves the stream is healthy again —
+              // reset the stall→step-end conversion budget.
+              consecutiveStallStepEnds = 0
               const usage = Session.getUsage({
                 model: ctx.model,
                 usage: Usage.from(value.usage as any),
@@ -1494,6 +1521,25 @@ const DOOM_LOOP_THRESHOLD = 3
             yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
             return
           }
+          // Graceful step-end on a post-tool stream stall (SSE chunk timeout, e.g.
+          // macOS sleep killing the connection mid-step). Retry is vetoed once tools
+          // executed, but their results are already persisted — end the step without
+          // an error so the loop continues and the model resumes from the tool
+          // results on the next request. Without this the session errors and waits
+          // for a manual "continue". Capped (see MAX_CONSECUTIVE_STALL_STEP_ENDS) so
+          // a persistently stalling gateway still fails loud instead of silently
+          // looping; cleanup() (ensuring) settles any still-pending tool parts and
+          // stamps time.completed as usual.
+          if (shouldEndStepAfterStall(e, hasExecutedTool, consecutiveStallStepEnds)) {
+            consecutiveStallStepEnds++
+            log.warn("stream stalled after tool execution — ending step gracefully", {
+              ...slogTags,
+              consecutive: consecutiveStallStepEnds,
+              error: errorMessage(e),
+            })
+            if (!ctx.assistantMessage.finish) ctx.assistantMessage.finish = "tool-calls"
+            return
+          }
           if (!ctx.assistantMessage.summary) {
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
             if (mirrorAssistant) {
@@ -1688,5 +1734,20 @@ const DOOM_LOOP_THRESHOLD = 3
       Layer.provide(Database.defaultLayer),
     ),
   )
+
+export const node = LayerNode.make(layer, [
+  Session.node,
+  Config.node,
+  Snapshot.node,
+  Agent.node,
+  LLM.node,
+  Permission.node,
+  Plugin.node,
+  SessionSummary.node,
+  SessionStatus.node,
+  EventV2Bridge.node,
+  RuntimeFlags.node,
+  Database.node,
+])
 
 export * as SessionProcessor from "./processor"

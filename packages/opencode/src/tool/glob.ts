@@ -1,13 +1,11 @@
 import path from "path"
 import { Effect, Option, Schema } from "effect"
-import * as Stream from "effect/Stream"
 import { InstanceState } from "@/effect/instance-state"
 import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Search } from "@opencode-ai/core/filesystem/search"
+import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import DESCRIPTION from "./glob.txt"
 import * as Tool from "./tool"
-import { Reference } from "@/reference/reference"
 
 export const Parameters = Schema.Struct({
   pattern: Schema.String.annotate({ description: "The glob pattern to match files against" }),
@@ -24,27 +22,24 @@ export const Parameters = Schema.Struct({
  * gitignored.  More specific patterns like `**\/*.ts` or `src/**\/*.java`
  * do NOT trigger the override; the usual gitignore pruning still applies.
  *
- * The tool caller passing a match-all glob almost always means "list every
- * matched file" (i.e. every file visible after gitignore filtering), not
- * "force-include every ignored build artifact".  Dropping the --glob argument
- * for these match-all patterns makes the behavior match the likely intent
- * and preserves gitignore semantics.
+ * The tool caller passing `**\/*` almost always means "list every matched
+ * file" (i.e. every file visible after gitignore filtering), not "force-
+ * include every ignored build artifact".  Dropping the --glob argument for
+ * these match-all patterns makes the behavior match the likely intent and
+ * preserves gitignore semantics.  The drop itself lives in the core
+ * Ripgrep.glob implementation (see MATCH_ALL_PATTERN there) because the
+ * new Ripgrep API does not expose a pattern-less file walk.
  *
  * Observed in 2026-04-19 planetiler review (ses_25eaafacfffe*): a reviewer
  * agent ran `glob **\/*` at worktree root and got back 100 `.class` files
  * from `target/test-classes/`, which polluted context and triggered a
  * downstream hallucination.
  */
-const MATCH_ALL_PATTERN = /^[*/\\]+$/
-const isMatchAll = (pattern: string) => MATCH_ALL_PATTERN.test(pattern)
-
 export const GlobTool = Tool.define(
   "glob",
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
-    const reference = yield* Reference.Service
-    const searchSvc = yield* Search.Service
-
+    const ripgrep = yield* Ripgrep.Service
     return {
       description: DESCRIPTION,
       parameters: Parameters,
@@ -63,7 +58,6 @@ export const GlobTool = Tool.define(
 
           let search = params.path ?? ins.directory
           search = path.isAbsolute(search) ? search : path.resolve(ins.directory, search)
-          yield* reference.ensure(search)
           const info = yield* fs.stat(search).pipe(Effect.catch(() => Effect.succeed(undefined)))
           if (info?.type === "File") {
             throw new Error(`glob path must be a directory: ${search}`)
@@ -78,41 +72,38 @@ export const GlobTool = Tool.define(
             )
           }
           yield* assertExternalDirectoryEffect(ctx, search, {
-            bypass: yield* reference.contains(search),
+            bypass: false,
             kind: "directory",
           })
 
           const limit = 100
-          let truncated = false
-          // Match-all patterns → drop the --glob override so ripgrep still
-          // respects .gitignore.  See MATCH_ALL_PATTERN at top of file.
-          const rgGlob = isMatchAll(params.pattern) ? undefined : [params.pattern]
-          // searchSvc.files is a passthrough to Ripgrep.files. The fork keeps
-          // ripgrep here (not searchSvc.glob) because searchSvc.glob forces
-          // glob:[pattern] internally and would reintroduce the build-output
-          // leak the rgGlob drop above prevents.
-          const files = yield* searchSvc.files({ cwd: search, glob: rgGlob, signal: ctx.abort }).pipe(
-            Stream.mapEffect((file) =>
+          // Fetch one past the limit so we can tell "exactly limit files" (complete)
+          // from ">limit" (truncated). The new Ripgrep.glob API (#31566) discards
+          // the internal truncated flag and returns at most `limit` entries, so
+          // upstream's `entries.length === limit` check false-positives at exactly
+          // `limit` matches. Over-fetching by one restores the fork's pre-#31566
+          // precision (dev-tip used Stream.take(limit + 1) + `> limit`).
+          const fetched = yield* ripgrep.glob({ cwd: search, pattern: params.pattern, limit: limit + 1, signal: ctx.abort })
+          const truncated = fetched.length > limit
+          const entries = truncated ? fetched.slice(0, limit) : fetched
+
+          // Sort by mtime (most recent first) so callers see actively edited
+          // files before stale ones; pre-#27802 upstream behavior the fork keeps.
+          const files = yield* Effect.forEach(
+            entries,
+            (entry) =>
               Effect.gen(function* () {
-                const full = path.resolve(search, file)
-                const info = yield* fs.stat(full).pipe(Effect.catch(() => Effect.succeed(undefined)))
+                const full = path.resolve(search, entry.path)
+                const stat = yield* fs.stat(full).pipe(Effect.catch(() => Effect.succeed(undefined)))
                 const mtime =
-                  info?.mtime.pipe(
+                  stat?.mtime.pipe(
                     Option.map((date) => date.getTime()),
                     Option.getOrElse(() => 0),
                   ) ?? 0
                 return { path: full, mtime }
               }),
-            ),
-            Stream.take(limit + 1),
-            Stream.runCollect,
-            Effect.map((chunk) => [...chunk]),
+            { concurrency: 16 },
           )
-
-          if (files.length > limit) {
-            truncated = true
-            files.length = limit
-          }
           files.sort((a, b) => b.mtime - a.mtime)
 
           const output = []

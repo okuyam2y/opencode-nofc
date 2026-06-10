@@ -1,6 +1,7 @@
 // @ts-nocheck — rebase #59 WIP: post-DB-schema-refactor (#29068) follow-up needed
 import { describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Effect, Layer } from "effect"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "../../src/session/prompt"
@@ -10,7 +11,9 @@ import { testEffect } from "../lib/effect"
 
 // Skip tests if no API key is available
 const hasApiKey = !!process.env.ANTHROPIC_API_KEY
-const it = testEffect(Layer.mergeAll(SessionPrompt.defaultLayer, Session.defaultLayer))
+const it = testEffect(
+  Layer.mergeAll(SessionPrompt.defaultLayer, Session.defaultLayer).pipe(Layer.provide(Ripgrep.defaultLayer)),
+)
 const live = hasApiKey ? it.instance : it.instance.skip
 
 describe("StructuredOutput Integration", () => {

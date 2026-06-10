@@ -1,3 +1,4 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import path from "path"
 import os from "os"
 import z from "zod"
@@ -52,14 +53,12 @@ import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { EffectBridge } from "@/effect/bridge"
-import { Reference } from "@/reference/reference"
-import { ReferencePrompt } from "./prompt/reference"
 import { SessionReminders } from "./reminders"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionMessage } from "@opencode-ai/core/session/message"
-import { AgentAttachment, FileAttachment, Prompt, ReferenceAttachment, Source } from "@opencode-ai/core/session/prompt"
+import { AgentAttachment, FileAttachment, Prompt, Source } from "@opencode-ai/core/session/prompt"
 import * as DateTime from "effect/DateTime"
 
 // @ts-ignore
@@ -111,8 +110,6 @@ function looksIncomplete(text: string): { incomplete: boolean; reason?: string }
   return { incomplete: false }
 }
 
-const { referencePromptMetadata, referenceTextPart } = ReferencePrompt
-
 function isOrphanedInterruptedTool(part: MessageV2.ToolPart) {
   // cleanup() marks abandoned tool_use blocks this way after retries/aborts.
   // They are not pending work and must not trigger an assistant-prefill request.
@@ -155,7 +152,6 @@ export const layer = Layer.effect(
     const summary = yield* SessionSummary.Service
     const sys = yield* SystemPrompt.Service
     const llm = yield* LLM.Service
-    const references = yield* Reference.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const runner = Effect.fn("SessionPrompt.runner")(function* () {
@@ -212,46 +208,10 @@ export const layer = Layer.effect(
       yield* state.cancel(sessionID)
     })
 
-    const resolveReferenceParts = Effect.fnUntraced(function* (template: string) {
-      const parts: Types.DeepMutable<PromptInput["parts"]> = []
-      const seen = new Set<string>()
-      yield* Effect.forEach(
-        ConfigMarkdown.files(template),
-        Effect.fnUntraced(function* (match) {
-          const name = match[1]
-          if (!name) return
-          const alias = name.split("/")[0]
-          if (!alias || seen.has(alias)) return
-          const reference = yield* references.get(alias)
-          if (!reference) return
-          seen.add(alias)
-
-          const start = match.index ?? 0
-          const source = { value: match[0], start, end: start + match[0].length }
-          if (reference.kind === "invalid") {
-            parts.push(referenceTextPart({ reference, source }))
-            return
-          }
-
-          yield* references.ensure(reference.path)
-          parts.push({
-            type: "file",
-            url: pathToFileURL(reference.path).href,
-            filename: alias,
-            mime: "application/x-directory",
-            source: { type: "file", text: source, path: alias },
-          })
-        }),
-        { concurrency: 1, discard: true },
-      )
-      return parts
-    })
-
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
       const ctx = yield* InstanceState.context
       const parts: Types.DeepMutable<PromptInput["parts"]> = [
         { type: "text", text: template },
-        ...(yield* resolveReferenceParts(template)),
       ]
       const files = ConfigMarkdown.files(template)
       const seen = new Set<string>()
@@ -262,10 +222,6 @@ export const layer = Layer.effect(
           if (!name) return
           if (seen.has(name)) return
           seen.add(name)
-
-          const slash = name.indexOf("/")
-          const alias = slash === -1 ? name : name.slice(0, slash)
-          if (yield* references.get(alias)) return
 
           const filepath = name.startsWith("~/")
             ? path.join(os.homedir(), name.slice(2))
@@ -1238,22 +1194,7 @@ export const layer = Layer.effect(
         return [{ ...part, messageID: info.id, sessionID: input.sessionID }]
       })
 
-      const submittedParts: Types.DeepMutable<PromptInput["parts"]> = [...input.parts]
-      const attachedReferences = new Set(
-        input.parts.flatMap((part) =>
-          part.type === "file" && part.mime === "application/x-directory" ? [part.url] : [],
-        ),
-      )
-      for (const part of input.parts) {
-        if (part.type !== "text" || part.synthetic) continue
-        for (const reference of yield* resolveReferenceParts(part.text)) {
-          if (reference.type === "file" && attachedReferences.has(reference.url)) continue
-          if (reference.type === "file") attachedReferences.add(reference.url)
-          submittedParts.push(reference)
-        }
-      }
-
-      const parts = yield* Effect.forEach(submittedParts, resolvePart, { concurrency: "unbounded" }).pipe(
+      const parts = yield* Effect.forEach(input.parts, resolvePart, { concurrency: "unbounded" }).pipe(
         Effect.map((x) => x.flat().map(assign)),
       )
 
@@ -1300,26 +1241,6 @@ export const layer = Layer.effect(
           if (part.type === "text") {
             if (part.synthetic) result.synthetic.push(part.text)
             else result.text.push(part.text)
-            const reference = referencePromptMetadata(part.metadata?.reference)
-            if (reference) {
-              result.references.push(
-                new ReferenceAttachment({
-                  name: reference.name,
-                  kind: reference.kind,
-                  uri: reference.path ? pathToFileURL(reference.path).href : undefined,
-                  repository: reference.repository,
-                  branch: reference.branch,
-                  target: reference.target,
-                  targetUri: reference.targetPath ? pathToFileURL(reference.targetPath).href : undefined,
-                  problem: reference.problem,
-                  source: new Source({
-                    start: reference.source.start,
-                    end: reference.source.end,
-                    text: reference.source.value,
-                  }),
-                }),
-              )
-            }
           }
           if (part.type === "file") {
             result.files.push(
@@ -1357,7 +1278,6 @@ export const layer = Layer.effect(
           text: [] as string[],
           files: [] as FileAttachment[],
           agents: [] as AgentAttachment[],
-          references: [] as ReferenceAttachment[],
           synthetic: [] as string[],
         },
       )
@@ -1371,7 +1291,6 @@ export const layer = Layer.effect(
             text: nextPrompt.text.join("\n"),
             files: nextPrompt.files,
             agents: nextPrompt.agents,
-            references: nextPrompt.references,
           }),
         })
       }
@@ -2038,7 +1957,6 @@ export const defaultLayer = Layer.suspend(() =>
         SystemPrompt.defaultLayer,
         LLM.defaultLayer,
         CrossSpawnSpawner.defaultLayer,
-        Reference.defaultLayer,
         EventV2Bridge.defaultLayer,
         RuntimeFlags.defaultLayer,
       ),
@@ -2206,5 +2124,31 @@ const bashRegex = /!`([^`]+)`/g
 const argsRegex = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi
 const placeholderRegex = /\$(\d+)/g
 const quoteTrimRegex = /^["']|["']$/g
+
+export const node = LayerNode.make(layer, [
+  SessionStatus.node,
+  Session.node,
+  Agent.node,
+  Provider.node,
+  SessionProcessor.node,
+  SessionCompaction.node,
+  Plugin.node,
+  Command.node,
+  Permission.node,
+  FSUtil.node,
+  MCP.node,
+  LSP.node,
+  ToolRegistry.node,
+  Truncate.node,
+  CrossSpawnSpawner.node,
+  Instruction.node,
+  SessionRunState.node,
+  SessionRevert.node,
+  SessionSummary.node,
+  SystemPrompt.node,
+  LLM.node,
+  EventV2Bridge.node,
+  RuntimeFlags.node,
+])
 
 export * as SessionPrompt from "./prompt"

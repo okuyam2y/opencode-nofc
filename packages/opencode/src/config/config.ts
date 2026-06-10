@@ -20,10 +20,11 @@ import type { ConsoleState } from "@opencode-ai/core/v1/config/console-state"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { InstanceState } from "@/effect/instance-state"
 import { Context, Duration, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
-import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
 import { containsPath, type InstanceContext } from "../project/instance-context"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import { RemoteAuthError } from "@opencode-ai/core/v1/config/error"
 import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
 import { ConfigPluginV1 } from "@opencode-ai/core/v1/config/plugin"
 import { ConfigAgent } from "./agent"
@@ -61,7 +62,6 @@ function normalizeLoadedConfig(data: unknown, source: string) {
     log.warn("tui keys in opencode config are deprecated; move them to tui.json", { path: source })
   }
   copy = migrateCompactionKeys(copy, source)
-  copy = migrateReferenceKey(copy, source)
   return copy
 }
 
@@ -121,28 +121,6 @@ function migrateCompactionKeys(data: Record<string, unknown>, source: string): R
     log.warn("compaction.tail_tokens is deprecated; renamed to preserve_recent_tokens", { path: source })
   }
   return { ...data, compaction: nextCompaction }
-}
-
-// Upstream #31601 renamed the top-level `reference` config key to `references`
-// (and broadened the value type to a union that still accepts the legacy
-// string-map form). Config is parsed with strict top-level key checking
-// (ConfigParse.schema rejects unrecognized keys), so existing user configs
-// with `reference` would otherwise fail to load with "Unrecognized key:
-// reference". Map the legacy key on read and emit a warning. The value is left
-// untouched — the new `references` schema's String|Git|Local union validates
-// the old string-valued entries unchanged.
-function migrateReferenceKey(data: Record<string, unknown>, source: string): Record<string, unknown> {
-  if (!("reference" in data)) return data
-  const next: Record<string, unknown> = { ...data }
-  const legacyValue = next.reference
-  delete next.reference
-  if ("references" in next) {
-    log.warn("reference is deprecated and ignored; references already set", { path: source })
-  } else {
-    next.references = legacyValue
-    log.warn("reference is deprecated; renamed to references", { path: source })
-  }
-  return next
 }
 
 async function resolveLoadedPlugins<T extends { plugin?: ConfigPluginV1.Spec[] }>(config: T, filepath: string) {
@@ -235,6 +213,7 @@ export const layer = Layer.effect(
       url: string,
       headers: Record<string, string> | undefined,
       schema: S,
+      loginOrigin: string,
     ) {
       const response = yield* HttpClient.filterStatusOk(withTransientReadRetry(http))
         .execute(
@@ -243,7 +222,15 @@ export const layer = Layer.effect(
         .pipe(
           Effect.catch((error) => Effect.die(new Error(`failed to fetch remote config from ${url}: ${String(error)}`))),
         )
-      return yield* HttpClientResponse.schemaBodyJson(schema)(response).pipe(
+      const body = yield* response.text.pipe(
+        Effect.catch((error) => Effect.die(new Error(`failed to read remote config from ${url}: ${String(error)}`))),
+      )
+      // An auth proxy can answer with an HTML login page at HTTP 200 (passes filterStatusOk); treat it as a re-auth error, not a decode failure.
+      const contentType = (response.headers["content-type"] ?? "").toLowerCase()
+      if (contentType.includes("html") || /^\s*<!doctype|^\s*<html/i.test(body)) {
+        return yield* Effect.die(new RemoteAuthError({ url: loginOrigin, remote: url }))
+      }
+      return yield* Schema.decodeEffect(Schema.fromJsonString(schema))(body).pipe(
         Effect.catch((error) => Effect.die(new Error(`failed to decode remote config from ${url}: ${String(error)}`))),
       )
     })
@@ -396,7 +383,7 @@ export const layer = Layer.effect(
             authEnv[value.key] = value.token
             const wellknownURL = `${url}/.well-known/opencode`
             log.debug("fetching remote config", { url: wellknownURL })
-            const wellknown = yield* fetchRemoteJson(wellknownURL, undefined, ConfigV1.WellKnown)
+            const wellknown = yield* fetchRemoteJson(wellknownURL, undefined, ConfigV1.WellKnown, url)
             const remote = yield* Effect.promise(() =>
               substituteWellKnownRemoteConfig({
                 value: wellknown.remote_config,
@@ -408,7 +395,7 @@ export const layer = Layer.effect(
             const fetchedConfig = remote
               ? yield* Effect.gen(function* () {
                   log.debug("fetching remote config", { url: remote.url })
-                  const data = yield* fetchRemoteJson(remote.url, remote.headers, Schema.Json)
+                  const data = yield* fetchRemoteJson(remote.url, remote.headers, Schema.Json, url)
                   if (isRecord(data) && isRecord(data.config)) return data.config
                   if (isRecord(data)) return data
                   return yield* Effect.die(

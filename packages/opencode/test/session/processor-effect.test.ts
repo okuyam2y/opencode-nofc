@@ -1,7 +1,7 @@
 // @ts-nocheck — rebase #59 WIP: post-DB-schema-refactor (#29068) follow-up needed
-import { NodeFileSystem } from "@effect/platform-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
 import { tool } from "ai"
@@ -10,11 +10,6 @@ import { tool as aiTool, jsonSchema } from "ai"
 import path from "path"
 import z from "zod"
 import type { Agent } from "../../src/agent/agent"
-import { Agent as AgentSvc } from "../../src/agent/agent"
-import { Config } from "@/config/config"
-import { Image } from "@/image/image"
-import { Permission } from "../../src/permission"
-import { Plugin } from "../../src/plugin"
 import { Provider } from "@/provider/provider"
 
 import { Session } from "@/session/session"
@@ -24,15 +19,14 @@ import { SessionProcessor } from "../../src/session/processor"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
-import { Snapshot } from "../../src/snapshot"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { ModelV2 } from "@opencode-ai/core/model"
-
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -172,30 +166,21 @@ const assistant = Effect.fn("TestSession.assistant")(function* (
   return msg
 })
 
-const status = SessionStatus.layer.pipe(Layer.provideMerge(EventV2Bridge.defaultLayer))
-const infra = Layer.mergeAll(NodeFileSystem.layer, CrossSpawnSpawner.defaultLayer)
-const deps = Layer.mergeAll(
-  Session.defaultLayer,
-  Snapshot.defaultLayer,
-  AgentSvc.defaultLayer,
-  Permission.defaultLayer,
-  Plugin.defaultLayer,
-  Config.defaultLayer,
-  LLM.defaultLayer,
-  Provider.defaultLayer,
-  status,
-  Database.defaultLayer,
-  EventV2Bridge.defaultLayer,
-).pipe(Layer.provideMerge(infra))
-const env = Layer.mergeAll(
-  TestLLMServer.layer,
-  SessionProcessor.layer.pipe(
-    Layer.provide(summary),
-    Layer.provide(Image.defaultLayer),
-    Layer.provide(RuntimeFlags.layer({ experimentalEventSystem: true })),
-    Layer.provideMerge(deps),
-  ),
-)
+const root = LayerNode.group([
+  SessionProcessor.node,
+  Session.node,
+  SessionProjector.node,
+  Provider.node,
+  Database.node,
+  EventV2Bridge.node,
+  SessionStatus.node,
+  CrossSpawnSpawner.node,
+])
+const replacements = [
+  LayerNode.replace(SessionSummary.node, summary),
+  LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })),
+]
+const env = LayerNode.buildLayer(LayerNode.group([root, LayerNode.make(TestLLMServer.layer, [])]), { replacements })
 
 const it = testEffect(env)
 

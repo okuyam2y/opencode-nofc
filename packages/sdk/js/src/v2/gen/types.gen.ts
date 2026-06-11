@@ -6,6 +6,9 @@ export type ClientOptions = {
 
 export type Event =
   | EventModelsDevRefreshed
+  | EventCredentialAdded
+  | EventCredentialRemoved
+  | EventCredentialSwitched
   | EventPluginAdded
   | EventCatalogModelUpdated
   | EventSessionCreated
@@ -46,15 +49,14 @@ export type Event =
   | EventSessionNextCompactionStarted
   | EventSessionNextCompactionDelta
   | EventSessionNextCompactionEnded
+  | EventLspUpdated
   | EventMessagePartDelta
   | EventSessionDiff
   | EventSessionError
   | EventInstallationUpdated
   | EventInstallationUpdateAvailable
   | EventFileEdited
-  | EventAccountAdded
-  | EventAccountRemoved
-  | EventAccountSwitched
+  | EventConnectorUpdated
   | EventPermissionV2Asked
   | EventPermissionV2Replied
   | EventReferenceUpdated
@@ -67,7 +69,6 @@ export type Event =
   | EventQuestionV2Replied
   | EventQuestionV2Rejected
   | EventTodoUpdated
-  | EventLspUpdated
   | EventPermissionAsked
   | EventPermissionReplied
   | EventTuiPromptAppend2
@@ -637,6 +638,22 @@ export type Prompt = {
   agents?: Array<PromptAgentAttachment>
 }
 
+export type ApiError1 = {
+  name: "APIError"
+  data: {
+    message: string
+    statusCode?: number
+    isRetryable: boolean
+    responseHeaders?: {
+      [key: string]: string
+    }
+    responseBody?: string
+    metadata?: {
+      [key: string]: string
+    }
+  }
+}
+
 export type Pty = {
   id: string
   title: string
@@ -729,6 +746,29 @@ export type GlobalEvent = {
         type: "models-dev.refreshed"
         properties: {
           [key: string]: unknown
+        }
+      }
+    | {
+        id: string
+        type: "credential.added"
+        properties: {
+          credential: CredentialInfo
+        }
+      }
+    | {
+        id: string
+        type: "credential.removed"
+        properties: {
+          credential: CredentialInfo
+        }
+      }
+    | {
+        id: string
+        type: "credential.switched"
+        properties: {
+          connectorID: string
+          from?: string
+          to?: string
         }
       }
     | {
@@ -1197,6 +1237,13 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "lsp.updated"
+        properties: {
+          [key: string]: unknown
+        }
+      }
+    | {
+        id: string
         type: "message.part.delta"
         properties: {
           sessionID: string
@@ -1226,7 +1273,7 @@ export type GlobalEvent = {
             | MessageAbortedError
             | StructuredOutputError
             | ContextOverflowError
-            | ApiError
+            | ApiError1
         }
       }
     | {
@@ -1252,25 +1299,9 @@ export type GlobalEvent = {
       }
     | {
         id: string
-        type: "account.added"
+        type: "connector.updated"
         properties: {
-          account: AuthInfo
-        }
-      }
-    | {
-        id: string
-        type: "account.removed"
-        properties: {
-          account: AuthInfo
-        }
-      }
-    | {
-        id: string
-        type: "account.switched"
-        properties: {
-          serviceID: string
-          from?: string
-          to?: string
+          [key: string]: unknown
         }
       }
     | {
@@ -1377,13 +1408,6 @@ export type GlobalEvent = {
         properties: {
           sessionID: string
           todos: Array<Todo>
-        }
-      }
-    | {
-        id: string
-        type: "lsp.updated"
-        properties: {
-          [key: string]: unknown
         }
       }
     | {
@@ -1720,6 +1744,7 @@ export type AgentConfig = {
   variant?: string
   temperature?: number
   top_p?: number
+  maxOutputTokens?: number
   prompt?: string
   tools?: {
     [key: string]: boolean
@@ -1742,6 +1767,7 @@ export type AgentConfig = {
     | unknown
     | string
     | number
+    | number
     | {
         [key: string]: boolean
       }
@@ -1760,7 +1786,6 @@ export type AgentConfig = {
     | "warning"
     | "error"
     | "info"
-    | number
     | PermissionConfig
     | undefined
 }
@@ -1779,15 +1804,30 @@ export type ProviderConfig = {
     enterpriseUrl?: string
     setCacheKey?: boolean
     /**
-     * Timeout in milliseconds for requests to this provider. Default is 300000 (5 minutes). Set to false to disable timeout.
+     * Timeout in milliseconds for full requests to this provider. Set to false to disable timeout.
      */
     timeout?: number | false
-    chunkTimeout?: number
     /**
-     * Enable tool parser middleware for gateways that don't support function calling. 'hermes' uses JSON in <tool_call> tags, 'hermes-strict' adds explicit examples for models that need them, 'xml' uses pure XML format.
+     * Timeout in milliseconds to wait for response headers. Provider integrations may set defaults. Set to false to disable timeout.
      */
+    headerTimeout?: number | false
+    chunkTimeout?: number
     toolParser?: "hermes" | "hermes-strict" | "xml"
-    [key: string]: unknown | string | boolean | number | false | number | "hermes" | "hermes-strict" | "xml" | undefined
+    promptVariant?: "frontier"
+    [key: string]:
+      | unknown
+      | string
+      | boolean
+      | number
+      | false
+      | number
+      | false
+      | number
+      | "hermes"
+      | "hermes-strict"
+      | "xml"
+      | "frontier"
+      | undefined
   }
   models?: {
     [key: string]: {
@@ -2377,6 +2417,7 @@ export type Agent = {
   hidden?: boolean
   topP?: number
   temperature?: number
+  maxOutputTokens?: number
   color?: string
   permission: PermissionRuleset
   model?: {
@@ -2568,7 +2609,7 @@ export type ProviderAuthAuthorization = {
   instructions: string
 }
 
-export type ProviderAuthError1 = {
+export type ProviderAuthError2 = {
   name:
     | "BadRequest"
     | "ProviderAuthOauthMissing"
@@ -2587,6 +2628,31 @@ export type NotFoundError = {
   name: "NotFoundError"
   data: {
     message: string
+  }
+}
+
+export type UserMessage1 = {
+  id: string
+  sessionID: string
+  role: "user"
+  time: {
+    created: number
+  }
+  format?: OutputFormat
+  summary?: {
+    title?: string
+    body?: string
+    diffs: Array<SnapshotFileDiff>
+  }
+  agent: string
+  model: {
+    providerID: string
+    modelID: string
+    variant?: string
+  }
+  system?: string
+  tools?: {
+    [key: string]: boolean
   }
 }
 
@@ -2738,16 +2804,16 @@ export type InvalidCursorError = {
   message: string
 }
 
-export type ConflictError = {
-  _tag: "ConflictError"
-  message: string
-  resource?: string
-}
-
 export type SessionNotFoundError = {
   _tag: "SessionNotFoundError"
   sessionID: string
   message: string
+}
+
+export type ConflictError = {
+  _tag: "ConflictError"
+  message: string
+  resource?: string
 }
 
 export type ServiceUnavailableError = {
@@ -2778,6 +2844,22 @@ export type ProviderNotFoundError = {
 
 export type EffectHttpApiErrorForbidden = {
   _tag: "Forbidden"
+}
+
+export type ApiError3 = {
+  name: "APIError"
+  data: {
+    message: string
+    statusCode?: number
+    isRetryable: boolean
+    responseHeaders?: {
+      [key: string]: string
+    }
+    responseBody?: string
+    metadata?: {
+      [key: string]: string
+    }
+  }
 }
 
 export type EventTuiPromptAppend2 = {
@@ -2837,6 +2919,34 @@ export type EventTuiSessionSelect2 = {
 
 export type MoveSessionDestination = {
   directory: string
+}
+
+export type CredentialOAuth = {
+  type: "oauth"
+  refresh: string
+  access: string
+  expires: number
+  metadata?: {
+    [key: string]: string
+  }
+}
+
+export type CredentialKey = {
+  type: "key"
+  key: string
+  metadata?: {
+    [key: string]: string
+  }
+}
+
+export type CredentialValue = CredentialOAuth | CredentialKey
+
+export type CredentialInfo = {
+  id: string
+  connectorID: string
+  methodID: string
+  label: string
+  value: CredentialValue
 }
 
 export type ModelV2Info = {
@@ -2987,30 +3097,6 @@ export type SessionNextRetryError = {
   metadata?: {
     [key: string]: string
   }
-}
-
-export type AuthOAuthCredential = {
-  type: "oauth"
-  refresh: string
-  access: string
-  expires: number
-}
-
-export type AuthApiKeyCredential = {
-  type: "api"
-  key: string
-  metadata?: {
-    [key: string]: string
-  }
-}
-
-export type AuthCredential = AuthOAuthCredential | AuthApiKeyCredential
-
-export type AuthInfo = {
-  id: string
-  serviceID: string
-  description: string
-  credential: AuthCredential
 }
 
 export type PermissionV2Source = {
@@ -4063,8 +4149,8 @@ export type ProviderV2Info = {
         name: string
       }
     | {
-        via: "account"
-        service: string
+        via: "credential"
+        credentialID: string
       }
     | {
         via: "custom"
@@ -4096,6 +4182,63 @@ export type ProviderV2Info = {
     body: {
       [key: string]: unknown
     }
+  }
+}
+
+export type ConnectorWhen = {
+  key: string
+  op: "eq" | "neq"
+  value: string
+}
+
+export type ConnectorTextPrompt = {
+  type: "text"
+  key: string
+  message: string
+  placeholder?: string
+  when?: ConnectorWhen
+}
+
+export type ConnectorSelectPrompt = {
+  type: "select"
+  key: string
+  message: string
+  options: Array<{
+    label: string
+    value: string
+    hint?: string
+  }>
+  when?: ConnectorWhen
+}
+
+export type ConnectorOAuthMethod = {
+  id: string
+  type: "oauth"
+  label: string
+  prompts?: Array<ConnectorTextPrompt | ConnectorSelectPrompt>
+}
+
+export type ConnectorKeyMethod = {
+  id: string
+  type: "key"
+  label: string
+  prompts?: Array<ConnectorTextPrompt | ConnectorSelectPrompt>
+}
+
+export type ConnectorInfo = {
+  id: string
+  name: string
+  methods: Array<ConnectorOAuthMethod | ConnectorKeyMethod>
+}
+
+export type ConnectorAttempt = {
+  attemptID: string
+  url: string
+  instructions: string
+  mode: "auto" | "code"
+  time: {
+    created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    expires: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   }
 }
 
@@ -4198,6 +4341,32 @@ export type EventModelsDevRefreshed = {
   type: "models-dev.refreshed"
   properties: {
     [key: string]: unknown
+  }
+}
+
+export type EventCredentialAdded = {
+  id: string
+  type: "credential.added"
+  properties: {
+    credential: CredentialInfo
+  }
+}
+
+export type EventCredentialRemoved = {
+  id: string
+  type: "credential.removed"
+  properties: {
+    credential: CredentialInfo
+  }
+}
+
+export type EventCredentialSwitched = {
+  id: string
+  type: "credential.switched"
+  properties: {
+    connectorID: string
+    from?: string
+    to?: string
   }
 }
 
@@ -4801,6 +4970,14 @@ export type EventSessionNextCompactionEnded = {
   }
 }
 
+export type EventLspUpdated = {
+  id: string
+  type: "lsp.updated"
+  properties: {
+    [key: string]: unknown
+  }
+}
+
 export type EventMessagePartDelta = {
   id: string
   type: "message.part.delta"
@@ -4834,7 +5011,7 @@ export type EventSessionError = {
       | MessageAbortedError
       | StructuredOutputError
       | ContextOverflowError
-      | ApiError
+      | ApiError3
   }
 }
 
@@ -4862,29 +5039,11 @@ export type EventFileEdited = {
   }
 }
 
-export type EventAccountAdded = {
+export type EventConnectorUpdated = {
   id: string
-  type: "account.added"
+  type: "connector.updated"
   properties: {
-    account: AuthInfo
-  }
-}
-
-export type EventAccountRemoved = {
-  id: string
-  type: "account.removed"
-  properties: {
-    account: AuthInfo
-  }
-}
-
-export type EventAccountSwitched = {
-  id: string
-  type: "account.switched"
-  properties: {
-    serviceID: string
-    from?: string
-    to?: string
+    [key: string]: unknown
   }
 }
 
@@ -5003,14 +5162,6 @@ export type EventTodoUpdated = {
   properties: {
     sessionID: string
     todos: Array<Todo>
-  }
-}
-
-export type EventLspUpdated = {
-  id: string
-  type: "lsp.updated"
-  properties: {
-    [key: string]: unknown
   }
 }
 
@@ -7542,7 +7693,7 @@ export type ProviderAuthErrors = {
   400: BadRequestError
 }
 
-export type ProviderAuthError2 = ProviderAuthErrors[keyof ProviderAuthErrors]
+export type ProviderAuthError3 = ProviderAuthErrors[keyof ProviderAuthErrors]
 
 export type ProviderAuthResponses = {
   /**
@@ -7579,7 +7730,7 @@ export type ProviderOauthAuthorizeErrors = {
   /**
    * ProviderAuthError | InvalidRequestError
    */
-  400: ProviderAuthError1 | InvalidRequestError
+  400: ProviderAuthError2 | InvalidRequestError
 }
 
 export type ProviderOauthAuthorizeError = ProviderOauthAuthorizeErrors[keyof ProviderOauthAuthorizeErrors]
@@ -7615,7 +7766,7 @@ export type ProviderOauthCallbackErrors = {
   /**
    * ProviderAuthError | InvalidRequestError
    */
-  400: ProviderAuthError1 | InvalidRequestError
+  400: ProviderAuthError2 | InvalidRequestError
 }
 
 export type ProviderOauthCallbackError = ProviderOauthCallbackErrors[keyof ProviderOauthCallbackErrors]
@@ -9454,6 +9605,40 @@ export type V2HealthGetResponses = {
 
 export type V2HealthGetResponse = V2HealthGetResponses[keyof V2HealthGetResponses]
 
+export type V2LocationGetData = {
+  body?: never
+  path?: never
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/location"
+}
+
+export type V2LocationGetErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2LocationGetError = V2LocationGetErrors[keyof V2LocationGetErrors]
+
+export type V2LocationGetResponses = {
+  /**
+   * Location.Info
+   */
+  200: LocationInfo
+}
+
+export type V2LocationGetResponse = V2LocationGetResponses[keyof V2LocationGetResponses]
+
 export type V2AgentListData = {
   body?: never
   path?: never
@@ -9531,6 +9716,83 @@ export type V2SessionListResponses = {
 }
 
 export type V2SessionListResponse = V2SessionListResponses[keyof V2SessionListResponses]
+
+export type V2SessionCreateData = {
+  body: {
+    id?: string
+    agent?: string
+    model?: {
+      id: string
+      providerID: string
+      variant?: string
+    }
+    location?: LocationRef
+  }
+  path?: never
+  query?: never
+  url: "/api/session"
+}
+
+export type V2SessionCreateErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2SessionCreateError = V2SessionCreateErrors[keyof V2SessionCreateErrors]
+
+export type V2SessionCreateResponses = {
+  /**
+   * Success
+   */
+  200: {
+    data: SessionV2Info
+  }
+}
+
+export type V2SessionCreateResponse = V2SessionCreateResponses[keyof V2SessionCreateResponses]
+
+export type V2SessionGetData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}"
+}
+
+export type V2SessionGetErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+}
+
+export type V2SessionGetError = V2SessionGetErrors[keyof V2SessionGetErrors]
+
+export type V2SessionGetResponses = {
+  /**
+   * Success
+   */
+  200: {
+    data: SessionV2Info
+  }
+}
+
+export type V2SessionGetResponse = V2SessionGetResponses[keyof V2SessionGetResponses]
 
 export type V2SessionPromptData = {
   body: {
@@ -9871,6 +10133,320 @@ export type V2ProviderGetResponses = {
 }
 
 export type V2ProviderGetResponse = V2ProviderGetResponses[keyof V2ProviderGetResponses]
+
+export type V2ConnectorListData = {
+  body?: never
+  path?: never
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/connector"
+}
+
+export type V2ConnectorListErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2ConnectorListError = V2ConnectorListErrors[keyof V2ConnectorListErrors]
+
+export type V2ConnectorListResponses = {
+  /**
+   * Success
+   */
+  200: {
+    location: LocationInfo
+    data: Array<ConnectorInfo>
+  }
+}
+
+export type V2ConnectorListResponse = V2ConnectorListResponses[keyof V2ConnectorListResponses]
+
+export type V2ConnectorGetData = {
+  body?: never
+  path: {
+    connectorID: string
+  }
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/connector/{connectorID}"
+}
+
+export type V2ConnectorGetErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2ConnectorGetError = V2ConnectorGetErrors[keyof V2ConnectorGetErrors]
+
+export type V2ConnectorGetResponses = {
+  /**
+   * Success
+   */
+  200: {
+    location: LocationInfo
+    data: ConnectorInfo
+  }
+}
+
+export type V2ConnectorGetResponse = V2ConnectorGetResponses[keyof V2ConnectorGetResponses]
+
+export type V2ConnectorConnectKeyData = {
+  body: {
+    methodID: string
+    key: string
+    inputs: {
+      [key: string]: string
+    }
+    label?: string
+  }
+  path: {
+    connectorID: string
+  }
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/connector/{connectorID}/connect/key"
+}
+
+export type V2ConnectorConnectKeyErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2ConnectorConnectKeyError = V2ConnectorConnectKeyErrors[keyof V2ConnectorConnectKeyErrors]
+
+export type V2ConnectorConnectKeyResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2ConnectorConnectKeyResponse = V2ConnectorConnectKeyResponses[keyof V2ConnectorConnectKeyResponses]
+
+export type V2ConnectorConnectOauthBeginData = {
+  body: {
+    methodID: string
+    inputs: {
+      [key: string]: string
+    }
+    label?: string
+  }
+  path: {
+    connectorID: string
+  }
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/connector/{connectorID}/connect/oauth"
+}
+
+export type V2ConnectorConnectOauthBeginErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2ConnectorConnectOauthBeginError =
+  V2ConnectorConnectOauthBeginErrors[keyof V2ConnectorConnectOauthBeginErrors]
+
+export type V2ConnectorConnectOauthBeginResponses = {
+  /**
+   * Success
+   */
+  200: {
+    location: LocationInfo
+    data: ConnectorAttempt
+  }
+}
+
+export type V2ConnectorConnectOauthBeginResponse =
+  V2ConnectorConnectOauthBeginResponses[keyof V2ConnectorConnectOauthBeginResponses]
+
+export type V2ConnectorConnectOauthCancelData = {
+  body?: never
+  path: {
+    attemptID: string
+  }
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/connector/oauth/{attemptID}"
+}
+
+export type V2ConnectorConnectOauthCancelErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2ConnectorConnectOauthCancelError =
+  V2ConnectorConnectOauthCancelErrors[keyof V2ConnectorConnectOauthCancelErrors]
+
+export type V2ConnectorConnectOauthCancelResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2ConnectorConnectOauthCancelResponse =
+  V2ConnectorConnectOauthCancelResponses[keyof V2ConnectorConnectOauthCancelResponses]
+
+export type V2ConnectorConnectOauthStatusData = {
+  body?: never
+  path: {
+    attemptID: string
+  }
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/connector/oauth/{attemptID}"
+}
+
+export type V2ConnectorConnectOauthStatusErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2ConnectorConnectOauthStatusError =
+  V2ConnectorConnectOauthStatusErrors[keyof V2ConnectorConnectOauthStatusErrors]
+
+export type V2ConnectorConnectOauthStatusResponses = {
+  /**
+   * Success
+   */
+  200: {
+    location: LocationInfo
+    data:
+      | {
+          status: "pending"
+          time: {
+            created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+            expires: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          }
+        }
+      | {
+          status: "complete"
+          time: {
+            created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+            expires: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          }
+        }
+      | {
+          status: "failed"
+          message: string
+          time: {
+            created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+            expires: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          }
+        }
+      | {
+          status: "expired"
+          time: {
+            created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+            expires: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+          }
+        }
+  }
+}
+
+export type V2ConnectorConnectOauthStatusResponse =
+  V2ConnectorConnectOauthStatusResponses[keyof V2ConnectorConnectOauthStatusResponses]
+
+export type V2ConnectorConnectOauthCompleteData = {
+  body: {
+    code?: string
+  }
+  path: {
+    attemptID: string
+  }
+  query?: {
+    location?: {
+      directory?: string
+      workspace?: string
+    }
+  }
+  url: "/api/connector/oauth/{attemptID}/complete"
+}
+
+export type V2ConnectorConnectOauthCompleteErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+}
+
+export type V2ConnectorConnectOauthCompleteError =
+  V2ConnectorConnectOauthCompleteErrors[keyof V2ConnectorConnectOauthCompleteErrors]
+
+export type V2ConnectorConnectOauthCompleteResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2ConnectorConnectOauthCompleteResponse =
+  V2ConnectorConnectOauthCompleteResponses[keyof V2ConnectorConnectOauthCompleteResponses]
 
 export type V2PermissionRequestListData = {
   body?: never
@@ -10311,6 +10887,43 @@ export type V2QuestionRequestListResponses = {
 
 export type V2QuestionRequestListResponse = V2QuestionRequestListResponses[keyof V2QuestionRequestListResponses]
 
+export type V2SessionQuestionListData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/question"
+}
+
+export type V2SessionQuestionListErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+}
+
+export type V2SessionQuestionListError = V2SessionQuestionListErrors[keyof V2SessionQuestionListErrors]
+
+export type V2SessionQuestionListResponses = {
+  /**
+   * Success
+   */
+  200: {
+    data: Array<QuestionV2Request>
+  }
+}
+
+export type V2SessionQuestionListResponse = V2SessionQuestionListResponses[keyof V2SessionQuestionListResponses]
+
 export type V2SessionQuestionReplyData = {
   body: QuestionV2Reply
   path: {
@@ -10428,6 +11041,8 @@ export type PtyConnectData = {
   query?: {
     directory?: string
     workspace?: string
+    cursor?: string
+    ticket?: string
   }
   url: "/pty/{ptyID}/connect"
 }

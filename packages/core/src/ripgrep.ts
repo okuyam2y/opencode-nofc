@@ -94,7 +94,22 @@ const isInvalidPattern = (stderr: string) =>
 // ripgrep and disable .gitignore subtree pruning; glob() drops the --glob
 // argument for them so gitignored build output stays excluded
 // (fork, see opencode/src/tool/glob.ts MATCH_ALL doc comment).
-const MATCH_ALL_PATTERN = /^[*/\\]+$/
+//
+// A pattern is only a true catch-all when it is composed of `*` segments and
+// either (a) is just `*`/`**`/`***` with no separator (matches every basename
+// at any depth) or (b) contains a `**` globstar that crosses `/`. A pattern
+// like `*/*` is composed only of `*` and `/` yet is depth-anchored (matches
+// exactly two-component paths), so the old `/^[*/\\]+$/` test wrongly classed
+// it as match-all and dropped the --glob, returning the entire tree instead of
+// the pattern's subset (`*\*`, `/`, `\` had the same over-approximation).
+const GLOB_ONLY_CHARS = /^[*/\\]+$/
+function isMatchAllPattern(pattern: string): boolean {
+  if (!GLOB_ONLY_CHARS.test(pattern)) return false
+  // No separator → only stars → matches every basename (catch-all).
+  if (!pattern.includes("/") && !pattern.includes("\\")) return true
+  // Has a separator → only catch-all when a globstar crosses it.
+  return pattern.includes("**")
+}
 
 export const layer = Layer.effect(
   Service,
@@ -169,7 +184,7 @@ export const layer = Layer.effect(
             "--files",
             ...(input.hidden ? ["--hidden"] : []),
             ...(input.follow ? ["--follow"] : []),
-            ...(MATCH_ALL_PATTERN.test(input.pattern) ? [] : [`--glob=${input.pattern}`]),
+            ...(isMatchAllPattern(input.pattern) ? [] : [`--glob=${input.pattern}`]),
             "--glob=!**/.git/**",
             ".",
           ],

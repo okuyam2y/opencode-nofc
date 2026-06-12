@@ -1,4 +1,3 @@
-// @ts-nocheck — rebase #59 WIP: post-DB-schema-refactor (#29068) follow-up needed
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -232,7 +231,7 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
         } satisfies LLM.StreamInput
 
         const value = yield* handle.process(input)
-        const parts = yield* MessageV2.parts(msg.id)
+        const parts = MessageV2.parts(msg.id)
         const calls = yield* llm.calls
 
         expect(value).toBe("continue")
@@ -306,17 +305,14 @@ it.live("session.processor effect tests preserve text start time", () =>
           .pipe(Effect.forkChild)
 
         yield* waitFor(
-          MessageV2.parts(msg.id).pipe(
-            Effect.map((parts) => parts.find((part): part is SessionV1.TextPart => part.type === "text")),
-            Effect.provideService(Database.Service, database),
-          ),
+          Effect.sync(() => MessageV2.parts(msg.id).find((part): part is SessionV1.TextPart => part.type === "text")),
           "timed out waiting for text part",
         )
         yield* Effect.sleep("20 millis")
         gate.resolve()
 
         const exit = yield* Fiber.await(run)
-        const text = (yield* MessageV2.parts(msg.id)).find((part): part is SessionV1.TextPart => part.type === "text")
+        const text = (MessageV2.parts(msg.id)).find((part): part is SessionV1.TextPart => part.type === "text")
 
         expect(Exit.isSuccess(exit)).toBe(true)
         expect(text?.text).toBe("hello")
@@ -366,7 +362,7 @@ it.live("session.processor effect tests stop after token overflow requests compa
           tools: {},
         })
 
-        const parts = yield* MessageV2.parts(msg.id)
+        const parts = MessageV2.parts(msg.id)
 
         expect(value).toBe("compact")
         expect(parts.some((part) => part.type === "text" && part.text === "after")).toBe(true)
@@ -412,7 +408,7 @@ it.live("session.processor effect tests capture reasoning from http mock", () =>
           tools: {},
         })
 
-        const parts = yield* MessageV2.parts(msg.id)
+        const parts = MessageV2.parts(msg.id)
         const reasoning = parts.find((part): part is SessionV1.ReasoningPart => part.type === "reasoning")
         const text = parts.find((part): part is SessionV1.TextPart => part.type === "text")
 
@@ -460,7 +456,7 @@ it.live("session.processor effect tests reset reasoning state across retries", (
           tools: {},
         })
 
-        const parts = yield* MessageV2.parts(msg.id)
+        const parts = MessageV2.parts(msg.id)
         const reasoning = parts.filter((part): part is SessionV1.ReasoningPart => part.type === "reasoning")
 
         expect(value).toBe("continue")
@@ -551,7 +547,7 @@ it.live("session.processor effect tests retry recognized structured json errors"
           tools: {},
         })
 
-        const parts = yield* MessageV2.parts(msg.id)
+        const parts = MessageV2.parts(msg.id)
 
         expect(value).toBe("continue")
         expect(yield* llm.calls).toBe(2)
@@ -706,7 +702,7 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
           },
         })
 
-        const parts = yield* MessageV2.parts(msg.id)
+        const parts = MessageV2.parts(msg.id)
         const call = parts.find((part): part is SessionV1.ToolPart => part.type === "tool")
 
         expect(value).toBe("continue")
@@ -766,16 +762,13 @@ it.live("session.processor effect tests mark pending tools as aborted on cleanup
 
         yield* llm.wait(1)
         yield* waitFor(
-          MessageV2.parts(msg.id).pipe(
-            Effect.map((parts) => parts.find((part): part is SessionV1.ToolPart => part.type === "tool")),
-            Effect.provideService(Database.Service, database),
-          ),
+          Effect.sync(() => MessageV2.parts(msg.id).find((part): part is SessionV1.ToolPart => part.type === "tool")),
           "timed out waiting for tool part",
         )
         yield* Fiber.interrupt(run)
 
         const exit = yield* Fiber.await(run)
-        const parts = yield* MessageV2.parts(msg.id)
+        const parts = MessageV2.parts(msg.id)
         const call = parts.find((part): part is SessionV1.ToolPart => part.type === "tool")
 
         expect(Exit.isFailure(exit)).toBe(true)
@@ -1024,7 +1017,7 @@ it.live("session.processor effect tests discard unclosed tag on stream interrupt
         yield* Effect.promise(async () => {
           const end = Date.now() + 500
           while (Date.now() < end) {
-            const parts = await MessageV2.parts(msg.id)
+            const parts = MessageV2.parts(msg.id)
             const t = parts.find((p): p is MessageV2.TextPart => p.type === "text")
             if (t && t.text.includes("before")) return
             await Bun.sleep(10)
@@ -1087,7 +1080,7 @@ it.live("session.processor effect tests discard partial opening tag on stream in
         yield* Effect.promise(async () => {
           const end = Date.now() + 500
           while (Date.now() < end) {
-            const parts = await MessageV2.parts(msg.id)
+            const parts = MessageV2.parts(msg.id)
             const t = parts.find((p): p is MessageV2.TextPart => p.type === "text")
             if (t && t.text.length > 0) return
             await Bun.sleep(10)
@@ -1149,7 +1142,7 @@ it.live("session.processor effect tests strip tool tags on cleanup", () =>
         yield* Effect.promise(async () => {
           const end = Date.now() + 500
           while (Date.now() < end) {
-            const parts = await MessageV2.parts(msg.id)
+            const parts = MessageV2.parts(msg.id)
             if (parts.some((part) => part.type === "text")) return
             await Bun.sleep(10)
           }
@@ -1339,10 +1332,13 @@ function dupToolChunks(name: string, args: Record<string, unknown>) {
   ]
 }
 
-// NOTE: In native FC, the AI SDK executes tools directly before processor
-// sees tool-call events. Dedup in processor only affects hermes flow where
-// the processor controls tool execution (tool-call without tool-input-start).
-// These tests verify the native FC path: both calls execute, no error parts.
+// NOTE: The AI SDK executes tools inside its own pipeline, before the
+// processor sees tool-call events — the processor cannot gate execution
+// (C-003/C-004). Dedup/spam/near-dup gating lives in the resolveTools
+// execute wrapper (session/tool-gate.ts); the tools handed to
+// handle.process here are raw mocks WITHOUT that wrapper, so duplicates
+// execute twice and no dedup metadata appears. See test/session/
+// tool-gate.test.ts for the gated behavior.
 
 it.live("dedup: native FC duplicate bash — both execute (SDK handles execution)", () =>
   provideTmpdirServer(

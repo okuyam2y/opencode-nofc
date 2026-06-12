@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import path from "path"
 import fs from "fs/promises"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
-import { EditTool, replace } from "../../src/tool/edit"
+import { EditTool, replace, lock } from "../../src/tool/edit"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -91,6 +91,31 @@ const onceBus = Effect.fn("EditToolTest.onceBus")(function* (def: typeof Watcher
   })
   yield* Effect.addFinalizer(() => unsub)
   return deferred
+})
+
+describe("tool.edit lock (C-017 — shared with line_edit)", () => {
+  test("returns the same semaphore for the same resolved path and distinct ones otherwise", () => {
+    // line_edit imports this exact `lock` function, so same-path identity here
+    // proves edit and line_edit serialize against each other on a shared file.
+    expect(lock("/tmp/oc-lock-a.txt")).toBe(lock("/tmp/oc-lock-a.txt"))
+    expect(lock("/tmp/oc-lock-a.txt")).not.toBe(lock("/tmp/oc-lock-b.txt"))
+  })
+
+  test("withPermits(1) serializes concurrent critical sections", async () => {
+    const sem = lock("/tmp/oc-lock-serialize.txt")
+    let active = 0
+    let maxActive = 0
+    const critical = sem.withPermits(1)(
+      Effect.gen(function* () {
+        active++
+        maxActive = Math.max(maxActive, active)
+        yield* Effect.sleep("10 millis")
+        active--
+      }),
+    )
+    await Effect.runPromise(Effect.all([critical, critical, critical], { concurrency: "unbounded" }))
+    expect(maxActive).toBe(1)
+  })
 })
 
 describe("tool.edit", () => {

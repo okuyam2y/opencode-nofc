@@ -1,4 +1,3 @@
-// @ts-nocheck — rebase #59 WIP: post-DB-schema-refactor (#29068) follow-up needed
 import { describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"

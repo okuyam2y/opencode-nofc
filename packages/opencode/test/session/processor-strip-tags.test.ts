@@ -159,4 +159,25 @@ describe("stripToolTags", () => {
       expect(strip("\uff1ctool\uff1e and \uff1ccall\uff1e separately")).toBe("\uff1ctool\uff1e and \uff1ccall\uff1e separately")
     })
   })
+
+  // C-040: removing an orphaned tag can splice the surrounding text into a NEW
+  // literal tag whose own rule already ran in the same pass; the fixpoint loop
+  // re-runs the chain until the output stops changing.
+  describe("reconstructed tags across passes (C-040)", () => {
+    test("orphan removal splicing an open tag still strips it", () => {
+      // pass 1: "</commentary>" orphan removed -> "x<tool_call>y"
+      // pass 2: unclosed-open rule strips "<tool_call>y"
+      expect(strip("x<tool_</commentary>call>y")).toBe("x")
+    })
+
+    test("splice with a full pair reconstructed", () => {
+      // pass 1 removes the inner pair -> "<tool_call>payload</tool_call>"
+      // pass 2 removes the reconstructed pair
+      expect(strip("<tool_<tool_response>a</tool_response>call>payload</tool_<tool_response>b</tool_response>call>")).toBe("")
+    })
+
+    test("plain text mentioning tags inside prose is unaffected", () => {
+      expect(strip("the tool_call format uses tags")).toBe("the tool_call format uses tags")
+    })
+  })
 })

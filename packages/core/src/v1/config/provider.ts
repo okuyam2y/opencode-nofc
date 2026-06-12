@@ -108,9 +108,17 @@ export const Info = Schema.Struct({
           description:
             "Timeout in milliseconds to wait for response headers. Provider integrations may set defaults. Set to false to disable timeout.",
         }),
-        chunkTimeout: Schema.optional(PositiveInt).annotate({
+        chunkTimeout: Schema.optional(
+          // Mirror headerTimeout: resolveChunkTimeout() treats false/0 as
+          // "disabled" and that opt-out is documented in provider.ts, so the
+          // schema must accept it instead of rejecting the documented config.
+          Schema.Union([PositiveInt, Schema.Literal(false)]).annotate({
+            description:
+              "Timeout in milliseconds between streamed SSE chunks for this provider. If no chunk arrives within this window, the request is aborted. Set to false to disable (default 300000).",
+          }),
+        ).annotate({
           description:
-            "Timeout in milliseconds between streamed SSE chunks for this provider. If no chunk arrives within this window, the request is aborted.",
+            "Timeout in milliseconds between streamed SSE chunks for this provider. If no chunk arrives within this window, the request is aborted. Set to false to disable (default 300000).",
         }),
         toolParser: Schema.optional(Schema.Literals(["hermes", "hermes-strict", "xml"])).annotate({
           description:

@@ -1710,10 +1710,12 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
   const ctx = use()
   const display = createMemo(() => toolDisplay(props.part.tool))
 
-  // Hide complete tool output because its summary is rendered as a text part.
+  // Hide complete tool output because its summary is rendered as a text part —
+  // but never hide an errored call, and respect the details toggle (C-073).
   const shouldHide = createMemo(() => {
-    if (props.part.tool === "complete") return true
     if (ctx.showDetails()) return false
+    if (props.part.state.status === "error") return false
+    if (props.part.tool === "complete") return true
     if (props.part.state.status !== "completed") return false
     return true
   })
@@ -1840,6 +1842,7 @@ function InlineTool(props: {
   color?: RGBA
   complete: unknown
   pending: string
+  failure?: string
   spinner?: boolean
   subagent?: boolean
   children: JSX.Element
@@ -1893,6 +1896,7 @@ function InlineTool(props: {
       errorExpanded={errorExpanded()}
       complete={props.complete}
       pending={props.pending}
+      failure={props.failure}
       spinner={props.spinner}
       subagent={props.subagent}
       separateAfter={(id) => id !== undefined && ctx.userMessageIDs().has(id)}
@@ -1924,6 +1928,7 @@ export function InlineToolRow(props: {
   errorExpanded?: boolean
   complete: unknown
   pending: string
+  failure?: string
   spinner?: boolean
   subagent?: boolean
   children: JSX.Element
@@ -1967,7 +1972,7 @@ export function InlineToolRow(props: {
                 ~ {props.pending}
               </text>
             }
-            when={props.complete}
+            when={props.complete || props.failed}
           >
             <box flexDirection="row">
               <text
@@ -1982,7 +1987,7 @@ export function InlineToolRow(props: {
                 fg={props.failed ? props.errorColor : props.color}
                 attributes={props.denied ? TextAttributes.STRIKETHROUGH : undefined}
               >
-                {props.children}
+                {props.failed && !props.complete ? (props.failure ?? props.children) : props.children}
               </text>
             </box>
           </Show>
@@ -2454,7 +2459,7 @@ function ApplyPatch(props: ToolProps) {
         </For>
       </Match>
       <Match when={true}>
-        <InlineTool icon="%" pending="Preparing patch..." complete={false} part={props.part}>
+        <InlineTool icon="%" pending="Preparing patch..." failure="Patch failed" complete={false} part={props.part}>
           Patch
         </InlineTool>
       </Match>
@@ -2474,7 +2479,13 @@ function TodoWrite(props: ToolProps) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="⚙" pending="Updating todos..." complete={false} part={props.part}>
+        <InlineTool
+          icon="⚙"
+          pending="Updating todos..."
+          failure="Todo update failed"
+          complete={false}
+          part={props.part}
+        >
           Updating todos...
         </InlineTool>
       </Match>

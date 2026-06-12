@@ -264,7 +264,16 @@ for (const item of targets) {
       await $`swiftc -O -target ${swiftArch}-apple-macosx13.0 ${swiftSrc} -o ${ocrBin}`
       console.log(`Compiled ocr-vision for ${name}`)
     } catch (e) {
-      console.warn(`Failed to compile ocr-vision for ${name}:`, e)
+      // A darwin release shipped without bin/ocr-vision silently breaks
+      // OCR/document tooling for every user of that release — fail the build
+      // instead of warning (C-027). Opt out explicitly for local builds on
+      // machines without swiftc.
+      if (process.env["OPENCODE_SKIP_OCR_BIN"]) {
+        console.warn(`Skipping ocr-vision for ${name} (OPENCODE_SKIP_OCR_BIN):`, e)
+      } else {
+        console.error(`Failed to compile ocr-vision for ${name}:`, e)
+        process.exit(1)
+      }
     }
   }
 

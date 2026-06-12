@@ -350,6 +350,10 @@ export const layer: Layer.Layer<Service, never, Git.Service | EventV2Bridge.Serv
             if (next !== value.current) {
               log.info("branch changed", { from: value.current, to: next })
               value.current = next
+              // The cached summary embeds branch-dependent data (HEAD hash,
+              // counters) — drop it so the next summary() refetches instead of
+              // serving the old branch for up to the TTL (C-032).
+              value.summary = undefined
               yield* events.publish(Event.BranchUpdated, { branch: next })
             }
           })

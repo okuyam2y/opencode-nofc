@@ -61,6 +61,15 @@ describe("session.retry.delay", () => {
     expect(SessionRetry.delay(1, error)).toBe(2000)
   })
 
+  test("falls back to backoff for zero/negative retry-after (no immediate retry storm)", () => {
+    // A 0/negative Retry-After must not produce a 0ms (immediate) delay — with
+    // no attempt cap in policy() that would be an unbounded retry loop.
+    expect(SessionRetry.delay(1, apiError({ "retry-after-ms": "0" }))).toBe(2000)
+    expect(SessionRetry.delay(2, apiError({ "retry-after-ms": "-100" }))).toBe(4000)
+    expect(SessionRetry.delay(1, apiError({ "retry-after": "0" }))).toBe(2000)
+    expect(SessionRetry.delay(1, apiError({ "retry-after": "-5" }))).toBe(2000)
+  })
+
   test("ignores malformed date retry hints", () => {
     const error = apiError({ "retry-after": "Invalid Date String" })
     expect(SessionRetry.delay(1, error)).toBe(2000)
@@ -88,7 +97,9 @@ describe("session.retry.delay", () => {
   it.instance("policy updates retry status and increments attempts", () =>
     Effect.gen(function* () {
       const sessionID = SessionID.make("session-retry-test")
-      const error = apiError({ "retry-after-ms": "0" })
+      // Small positive Retry-After keeps the policy fast while honouring the
+      // header (0 now falls through to multi-second backoff — see delay tests).
+      const error = apiError({ "retry-after-ms": "5" })
       const status = yield* SessionStatus.Service
 
       const step = yield* Schedule.toStepWithMetadata(

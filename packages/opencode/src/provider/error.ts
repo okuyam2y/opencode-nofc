@@ -177,7 +177,9 @@ function isProxyErrorBody(body: string | undefined): boolean {
 
 function requestBodyBytes(error: APICallError): number {
   try {
-    return error.requestBodyValues ? JSON.stringify(error.requestBodyValues).length : 0
+    // Byte length, not String.length: UTF-16 code units undercount CJK-heavy
+    // bodies ~3x, so genuinely-large requests missed the proxy hint (C-033).
+    return error.requestBodyValues ? new TextEncoder().encode(JSON.stringify(error.requestBodyValues)).length : 0
   } catch {
     return 0
   }

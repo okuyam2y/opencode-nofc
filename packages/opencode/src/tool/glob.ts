@@ -113,7 +113,10 @@ export const GlobTool = Tool.define(
             if (truncated) {
               output.push("")
               output.push(
-                `(Results are truncated: showing first ${limit} results. Consider using a more specific path or pattern.)`,
+                // Not "first N": the kept subset is ripgrep discovery order and is
+                // then displayed mtime-sorted, so it is neither the first nor the
+                // most recent N of ALL matches (C-055).
+                `(Results are truncated: showing ${limit} of the matches, sorted by modification time. Consider using a more specific path or pattern.)`,
               )
             }
           }

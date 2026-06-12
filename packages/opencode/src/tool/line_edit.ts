@@ -12,7 +12,7 @@ import { Instance } from "../project/instance"
 import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { containsSpam } from "@/util/spam-filter"
-import { trimDiff } from "./edit"
+import { trimDiff, lock } from "./edit"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Bom from "@/util/bom"
 
@@ -77,7 +77,10 @@ export const LineEditTool = Tool.define(
           let diff = ""
           let contentOld = ""
           let contentNew = ""
-          yield* Effect.gen(function* () {
+          // Serialize the whole read-modify-write under the shared per-path lock
+          // so concurrent line_edit/edit calls on the same file cannot interleave
+          // and lose writes (C-017 — mirrors edit.ts's lock).
+          yield* lock(filePath).withPermits(1)(Effect.gen(function* () {
             const stats = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
             if (!stats) throw new Error(`File ${filePath} not found`)
             if (stats.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
@@ -161,7 +164,7 @@ export const LineEditTool = Tool.define(
                 normalizeLineEndings(contentNew),
               ),
             )
-          }).pipe(Effect.orDie)
+          })).pipe(Effect.orDie)
 
           let additions = 0
           let deletions = 0

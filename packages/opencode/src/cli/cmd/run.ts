@@ -661,7 +661,7 @@ export const RunCommand = effectCmd({
         async function loop(client: OpencodeClient, events: Awaited<ReturnType<typeof sdk.event.subscribe>>) {
           const toggles = new Map<string, boolean>()
           let error: string | undefined
-          const textBuffer = new StepTextBuffer((text) => {
+          const writeFinal = (text: string) => {
             if (!process.stdout.isTTY) {
               process.stdout.write(text + EOL)
               return
@@ -669,7 +669,8 @@ export const RunCommand = effectCmd({
             UI.empty()
             UI.println(text)
             UI.empty()
-          })
+          }
+          const textBuffer = new StepTextBuffer(writeFinal)
 
           for await (const event of events.stream) {
             if (
@@ -693,6 +694,16 @@ export const RunCommand = effectCmd({
                 if (emit("tool_use", { part })) continue
                 if (part.state.status === "completed") {
                   await tool(part)
+                  // The `complete` tool's argument IS the assistant's final
+                  // answer (COMPLETE_DESCRIPTION: "The summary is your final
+                  // message to the user"), but it lands as a tool output, not a
+                  // text part — so the fallback tool renderer prints only the
+                  // "complete" title and the answer never reaches stdout (C-001).
+                  // Surface the summary as the final text in non-json mode.
+                  if (part.tool === "complete" && args.format !== "json") {
+                    const summary = part.state.output?.trim()
+                    if (summary) writeFinal(summary)
+                  }
                   continue
                 }
                 await toolError(part)

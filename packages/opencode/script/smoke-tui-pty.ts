@@ -149,6 +149,9 @@ if (!state.exited) fail("TUI did not exit after quit keys (hang)")
 
 const sigFinal = firstSignature()
 if (sigFinal) fail(`crash/hang signature during shutdown: ${JSON.stringify(sigFinal)}`)
+// Contract (d) requires a CLEAN exit — a crash-on-quit that exits non-zero
+// without printing a known signature must not pass (C-028).
+if (state.exited.exitCode !== 0) fail(`TUI exited non-zero after quit (code ${state.exited.exitCode})`)
 
 cleanup()
 console.log(`TUI smoke passed: frame painted + clean exit (code ${state.exited.exitCode})`)

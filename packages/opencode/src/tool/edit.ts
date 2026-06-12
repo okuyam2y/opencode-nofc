@@ -35,7 +35,10 @@ function convertToLineEnding(text: string, ending: "\n" | "\r\n"): string {
 
 const locks = new Map<string, Semaphore.Semaphore>()
 
-function lock(filePath: string) {
+// Exported so line_edit shares the SAME per-path semaphore: edit and line_edit
+// both do read-modify-write on a file and must serialize against each other,
+// not just within their own tool (C-017).
+export function lock(filePath: string) {
   const resolvedFilePath = FSUtil.resolve(filePath)
   const hit = locks.get(resolvedFilePath)
   if (hit) return hit

@@ -668,8 +668,13 @@ export const layer = Layer.effect(
 
       let next: Info
       let changed: boolean
+      // Normalize the existing file before re-validating: the load path
+      // (line 252) tolerates legacy keys (e.g. compaction.tail_tokens) via
+      // normalizeLoadedConfig, so a user who can start up must also be able to
+      // persist a global config update — otherwise the migration shim's target
+      // population (legacy configs) hits InvalidError on every settings write.
       if (!file.endsWith(".jsonc")) {
-        const existing = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(before, file), file)
+        const existing = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(ConfigParse.jsonc(before, file), file), file)
         const merged = mergeDeep(writable(existing), patch)
         const serialized = JSON.stringify(merged, null, 2)
         changed = serialized !== before
@@ -677,7 +682,7 @@ export const layer = Layer.effect(
         next = merged
       } else {
         const updated = patchJsonc(before, patch)
-        next = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(updated, file), file)
+        next = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(ConfigParse.jsonc(updated, file), file), file)
         changed = updated !== before
         if (changed) yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
       }

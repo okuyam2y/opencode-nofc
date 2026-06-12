@@ -73,6 +73,13 @@ export function provider(model: Provider.Model, options?: { toolParser?: string;
         .replace(
           /^.*Try to use apply_patch for single file edits.*$/m,
           "- Use the available file editing tools for single file edits.",
+        )
+        .replace(
+          // multi_tool_use.parallel is an OpenAI-native pseudo-tool; in the
+          // tool-parser environment it is not registered and calling it just
+          // burns a turn (C-045 — observed as a hermes hallucination).
+          /^.*Use `multi_tool_use\.parallel`.*$/m,
+          "- Parallelize tool calls whenever possible - especially file reads. To run tools in parallel, emit multiple tool calls in a single reply. Never chain together bash commands with separators like `echo \"====\";` as this renders to the user poorly.",
         ) + toolParserGuidance,
     )
   }

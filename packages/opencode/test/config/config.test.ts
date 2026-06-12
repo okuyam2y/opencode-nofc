@@ -407,6 +407,32 @@ it.effect("updates global config and omits empty shell key in jsonc", () =>
   ),
 )
 
+it.effect("persists a global update when the existing config has the legacy compaction.tail_tokens key (json)", () =>
+  // The load path migrates tail_tokens -> preserve_recent_tokens; updateGlobal
+  // must apply the same normalization or the legacy population the shim targets
+  // can never persist any settings change (C-008).
+  withGlobalConfig({ config: { compaction: { tail_tokens: 1234 } } as any }, ({ dir }) =>
+    Effect.gen(function* () {
+      const result = yield* Config.use.updateGlobal({ shell: "bash" })
+      expect(result.changed).toBe(true)
+      const writtenConfig = (yield* FSUtil.use.readJson(path.join(dir, "opencode.json"))) as any
+      expect(writtenConfig.shell).toBe("bash")
+      expect(writtenConfig.compaction).not.toHaveProperty("tail_tokens")
+      expect(writtenConfig.compaction?.preserve_recent_tokens).toBe(1234)
+    }),
+  ),
+)
+
+it.effect("persists a global update when the existing config has legacy compaction.tail_tokens (jsonc)", () =>
+  withGlobalConfig({ config: { compaction: { tail_tokens: 999 } } as any, name: "opencode.jsonc" }, ({ dir }) =>
+    Effect.gen(function* () {
+      const result = yield* Config.use.updateGlobal({ shell: "zsh" })
+      expect(result.changed).toBe(true)
+      expect(result.info.shell).toBe("zsh")
+    }),
+  ),
+)
+
 it.instance(
   "loads formatter boolean config",
   Effect.gen(function* () {

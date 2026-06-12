@@ -7,8 +7,10 @@
  * tool-call argument values.
  *
  * Detection requires BOTH a spam keyword AND a trace marker to be present
- * in the same text, to avoid false positives on legitimate content that
- * references these keywords (e.g. documentation about this incident).
+ * in the same text. This REDUCES false positives on legitimate content that
+ * quotes a keyword alone (e.g. documentation about this incident); a text
+ * that quotes a keyword AND a full trace marker together is still flagged —
+ * an accepted safety-side tradeoff, not a protected class (C-063).
  */
 
 /** Known Chinese gambling spam keywords from GPT-5.4 training data contamination. */

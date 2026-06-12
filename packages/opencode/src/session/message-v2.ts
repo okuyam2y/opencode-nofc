@@ -63,6 +63,9 @@ export const ContextOverflowError = NamedError.create("ContextOverflowError", {
   message: Schema.String,
   responseBody: Schema.optional(Schema.String),
 })
+export const ContentFilterError = NamedError.create("ContentFilterError", {
+  message: Schema.String,
+})
 
 export class OutputFormatText extends Schema.Class<OutputFormatText>("OutputFormatText")({
   type: Schema.Literal("text"),
@@ -389,6 +392,7 @@ const AssistantErrorSchema = Schema.Union([
   AbortedError.EffectSchema,
   StructuredOutputError.EffectSchema,
   ContextOverflowError.EffectSchema,
+  ContentFilterError.EffectSchema,
   APIError.EffectSchema,
 ]).annotate({ discriminator: "name" })
 type AssistantError = Schema.Schema.Type<typeof AssistantErrorSchema>
@@ -1173,6 +1177,13 @@ const CONTENT_FILTER_RE = /content management policy|content filtering|response 
  *  excluded — it indicates the gateway is unreachable, not a transient drop. */
 const CONNECTION_ERROR_CODES = new Set(["ECONNRESET", "EPIPE", "ETIMEDOUT", "ECONNABORTED", "UND_ERR_SOCKET"])
 
+/** Message-pattern fallback for connection drops that carry no `code` property —
+ *  Bun's socket layer surfaces them as bare strings or message-only errors
+ *  (e.g. "recvAddress(..) failed with error(-104): Connection reset by peer",
+ *  "The socket connection was closed unexpectedly"), which the shape-based
+ *  extractConnectionErrorCode cannot see. */
+const CONNECTION_ERROR_MESSAGE_RE = /connection reset|econnreset|socket connection was closed/i
+
 /** Extract HTTP status code from heterogeneous error shapes (plain objects, Error subclasses, JSON-encoded messages). */
 export function extractStatusCode(e: unknown): number | undefined {
   if (typeof e !== "object" || e === null) return undefined
@@ -1210,6 +1221,16 @@ export function extractConnectionErrorCode(e: unknown): string | undefined {
     if (typeof c === "string" && CONNECTION_ERROR_CODES.has(c)) return c
   }
   return undefined
+}
+
+/** Detect connection-drop errors by message text. Complements
+ *  extractConnectionErrorCode for errors with no code property: bare strings
+ *  and message-only Error/APIError shapes. */
+export function isConnectionErrorMessage(e: unknown): boolean {
+  if (typeof e === "string") return CONNECTION_ERROR_MESSAGE_RE.test(e)
+  if (typeof e !== "object" || e === null) return false
+  const msg = (e as any).data?.message ?? (e as any).message
+  return typeof msg === "string" && CONNECTION_ERROR_MESSAGE_RE.test(msg)
 }
 
 /** Check if error message indicates a content filter block (should not be retried). */
@@ -1256,7 +1277,12 @@ export function tryEscalateStreamError(part: unknown): StreamRetryableError | un
   if (statusCode !== undefined && statusCode >= 500) {
     return new StreamRetryableError(statusCode, streamErrorMessage(err), err)
   }
-  if (extractConnectionErrorCode(err)) {
+  // Message-based detection is gated on "no HTTP status extractable": an error
+  // that reached HTTP status exchange (e.g. a 4xx whose body text mentions a
+  // connection reset) is a server verdict, not a transport drop — keep it on
+  // the normal classification path. Explicit connection codes stay ungated
+  // (pre-existing semantics: code=ECONNRESET is trusted as transient).
+  if (extractConnectionErrorCode(err) || (statusCode === undefined && isConnectionErrorMessage(err))) {
     return new StreamRetryableError(undefined, streamErrorMessage(err), err)
   }
   return undefined
@@ -1276,6 +1302,16 @@ export function fromError(
   if (ctx.forceNonRetryable && APIError.isInstance(result)) {
     return new APIError(
       { ...result.data, isRetryable: false, nonRetryable: true },
+      { cause: e },
+    ).toObject()
+  }
+  // UnknownError has no veto field in its schema, but retryable()'s plain-text
+  // rate-limit fallback approves retries for it — which rollbackAttempt then
+  // converts into a hard defect that masks the original error (C-044). Re-wrap
+  // as a vetoed APIError so the existing veto wins and the message survives.
+  if (ctx.forceNonRetryable && NamedError.Unknown.isInstance(result)) {
+    return new APIError(
+      { message: result.data.message, isRetryable: false, nonRetryable: true },
       { cause: e },
     ).toObject()
   }
@@ -1430,6 +1466,11 @@ function fromErrorInner(
               : errMsg,
             statusCode,
             isRetryable: !contentFiltered,
+            // A content filter is a verdict on the prompt, not a transient
+            // server failure. Without the hard veto, retryable()'s 5xx escape
+            // hatch (status >= 500 force-retry) ignores isRetryable:false and
+            // retries it forever. Stamp nonRetryable so the veto wins.
+            ...(contentFiltered && { nonRetryable: true }),
           },
           { cause: e },
         ).toObject()

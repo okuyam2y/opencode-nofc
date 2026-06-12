@@ -58,6 +58,22 @@ if (version.startsWith("0.0.0-")) {
   console.error(`Refusing to publish preview version ${version}. Build with OPENCODE_VERSION set (e.g. oc-dev-build).`)
   process.exit(1)
 }
+// Without OPENCODE_VERSION, build.ts derives Script.version from the UPSTREAM
+// opencode-ai registry (latest + bump) — publishing that number to
+// opencode-ai-nofc would derail the fork's version line and auto-upgrade users
+// to an unintended version (C-075). Require the explicit intent.
+if (!process.env["OPENCODE_VERSION"]) {
+  console.error(
+    `Refusing to publish ${version}: OPENCODE_VERSION is not set, so the dist version may be derived from the upstream registry. Re-run with OPENCODE_VERSION=${version} if this version is intended.`,
+  )
+  process.exit(1)
+}
+if (process.env["OPENCODE_VERSION"] !== version) {
+  console.error(
+    `Refusing to publish: dist version ${version} does not match OPENCODE_VERSION=${process.env["OPENCODE_VERSION"]} (stale dist? rebuild first).`,
+  )
+  process.exit(1)
+}
 
 // Generate wrapper package (clean on every run to support retries)
 const wrapperDir = `./dist/${PREFIX}`
@@ -76,10 +92,15 @@ for (const file of [`${wrapperDir}/bin/opencode`, `${wrapperDir}/postinstall.mjs
   const patched = content
     .replaceAll('`opencode-${platform}-${arch}`', '`opencode-ai-nofc-${platform}-${arch}`')
     .replaceAll('"opencode-" + platform + "-" + arch', '"opencode-ai-nofc-" + platform + "-" + arch')
-  if (patched !== content) {
-    await Bun.file(file).write(patched)
-    console.log(`Patched binary name in ${file}`)
+  if (patched === content) {
+    // A silent no-op here ships a wrapper that resolves UPSTREAM package names
+    // (bin/opencode's findBinary walks up node_modules, so it could execute an
+    // installed upstream binary instead of the fork) — fail loud (C-076).
+    console.error(`Binary-name pattern not found in ${file} — upstream refactored the name expression; update publish-nofc.ts.`)
+    process.exit(1)
   }
+  await Bun.file(file).write(patched)
+  console.log(`Patched binary name in ${file}`)
 }
 
 await Bun.file(`${wrapperDir}/package.json`).write(

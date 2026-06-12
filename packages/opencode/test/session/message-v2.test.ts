@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { APICallError } from "ai"
 import { MessageV2 } from "../../src/session/message-v2"
+import { SessionRetry } from "../../src/session/retry"
 import { ProviderTransform } from "@/provider/transform"
 import type { Provider } from "@/provider/provider"
 
@@ -1481,6 +1482,23 @@ describe("session.message-v2.toModelMessage", () => {
 })
 
 describe("session.message-v2.fromError", () => {
+  test("stamps nonRetryable on a 5xx content-filter so retryable()'s 5xx hatch cannot retry it", () => {
+    // A content filter is a verdict on the prompt. Without the hard veto, the
+    // 5xx force-retry escape hatch in retryable() ignores isRetryable:false and
+    // retries it forever (C-011).
+    const result = MessageV2.fromError(
+      { statusCode: 503, message: "response was filtered by Azure content management policy" },
+      { providerID },
+    )
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    const api = result as Extract<typeof result, { name: "APIError" }>
+    expect(api.data.statusCode).toBe(503)
+    expect(api.data.isRetryable).toBe(false)
+    expect(api.data.nonRetryable).toBe(true)
+    // The whole point: retryable() must refuse it despite status >= 500.
+    expect(SessionRetry.retryable(result as any, providerID)).toBeUndefined()
+  })
+
   test("serializes context_length_exceeded as ContextOverflowError", () => {
     const input = {
       type: "error",
@@ -2502,5 +2520,107 @@ describe("MessageV2.tryEscalateStreamError", () => {
     // Null / non-object input.
     expect(MessageV2.tryEscalateStreamError(null)).toBeUndefined()
     expect(MessageV2.tryEscalateStreamError(undefined)).toBeUndefined()
+  })
+
+  test("escalates bare-string connection drops from Bun's socket layer (observed 2026-06-11 run=193767de)", () => {
+    // The error part carried a plain string, no code property — the shape-based
+    // extraction missed it and the session died as non-retryable UnknownError.
+    const part = {
+      type: "error" as const,
+      error: "recvAddress(..) failed with error(-104): Connection reset by peer",
+    }
+    const escalated = MessageV2.tryEscalateStreamError(part)
+    expect(escalated).toBeInstanceOf(MessageV2.StreamRetryableError)
+    expect(escalated?.statusCode).toBeUndefined()
+    expect(escalated?.message).toContain("Connection reset by peer")
+  })
+
+  test("escalates message-only error objects without a code property", () => {
+    const part = {
+      type: "error" as const,
+      error: { message: "The socket connection was closed unexpectedly. For more information, pass `verbose: true`" },
+    }
+    expect(MessageV2.tryEscalateStreamError(part)).toBeInstanceOf(MessageV2.StreamRetryableError)
+  })
+
+  test("does NOT escalate unrelated string errors", () => {
+    expect(
+      MessageV2.tryEscalateStreamError({ type: "error", error: "model produced malformed output" }),
+    ).toBeUndefined()
+  })
+
+  test("does NOT escalate status-bearing sub-5xx errors whose message merely mentions a connection reset", () => {
+    // A 4xx with connection-reset text in the body is a server verdict, not a
+    // transport drop — message-based detection must not strip its status.
+    expect(
+      MessageV2.tryEscalateStreamError({
+        type: "error",
+        error: { statusCode: 400, message: "upstream proxy: connection reset while reading client body" },
+      }),
+    ).toBeUndefined()
+  })
+})
+
+describe("MessageV2.isConnectionErrorMessage", () => {
+  test("matches observed connection-drop messages in string and object shapes", () => {
+    expect(MessageV2.isConnectionErrorMessage("recvAddress(..) failed with error(-104): Connection reset by peer")).toBe(true)
+    expect(MessageV2.isConnectionErrorMessage({ message: "The socket connection was closed unexpectedly" })).toBe(true)
+    expect(MessageV2.isConnectionErrorMessage({ data: { message: "Connection reset by server" } })).toBe(true)
+  })
+
+  test("rejects non-connection messages and non-string shapes", () => {
+    expect(MessageV2.isConnectionErrorMessage("SSE read timed out")).toBe(false)
+    expect(MessageV2.isConnectionErrorMessage({ message: "Bad Request" })).toBe(false)
+    expect(MessageV2.isConnectionErrorMessage(null)).toBe(false)
+    expect(MessageV2.isConnectionErrorMessage(undefined)).toBe(false)
+    expect(MessageV2.isConnectionErrorMessage(42)).toBe(false)
+  })
+})
+
+// C-068: pin implemented branches that had no test — numeric `.code` and
+// `.response.statusCode` status candidates, the JSON.stringify catch-all in
+// isContentFilter, and ECONNABORTED (the only CONNECTION_ERROR_CODES member
+// without a case).
+describe("session.message-v2 error-shape branch pins (C-068)", () => {
+  test("extractStatusCode reads numeric .code and .response.statusCode", () => {
+    expect(MessageV2.extractStatusCode({ code: 503 })).toBe(503)
+    expect(MessageV2.extractStatusCode({ response: { statusCode: 502 } })).toBe(502)
+    // string codes (ECONNRESET et al.) must NOT be returned as status codes
+    expect(MessageV2.extractStatusCode({ code: "ECONNRESET" })).toBeUndefined()
+  })
+
+  test("isContentFilter matches deeply nested shapes via the stringify catch-all", () => {
+    expect(MessageV2.isContentFilter({ error: { details: { reason: "response was filtered" } } })).toBe(true)
+    expect(MessageV2.isContentFilter({ error: { details: { reason: "quota exceeded" } } })).toBe(false)
+  })
+
+  test("extractConnectionErrorCode recognizes ECONNABORTED", () => {
+    expect(MessageV2.extractConnectionErrorCode({ code: "ECONNABORTED" })).toBe("ECONNABORTED")
+    expect(MessageV2.extractConnectionErrorCode({ cause: { code: "ECONNABORTED" } })).toBe("ECONNABORTED")
+  })
+})
+
+// C-044: a plain-text rate-limit error maps to UnknownError, whose schema has
+// no veto field — retryable()'s rate-limit-text fallback would approve a
+// post-tool retry and rollbackAttempt would convert it into a hard defect
+// masking the original error. fromError(forceNonRetryable) re-wraps it as a
+// vetoed APIError instead.
+describe("MessageV2.fromError forceNonRetryable on plain-text rate limits (C-044)", () => {
+  const rateLimited = new Error("upstream says: rate limit exceeded, slow down")
+
+  test("re-wraps UnknownError as a vetoed APIError and the retry veto wins", () => {
+    const result = MessageV2.fromError(rateLimited, { providerID, forceNonRetryable: true })
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    expect((result.data as any).nonRetryable).toBe(true)
+    expect((result.data as any).message).toContain("rate limit exceeded")
+    expect(SessionRetry.retryable(result, "test")).toBeUndefined()
+  })
+
+  test("pre-tool (no veto) the same error stays Unknown and remains retryable", () => {
+    const result = MessageV2.fromError(rateLimited, { providerID })
+    expect(result.name).toBe("UnknownError")
+    expect(SessionRetry.retryable(result, "test")).toMatchObject({
+      message: expect.stringContaining("rate limit"),
+    })
   })
 })

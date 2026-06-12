@@ -19,7 +19,9 @@
   "mcp": {
     "chrome-devtools": {
       "type": "local",
-      "command": ["npx", "-y", "chrome-devtools-mcp@latest"],
+      // Pinned (not @latest): an unpinned package would be auto-installed and
+      // executed on every opencode start in this project (C-023).
+      "command": ["npx", "-y", "chrome-devtools-mcp@1.2.0"],
       "enabled": true,
     },
   },

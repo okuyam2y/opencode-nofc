@@ -17,15 +17,18 @@ import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecy
 // observability runID), so the legacy Log.init + ensureProcessMetadata("worker") setup is gone.
 Heap.start()
 
+// Deliberately keep the worker alive on uncaught errors (server resilience) —
+// but log the full stack, not just the message, so the swallowed exception is
+// diagnosable (C-030).
 process.on("unhandledRejection", (e) => {
   log.error("rejection", {
-    e: e instanceof Error ? e.message : e,
+    e: e instanceof Error ? (e.stack ?? e.message) : e,
   })
 })
 
 process.on("uncaughtException", (e) => {
   log.error("exception", {
-    e: e instanceof Error ? e.message : e,
+    e: e instanceof Error ? (e.stack ?? e.message) : e,
   })
 })
 

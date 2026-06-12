@@ -39,7 +39,10 @@ export function delay(attempt: number, error?: SessionV1.APIError) {
       const retryAfterMs = headers["retry-after-ms"]
       if (retryAfterMs) {
         const parsedMs = Number.parseFloat(retryAfterMs)
-        if (!Number.isNaN(parsedMs)) {
+        // Only honour positive waits. A 0/negative Retry-After (some gateways
+        // emit "0" under load) would otherwise mean immediate, unbounded retries
+        // since policy() has no attempt cap — fall through to normal backoff.
+        if (!Number.isNaN(parsedMs) && parsedMs > 0) {
           return cap(parsedMs)
         }
       }
@@ -47,7 +50,7 @@ export function delay(attempt: number, error?: SessionV1.APIError) {
       const retryAfter = headers["retry-after"]
       if (retryAfter) {
         const parsedSeconds = Number.parseFloat(retryAfter)
-        if (!Number.isNaN(parsedSeconds)) {
+        if (!Number.isNaN(parsedSeconds) && parsedSeconds > 0) {
           // convert seconds to milliseconds
           return cap(Math.ceil(parsedSeconds * 1000))
         }

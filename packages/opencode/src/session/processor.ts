@@ -24,7 +24,7 @@ import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
 import * as log from "@/util/log-sync"
 import { isRecord } from "@/util/record"
-import { containsSpamInValues, stripSpam } from "@/util/spam-filter"
+import { stripSpam } from "@/util/spam-filter"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionEvent } from "@opencode-ai/core/session/event"
@@ -38,11 +38,6 @@ import { InstanceRef } from "@/effect/instance-ref"
 import type { ToolFailureEvent } from "./failure-detector"
 import { READ_NOT_FOUND_PREFIX } from "@/tool/read"
 
-/** Tools exempt from same-step dedup (Stage 4).
- *  Only truly read-only, side-effect-free tools belong here.
- *  question (prompts user) and skill (injects context) are NOT exempt. */
-const DEDUP_SKIP_TOOLS = new Set(["read", "glob", "grep", "webfetch", "websearch", "codesearch", "invalid"])
-
 /**
  * Strip tool response/result tags that models echo from conversation history.
  * Matches both literal tags and ZWS-escaped variants (<\u200btag>, </\u200btag>)
@@ -50,6 +45,21 @@ const DEDUP_SKIP_TOOLS = new Set(["read", "glob", "grep", "webfetch", "websearch
  * hermes escape middleware (see llm.ts escapeHermesTagsInMessage).
  */
 function stripToolTags(text: string): string {
+  // One ordered pass can splice surrounding text into a NEW literal tag after
+  // that tag's own rule already ran — e.g. "<tool_" + "</commentary>" + "call>"
+  // reconstructs "<tool_call>" while removing the orphaned commentary close
+  // (C-040). Re-run the chain until it stops changing; the cap bounds CPU on
+  // adversarial nesting.
+  let out = text
+  for (let i = 0; i < 8; i++) {
+    const next = stripToolTagsOnce(out)
+    if (next === out) break
+    out = next
+  }
+  return out
+}
+
+function stripToolTagsOnce(text: string): string {
   return normalizeDegradedToolTags(text)
     // 1. Remove complete tag pairs (open...close)
     .replace(/<\u200b?tool_call>[\s\S]*?<\/\u200b?tool_call>/g, "")
@@ -327,14 +337,6 @@ function estimateTokensFromInput(input: { messages: unknown[]; system: string[];
 const DOOM_LOOP_THRESHOLD = 3
 
   /**
-   * Build a dedup key from tool name and input.
-   * NUL separator prevents collisions between tool names and input JSON.
-   */
-  export function dedupKey(toolName: string, input: Record<string, unknown>): string {
-    return toolName + "\0" + JSON.stringify(input)
-  }
-
-  /**
    * Detect overlapping retransmission of streaming text. Returns the number of
    * leading characters of `delta` that duplicate the tail of `accumulated` and
    * should be sliced off, or 0 when there is no dedup-worthy overlap.
@@ -357,13 +359,6 @@ const DOOM_LOOP_THRESHOLD = 3
     return 0
   }
 
-  /**
-   * Check whether an identical tool call (same name + input) was already
-   * accepted in this step.  Uses a Set that survives tool-result deletions
-   * from ctx.toolcalls (which clears entries on completion).
-   *
-   * Exported for unit testing.
-   */
   /** Re-export for unit testing. */
   export const _stripToolTags = stripToolTags
   /** Re-export for unit testing. */
@@ -398,62 +393,40 @@ const DOOM_LOOP_THRESHOLD = 3
 
   /**
    * Decide whether a stream failure should be converted into a graceful step end
-   * instead of a session error. Applies only to SSE inter-chunk timeouts
+   * instead of a session error. Applies to SSE inter-chunk timeouts
    * (ProviderResponseStreamError from the chunkTimeout guard — matched by name so
-   * bundling cannot break instanceof) and only after at least one tool executed in
-   * the attempt: pre-tool stalls are already retried automatically, while post-tool
-   * stalls cannot be retried (re-running tool side effects is unsafe) but their
-   * completed tool results are persisted — ending the step lets the loop continue
-   * and the model resumes from the results. Exported for unit testing.
+   * bundling cannot break instanceof) and to explicit connection drops
+   * (reset-by-peer / closed-socket — escalated StreamRetryableError without an
+   * HTTP status, code-bearing SystemErrors, or Bun's message-only/string shapes),
+   * and only after at least one tool executed in the attempt: pre-tool failures
+   * are already retried automatically, while post-tool failures cannot be retried
+   * (re-running tool side effects is unsafe) but their completed tool results are
+   * persisted — ending the step lets the loop continue and the model resumes from
+   * the results. Status-bearing errors keep failing loud here even when their
+   * message text mentions a connection reset (an HTTP status means the server
+   * answered — that's a verdict, not a transport drop); only explicit connection
+   * codes are trusted unconditionally HERE. Note the deliberate layering
+   * asymmetry (C-039): tryEscalateStreamError checks 5xx BEFORE connection
+   * codes, so a raw error carrying both code and 5xx ends the step gracefully
+   * when thrown directly but fails loud when it arrives pre-wrapped as a
+   * status-bearing StreamRetryableError. Both outcomes are safe-side; do not
+   * "fix" one to match the other without re-running the 2026-06-12 oc-dev
+   * review of this decision. Exported for unit testing.
    */
   export function shouldEndStepAfterStall(e: unknown, hasExecutedTool: boolean, consecutiveStallEnds: number): boolean {
     if (!hasExecutedTool) return false
     if (consecutiveStallEnds >= MAX_CONSECUTIVE_STALL_STEP_ENDS) return false
-    return e instanceof Error && e.name === "ProviderResponseStreamError"
+    if (e instanceof Error && e.name === "ProviderResponseStreamError") return true
+    if (e instanceof Error && e.name === "StreamRetryableError") {
+      return (e as { statusCode?: number }).statusCode === undefined
+    }
+    if (MessageV2.extractConnectionErrorCode(e) !== undefined) return true
+    return MessageV2.extractStatusCode(e) === undefined && MessageV2.isConnectionErrorMessage(e)
   }
 
-  export function isDuplicate(
-    acceptedKeys: Map<string, string>,
-    toolName: string,
-    input: Record<string, unknown>,
-  ): string | undefined {
-    return acceptedKeys.get(dedupKey(toolName, input))
-  }
-
-  /**
-   * Detect near-duplicate write tool calls targeting the same filePath within
-   * a single step.  hermes parser boundary errors can split one write into
-   * two calls — first incomplete, second complete.  Exact dedup (isDuplicate)
-   * misses these because the content differs.
-   *
-   * Pure check — does NOT update the map.  Call {@link trackWriteFilePath}
-   * after deciding to allow the write so skipped calls never become the
-   * comparison baseline.
-   * Exported for unit testing.
-   */
-  export function checkNearDuplicateWrite(
-    writeFilePaths: Map<string, { toolCallId: string; contentLength: number }>,
-    toolName: string,
-    input: Record<string, unknown>,
-  ): { prevToolCallId: string; prevContentLength: number; newContentLength: number } | undefined {
-    if (toolName !== "write" || typeof input.filePath !== "string") return
-    const prev = writeFilePaths.get(input.filePath)
-    if (!prev) return
-    const contentLength = typeof input.content === "string" ? input.content.length : 0
-    return { prevToolCallId: prev.toolCallId, prevContentLength: prev.contentLength, newContentLength: contentLength }
-  }
-
-  /** Record an allowed write so future near-duplicate checks compare against it. */
-  export function trackWriteFilePath(
-    writeFilePaths: Map<string, { toolCallId: string; contentLength: number }>,
-    toolName: string,
-    input: Record<string, unknown>,
-    toolCallId: string,
-  ): void {
-    if (toolName !== "write" || typeof input.filePath !== "string") return
-    const contentLength = typeof input.content === "string" ? input.content.length : 0
-    writeFilePaths.set(input.filePath, { toolCallId, contentLength })
-  }
+  // Spam/dedup/near-duplicate gating moved to session/tool-gate.ts (C-003/
+  // C-004): the AI SDK invokes `execute` upstream of this processor, so only
+  // the execute wrapper in resolveTools can actually prevent a side effect.
 
   export type Result = "compact" | "stop" | "continue"
 
@@ -504,13 +477,6 @@ const DOOM_LOOP_THRESHOLD = 3
      *  Unlike ctx.toolcalls (which entries are deleted on completion),
      *  this flag persists until the next step so finishReason override works. */
     hasToolCalls: boolean
-    /** Maps dedupKey → first toolCallId for accepted (non-deduped) tool calls.
-     *  Persists across tool-result deletions from ctx.toolcalls so that dedup
-     *  still detects duplicates even after the first call completes. */
-    acceptedToolKeys: Map<string, string>
-    /** Tracks write tool filePaths within the current step for near-duplicate
-     *  detection.  Maps filePath → { toolCallId, contentLength }. */
-    writeFilePaths: Map<string, { toolCallId: string; contentLength: number }>
     shouldBreak: boolean
     snapshot: string | undefined
     blocked: boolean
@@ -577,8 +543,6 @@ const DOOM_LOOP_THRESHOLD = 3
           model: input.model,
           toolcalls: {},
           hasToolCalls: false,
-          acceptedToolKeys: new Map(),
-          writeFilePaths: new Map(),
           shouldBreak: false,
           snapshot: initialSnapshot,
           blocked: false,
@@ -904,114 +868,21 @@ const DOOM_LOOP_THRESHOLD = 3
                   sessionID: part.sessionID,
                 }
               }
-              // Stage 3: reject tool calls with spam-contaminated arguments
-              if (containsSpamInValues(value.input)) {
-                log.warn("tool-call blocked: spam detected in arguments", {
-                  toolCallId: value.toolCallId,
-                  toolName: value.toolName,
-                })
-                const spamMatch = yield* readToolCall(value.toolCallId)
-                if (spamMatch) {
-                  yield* session.updatePart({
-                    ...spamMatch.part,
-                    tool: value.toolName,
-                    state: {
-                      status: "error",
-                      input: value.input,
-                      error: "Tool call blocked: training data contamination detected in arguments",
-                      time: { start: Date.now(), end: Date.now() },
-                    },
-                  })
-                  yield* settleToolCall(value.toolCallId)
-                }
-                return
-              }
-              // Stage 4: deduplicate identical tool calls within the same step.
-              // Hermes parser boundary errors can emit the same call twice, but
-              // models also legitimately send parallel identical read-only calls
-              // (e.g. two globs with the same pattern).  Skip dedup for read-only
-              // tools where duplicates are harmless; keep it for side-effecting
-              // tools (bash, write, edit, question, skill, task, todo_write).
+              // Spam/dedup/near-duplicate handling lives in the execute wrapper
+              // (session/tool-gate.ts via resolveTools), the only layer that can
+              // actually prevent the side effect (C-003/C-004). Gate-skipped
+              // calls flow through here as normal tool-call → tool-result
+              // (synthetic completed) or tool-call → tool-error (blocked), so
+              // this handler just records state transitions.
               //
-              // Duplicates are returned as synthetic "completed" (not "error") so
-              // the model doesn't see a failure and can continue normally.  The
-              // actual execution only happens once (the first accepted call).
-              const firstCallId = !DEDUP_SKIP_TOOLS.has(value.toolName)
-                ? isDuplicate(ctx.acceptedToolKeys, value.toolName, value.input)
-                : undefined
-              if (firstCallId) {
-                log.warn("tool-call deduplicated", {
-                  toolCallId: value.toolCallId,
-                  toolName: value.toolName,
-                  firstCallId,
-                  input: JSON.stringify(value.input).slice(0, 200),
-                })
-                const dupMatch = yield* readToolCall(value.toolCallId)
-                if (dupMatch) {
-                  yield* session.updatePart({
-                    ...dupMatch.part,
-                    tool: value.toolName,
-                    state: {
-                      status: "completed",
-                      input: value.input,
-                      output: "[Duplicate tool call skipped; an identical call already ran in this step. Use that result.]",
-                      title: "deduplicated",
-                      metadata: { deduplicated: true, dedupOf: firstCallId },
-                      time: { start: Date.now(), end: Date.now() },
-                    },
-                  })
-                  yield* settleToolCall(value.toolCallId)
-                }
-                return
-              }
-              ctx.acceptedToolKeys.set(dedupKey(value.toolName, value.input), value.toolCallId)
-              // Stage 5: near-duplicate write detection (same filePath, different content).
-              // hermes can split one write into incomplete + complete pair.
-              // The second (longer) write overwrites the first, so allow execution
-              // but log for monitoring.  Shorter duplicates are skipped.
-              // Map is only updated for allowed writes so skipped calls never
-              // become the comparison baseline.
-              const nearDup = ctx.lastStreamInput?.toolParserActive
-                ? checkNearDuplicateWrite(ctx.writeFilePaths, value.toolName, value.input)
-                : undefined
-              if (nearDup) {
-                if (nearDup.newContentLength <= nearDup.prevContentLength) {
-                  log.warn("near-duplicate write skipped (shorter or equal content)", {
-                    toolCallId: value.toolCallId,
-                    toolName: value.toolName,
-                    filePath: (value.input as Record<string, unknown>).filePath,
-                    prevToolCallId: nearDup.prevToolCallId,
-                    prevContentLength: nearDup.prevContentLength,
-                    newContentLength: nearDup.newContentLength,
-                  })
-                  const ndMatch = yield* readToolCall(value.toolCallId)
-                  if (ndMatch) {
-                    yield* session.updatePart({
-                      ...ndMatch.part,
-                      tool: value.toolName,
-                      state: {
-                        status: "error",
-                        input: value.input,
-                        error: "Near-duplicate write to same filePath skipped (shorter content)",
-                        time: { start: Date.now(), end: Date.now() },
-                      },
-                    })
-                    yield* settleToolCall(value.toolCallId)
-                  }
-                  return
-                }
-                log.warn("near-duplicate write detected (longer content, allowing)", {
-                  toolCallId: value.toolCallId,
-                  toolName: value.toolName,
-                  filePath: (value.input as Record<string, unknown>).filePath,
-                  prevToolCallId: nearDup.prevToolCallId,
-                  prevContentLength: nearDup.prevContentLength,
-                  newContentLength: nearDup.newContentLength,
-                })
-              }
-              trackWriteFilePath(ctx.writeFilePaths, value.toolName, value.input, value.toolCallId)
+              // Gate-neutralized calls did NOT run a side effect, so they must
+              // not flip hasExecutedTool: the forceNonRetryable veto exists
+              // because re-running side effects is unsafe, and an attempt whose
+              // only calls were gated is still safely retryable after a
+              // transient stream failure.
+              const gatedCall = ctx.lastStreamInput?.toolGate?.wasGated(value.toolCallId) === true
               // Mark as executed BEFORE updateToolCall — prevents retry if updateToolCall fails
-              hasExecutedTool = true
+              if (!gatedCall) hasExecutedTool = true
               yield* updateToolCall(value.toolCallId, (match) => ({
                 ...match,
                 tool: value.toolName,
@@ -1025,6 +896,13 @@ const DOOM_LOOP_THRESHOLD = 3
                   ? { ...value.providerMetadata, providerExecuted: true }
                   : value.providerMetadata,
               }))
+
+              // Gate-neutralized calls are also not "repeated work" — exempt
+              // them from the doom-loop detector, like the old Stage 3/4/5
+              // early-returns did. wasGated is final here: the SDK invoked
+              // execute (and the gate) while this chunk passed through its
+              // pipeline, upstream of this handler.
+              if (gatedCall) return
 
               const parts = MessageV2.parts(ctx.assistantMessage.id)
               const recentParts = parts.slice(-DOOM_LOOP_THRESHOLD)
@@ -1056,7 +934,7 @@ const DOOM_LOOP_THRESHOLD = 3
 
             case "tool-result": {
               log.debug("tool-result", { toolCallId: value.toolCallId })
-              hasExecutedTool = true
+              if (ctx.lastStreamInput?.toolGate?.wasGated(value.toolCallId) !== true) hasExecutedTool = true
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               {
                 const trCalled = yield* readToolCall(value.toolCallId)
@@ -1111,7 +989,7 @@ const DOOM_LOOP_THRESHOLD = 3
 
             case "tool-error": {
               log.debug("tool-error", { toolCallId: value.toolCallId })
-              hasExecutedTool = true
+              if (ctx.lastStreamInput?.toolGate?.wasGated(value.toolCallId) !== true) hasExecutedTool = true
               // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
               {
                 const teCalled = yield* readToolCall(value.toolCallId)
@@ -1141,8 +1019,6 @@ const DOOM_LOOP_THRESHOLD = 3
 
             case "start-step":
               ctx.hasToolCalls = false
-              ctx.acceptedToolKeys.clear()
-              ctx.writeFilePaths.clear()
               if (!ctx.snapshot) ctx.snapshot = yield* snapshot.track()
               if (!ctx.assistantMessage.summary) {
                 // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
@@ -1567,8 +1443,6 @@ const DOOM_LOOP_THRESHOLD = 3
           log.info("process", slogTags)
           ctx.lastStreamInput = streamInput
           ctx.hasToolCalls = false
-          ctx.acceptedToolKeys.clear()
-          ctx.writeFilePaths.clear()
           ctx.needsCompaction = false
           hasExecutedTool = false
           ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
@@ -1584,9 +1458,10 @@ const DOOM_LOOP_THRESHOLD = 3
 
           const rollbackAttempt = Effect.fn("SessionProcessor.rollbackAttempt")(function* () {
             if (hasExecutedTool) {
-              // forceNonRetryable makes retryable() veto APIError retries after a tool
-              // ran, but the non-APIError rate-limit-text path (retry.ts) has no such
-              // veto, so this guard can still fire. Fail hard — the caller's catchCauseIf
+              // forceNonRetryable makes retryable() veto retries after a tool ran
+              // (fromError stamps APIError and re-wraps UnknownError as a vetoed
+              // APIError — C-044), so this guard is a last-resort safety net for
+              // error shapes that slip past both. Fail hard — the caller's catchCauseIf
               // does not absorb failures while hasExecutedTool, so this propagates and the
               // retry aborts instead of re-running already-executed tool side effects.
               throw new Error("rollbackAttempt called after tool execution — aborting retry")
@@ -1617,9 +1492,11 @@ const DOOM_LOOP_THRESHOLD = 3
             }
             ctx.toolcalls = {}
             ctx.hasToolCalls = false
-            ctx.acceptedToolKeys.clear()
-            ctx.writeFilePaths.clear()
             hasExecutedTool = false
+            // The rolled-back attempt's work was undone — keys recorded by
+            // its executes must not suppress re-issued calls in the retry
+            // (mirrors the old ctx.acceptedToolKeys/writeFilePaths clears).
+            ctx.lastStreamInput?.toolGate?.reset()
             ctx.currentText = undefined
             ctx.tagFilter = undefined
             ctx.reasoningMap = {}

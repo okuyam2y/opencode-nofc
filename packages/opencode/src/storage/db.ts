@@ -3,13 +3,11 @@ import { migrate } from "drizzle-orm/bun-sqlite/migrator"
 import { type SQLiteTransaction } from "drizzle-orm/sqlite-core"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LocalContext } from "@/util/local-context"
-import { Global } from "@opencode-ai/core/global"
 import * as log from "@/util/log-sync"
 import { NamedError } from "@opencode-ai/core/util/error"
 import path from "path"
 import { readFileSync, readdirSync, existsSync } from "fs"
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { InstallationChannel } from "@opencode-ai/core/installation/version"
+import { Database } from "@opencode-ai/core/database/database"
 import { EffectBridge } from "@/effect/bridge"
 import { init } from "#db"
 import { Effect, Schema } from "effect"
@@ -25,20 +23,13 @@ type DatabaseFlags = Pick<RuntimeFlags.Info, "disableChannelDb" | "skipMigration
 const readRuntimeFlags = () =>
   Effect.runSync(RuntimeFlags.Service.useSync((flags) => flags).pipe(Effect.provide(RuntimeFlags.defaultLayer)))
 
-export function getChannelPath(flags: Pick<DatabaseFlags, "disableChannelDb"> = readRuntimeFlags()) {
-  if (["latest", "beta", "prod"].includes(InstallationChannel) || flags.disableChannelDb)
-    return path.join(Global.Path.data, "opencode.db")
-  const safe = InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")
-  return path.join(Global.Path.data, `opencode-${safe}.db`)
-}
-
-export const getPath = (flags?: Pick<DatabaseFlags, "disableChannelDb">) => {
-  if (Flag.OPENCODE_DB) {
-    if (Flag.OPENCODE_DB === ":memory:" || path.isAbsolute(Flag.OPENCODE_DB)) return Flag.OPENCODE_DB
-    return path.join(Global.Path.data, Flag.OPENCODE_DB)
-  }
-  return getChannelPath(flags)
-}
+// Delegate to core's authoritative resolver so the fork's compatibility shim and
+// core's Database service ALWAYS open the same file. They previously diverged on
+// OPENCODE_DISABLE_CHANNEL_DB: this shim parsed it with Effect Config.boolean
+// (accepts yes/on/TRUE/...) while core checks `=== "1" || "true"`, so a value
+// like "yes" made the two systems open different DBs (C-015). One source of
+// truth removes the whole class (env + channel + OPENCODE_DB handling).
+export const getPath = (_flags?: Pick<DatabaseFlags, "disableChannelDb">) => Database.path()
 
 export type Transaction = SQLiteTransaction<"sync", void>
 
@@ -156,7 +147,10 @@ const ctx = LocalContext.create<{
 
 export function use<T>(callback: (trx: TxOrDb) => T): T {
   try {
-    return callback(ctx.use().tx)
+    // Probe for the db context BEFORE running the callback: NotFound is shared
+    // by every LocalContext, so a foreign context's NotFound thrown inside the
+    // callback must propagate instead of re-executing the callback here (C-047).
+    var tx = ctx.use().tx
   } catch (err) {
     if (err instanceof LocalContext.NotFound) {
       const effects: (() => void | Promise<void>)[] = []
@@ -166,6 +160,7 @@ export function use<T>(callback: (trx: TxOrDb) => T): T {
     }
     throw err
   }
+  return callback(tx)
 }
 
 export function effect(fn: () => any | Promise<any>) {
@@ -186,7 +181,8 @@ export function transaction<T>(
   },
 ): NotPromise<T> {
   try {
-    return callback(ctx.use().tx)
+    // Same probe-first pattern as use() — see C-047 note above.
+    var existing = ctx.use().tx
   } catch (err) {
     if (err instanceof LocalContext.NotFound) {
       const effects: (() => void | Promise<void>)[] = []
@@ -197,6 +193,7 @@ export function transaction<T>(
     }
     throw err
   }
+  return callback(existing)
 }
 
 export * as Database from "./db"

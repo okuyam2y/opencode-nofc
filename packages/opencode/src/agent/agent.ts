@@ -161,6 +161,9 @@ export const layer = Layer.effect(
           plan: {
             name: "plan",
             description: "Plan mode. Disallows all edit tools.",
+            // Same hermes infinite-loop safety net as build/general — plan is a
+            // primary tool-capable agent and was the only one left unbounded (C-029).
+            steps: DEFAULT_STEPS,
             options: {},
             permission: Permission.merge(
               defaults,
@@ -281,6 +284,9 @@ export const layer = Layer.effect(
             item = agents[key] = {
               name: key,
               mode: "all",
+              // Custom agents get the same loop safety net by default;
+              // config `steps` below overrides it (C-029).
+              steps: DEFAULT_STEPS,
               permission: Permission.merge(defaults, user),
               options: {},
               native: false,

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { SystemPrompt } from "../../src/session/system"
+import { LLM } from "../../src/session/llm"
 import type { Provider } from "../../src/provider/provider"
 
 function fakeModel(apiId: string): Provider.Model {
@@ -98,42 +99,62 @@ describe("SystemPrompt.provider() dispatch", () => {
       expect(prompt).not.toContain("Always use apply_patch for manual code edits.")
       expect(prompt).toContain("Tool-parser environment rules")
     })
+
+    test("toolParser rewrite drops the multi_tool_use.parallel mandate (C-045)", () => {
+      // The pseudo-tool is OpenAI-native; in the tool-parser environment it is
+      // not registered and the mandate produced observed hermes hallucinations.
+      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), { toolParser: "hermes" })
+      expect(prompt).not.toContain("multi_tool_use.parallel")
+      expect(prompt).toContain("Parallelize tool calls")
+      const [frontier] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), {
+        toolParser: "hermes",
+        promptVariant: "frontier",
+      })
+      expect(frontier).not.toContain("multi_tool_use.parallel")
+      // Without toolParser, the OpenAI-native guidance stays.
+      const [baseline] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), {})
+      expect(baseline).toContain("multi_tool_use.parallel")
+    })
   })
 
-  // Mirrors packages/opencode/src/session/llm.ts:197-201 — model-level options
-  // override provider-level options for both toolParser and promptVariant.
-  describe("resolution (model.options over provider.options, same as llm.ts)", () => {
-    function resolve(modelOpts?: Record<string, unknown>, providerOpts?: Record<string, unknown>) {
-      const toolParser = modelOpts?.toolParser ?? providerOpts?.toolParser
-      const promptVariant = modelOpts?.promptVariant ?? providerOpts?.promptVariant
-      return {
-        toolParser: typeof toolParser === "string" ? toolParser : undefined,
-        promptVariant: typeof promptVariant === "string" ? promptVariant : undefined,
-      }
-    }
+  // Exercises llm.ts's real resolution code (LLM._resolvePromptOptions) —
+  // model-level options override provider-level options for both toolParser
+  // and promptVariant (C-072: a local reimplementation pinned nothing).
+  describe("resolution (model.options over provider.options, via llm.ts)", () => {
+    const resolve = LLM._resolvePromptOptions
 
     test("provider-level frontier propagates when model has no override", () => {
-      const opts = resolve(undefined, { promptVariant: "frontier" })
+      const opts = resolve({ provider: { promptVariant: "frontier" } })
       const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), opts)
       expect(prompt).toContain(FRONTIER_MARK)
     })
 
     test("model-level override wins over provider default", () => {
-      const opts = resolve({ promptVariant: "frontier" }, {})
+      const opts = resolve({ model: { promptVariant: "frontier" }, provider: {} })
       const [prompt] = SystemPrompt.provider(fakeModel("claude-opus-4-7"), opts)
       expect(prompt).toContain(FRONTIER_MARK)
     })
 
     test("model-level unset override with empty string does NOT disable (unrecognized value → baseline)", () => {
-      const opts = resolve({ promptVariant: "" }, { promptVariant: "frontier" })
+      const opts = resolve({ model: { promptVariant: "" }, provider: { promptVariant: "frontier" } })
       const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), opts)
       expect(prompt).not.toContain(FRONTIER_MARK)
     })
 
     test("neither level sets promptVariant → baseline", () => {
-      const opts = resolve({}, {})
+      const opts = resolve({ model: {}, provider: {} })
       const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), opts)
       expect(prompt).not.toContain(FRONTIER_MARK)
+    })
+
+    test("model toolParser wins over provider; toolChoice none gates it off", () => {
+      expect(resolve({ model: { toolParser: "hermes-strict" }, provider: { toolParser: "hermes" } }).toolParser).toBe(
+        "hermes-strict",
+      )
+      expect(resolve({ provider: { toolParser: "hermes" } }).toolParser).toBe("hermes")
+      expect(
+        resolve({ model: { toolParser: "hermes" }, toolChoice: "none" }).toolParser,
+      ).toBeUndefined()
     })
   })
 })

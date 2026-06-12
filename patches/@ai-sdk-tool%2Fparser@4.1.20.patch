@@ -1,5 +1,11 @@
+diff --git a/node_modules/@ai-sdk-tool/parser/.bun-tag-cdcfafbef0b3bca b/.bun-tag-cdcfafbef0b3bca
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@ai-sdk-tool/parser/.bun-tag-d68f21c8515dd879 b/.bun-tag-d68f21c8515dd879
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/chunk-AELRIRO2.js b/dist/chunk-AELRIRO2.js
-index 742c615..651002f 100644
+index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404faa1d162 100644
 --- a/dist/chunk-AELRIRO2.js
 +++ b/dist/chunk-AELRIRO2.js
 @@ -482,13 +482,204 @@ function shouldEmitRawToolCallTextOnError(options) {
@@ -440,3 +446,38 @@ index 742c615..651002f 100644
      }
      return segments;
    }
+@@ -6025,15 +6321,24 @@ function unwrapToolResult(result, mediaStrategy) {
+ }
+ 
+ // src/core/prompts/hermes-prompt.ts
++// FORK PATCH: escape literal hermes tags inside the JSON-encoded tool result so
++// a tool output containing "<tool_call>"/"</tool_response>" can't inject a
++// protocol tag into the prompt (mirrors escapeHermesTagsInJson in
++// packages/opencode/src/session/llm.ts, which covers the strict middleware).
++// Both rewrites are JSON-transparent: "<\/X>" and "\u003cX>" parse back to
++// the original text.
++function escapeHermesTagsInJsonForkPatch(json) {
++  return json.replace(/<\/(tool_response|tool_call)>/g, "<\\/$1>").replace(/<(tool_response|tool_call)>/g, "\\u003c$1>");
++}
+ function formatToolResponseAsHermesWithOptions(toolResult, options) {
+   const unwrappedResult = unwrapToolResult(
+     toolResult.output,
+     options == null ? void 0 : options.mediaStrategy
+   );
+-  return `<tool_response>${JSON.stringify({
++  return `<tool_response>${escapeHermesTagsInJsonForkPatch(JSON.stringify({
+     name: toolResult.toolName,
+     content: unwrappedResult
+-  })}</tool_response>`;
++  }))}</tool_response>`;
+ }
+ function formatToolResponseAsHermes(toolResult) {
+   return formatToolResponseAsHermesWithOptions(toolResult);
+@@ -7286,6 +7591,7 @@ var yamlXmlToolMiddleware = createToolMiddleware({
+ });
+ 
+ export {
++  repairToolCallJson,
+   getDebugLevel,
+   logParseFailure,
+   logRawChunk,

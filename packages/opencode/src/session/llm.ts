@@ -43,14 +43,27 @@ function escapeHermesCloseTagsInJson(json: string): string {
   return json.replace(/<\/(tool_response|tool_call)>/g, "<\\/$1>")
 }
 
+// Escape BOTH open and close hermes tags inside a JSON-encoded tool result so a
+// tool whose output contains a literal "<tool_call>" (e.g. read/grep over this
+// repo's own hermes docs/tests) can't inject a tag into the prompt and hang the
+// pipeline — the same failure the user/system escape guards against, which the
+// close-tag-only escape left open on the tool-result path (C-010). Both escapes
+// are JSON-transparent: close uses "\/", open uses "<" (= "<"), so
+// JSON.parse round-trips to the original text.
+function escapeHermesTagsInJson(json: string): string {
+  return escapeHermesCloseTagsInJson(json).replace(/<(tool_response|tool_call)>/g, "\\u003c$1>")
+}
+
 /** Exported for unit testing. */
 export const _escapeHermesCloseTagsInJson = escapeHermesCloseTagsInJson
+/** Exported for unit testing. */
+export const _escapeHermesTagsInJson = escapeHermesTagsInJson
 
 // Custom hermes middleware with explicit examples for models that don't follow the standard format
 const hermesStrictMiddleware = createToolMiddleware({
   protocol: hermesProtocol(),
   toolResponsePromptTemplate: (toolResult) =>
-    `<tool_response>${escapeHermesCloseTagsInJson(
+    `<tool_response>${escapeHermesTagsInJson(
       JSON.stringify({ name: toolResult.toolName, content: toolResult.output }),
     )}</tool_response>`,
   toolSystemPromptTemplate(tools) {
@@ -122,7 +135,48 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
   return message
 }
 
-  
+/**
+ * Resolve toolParser/promptVariant for a request: model-level options win over
+ * provider-level options, and toolParser is gated off when tool calling is
+ * disabled for the request. Exported for unit testing (C-072 — the test must
+ * exercise this exact code path, not a reimplementation).
+ */
+export function _resolvePromptOptions<T extends string = string>(args: {
+  model?: { toolParser?: T; promptVariant?: unknown }
+  provider?: { toolParser?: T; promptVariant?: unknown }
+  toolChoice?: "auto" | "required" | "none"
+}): { toolParser: T | undefined; promptVariant: string | undefined } {
+  const toolParser = args.model?.toolParser ?? args.provider?.toolParser
+  const promptVariant = args.model?.promptVariant ?? args.provider?.promptVariant
+  return {
+    toolParser: toolParser && args.toolChoice !== "none" ? toolParser : undefined,
+    promptVariant: typeof promptVariant === "string" ? promptVariant : undefined,
+  }
+}
+
+/**
+ * Decide whether a tool-parser `onError` callback signals a dropped (unparseable)
+ * tool call, and extract its raw text + name for hermes-drop-recovery. The signal
+ * differs across @ai-sdk-tool/parser versions — see C-002 (the 4.1.20 upgrade
+ * changed the emit and silently disabled recovery). Exported for unit testing.
+ */
+export function _detectDroppedToolCall(
+  message: string,
+  context?: Record<string, unknown>,
+): { toolName?: string; raw: string } | undefined {
+  const ctxToolCall = (context as any)?.toolCall
+  const isUnfinished =
+    (context as any)?.reason === "unfinished" ||
+    message.includes("dropping malformed tool call") ||
+    (ctxToolCall != null && message.includes("Could not complete streaming JSON tool call at finish"))
+  if (!isUnfinished) return undefined
+  const raw = String(ctxToolCall ?? "")
+  const nameFromCtx = (context as any)?.toolName as string | undefined
+  const toolName = nameFromCtx ?? raw.match(/"name"\s*:\s*"([^"]+)"/)?.[1]
+  return { toolName, raw }
+}
+
+
   export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
   type Result = Awaited<ReturnType<typeof streamText>>
 
@@ -140,6 +194,12 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
     retries?: number
     toolChoice?: "auto" | "required" | "none"
     toolParserActive?: boolean
+    /** Per-step tool-execution gate (session/tool-gate.ts), provided by the
+     *  main prompt loop. The processor resets it on attempt rollback (keys
+     *  recorded by a rolled-back execute must not suppress re-issued calls)
+     *  and consults wasGated() to exempt gate-neutralized duplicates from
+     *  the doom-loop detector. Structural type to avoid a module cycle. */
+    toolGate?: { reset(): void; wasGated(toolCallId: string): boolean }
     /** Per-session failure tracker.  Only the main prompt loop provides one;
      *  title generation / compaction / summary streams pass undefined so they
      *  never inject directives or touch the pending Map. */
@@ -220,13 +280,13 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
           // TODO: move this to a proper hook
           const isOpenaiOauth = item.id === "openai" && info?.type === "oauth"
 
-          const toolParser = input.model.options?.toolParser ?? item.options?.toolParser
-          const promptVariant = input.model.options?.promptVariant ?? item.options?.promptVariant
           // Only rewrite apply_patch references when tool parser is actually active for this request
-          const root = SystemPrompt.provider(input.model, {
-            toolParser: toolParser && input.toolChoice !== "none" ? toolParser : undefined,
-            promptVariant: typeof promptVariant === "string" ? promptVariant : undefined,
+          const resolvedPromptOptions = _resolvePromptOptions({
+            model: input.model.options,
+            provider: item.options,
+            toolChoice: input.toolChoice,
           })
+          const root = SystemPrompt.provider(input.model, resolvedPromptOptions)
           const system: string[] = []
           system.push(
             [
@@ -341,13 +401,12 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
             input.model.providerID.toLowerCase().includes("litellm") ||
             input.model.api.id.toLowerCase().includes("litellm")
 
-          // toolParser is the raw config value; toolParserActive reflects whether
-          // the middleware is actually engaged for this request.  Disabled when:
-          //   - toolChoice is "none" (no tool calls expected)
-          //   - tools is empty (e.g. compaction — parser has nothing to convert,
-          //     and stripping _noop would break LiteLLM/copilot gateway compat)
-          const toolParserMode = toolParser
-          const toolParserActive = !!(toolParserMode && input.toolChoice !== "none" && Object.keys(tools).length > 0)
+          // resolvedPromptOptions.toolParser is already gated on toolChoice;
+          // toolParserActive additionally requires a non-empty tool set
+          // (e.g. compaction — parser has nothing to convert, and stripping
+          // _noop would break LiteLLM/copilot gateway compat).
+          const toolParserMode = resolvedPromptOptions.toolParser
+          const toolParserActive = !!(toolParserMode && Object.keys(tools).length > 0)
 
           // LiteLLM/Bedrock rejects requests where the message history contains tool
           // calls but no tools param is present. When there are no active tools (e.g.
@@ -554,16 +613,10 @@ export function _escapeHermesTagsInMessage<M extends { role: string; content: an
                   ...existing,
                   onError: (message: string, context?: Record<string, unknown>) => {
                     existingOnError?.(message, context)
-                    // Detect dropped tool calls — structured reason (patched parser)
-                    // or message-based fallback (unpatched parser).
-                    const isUnfinished = (context as any)?.reason === "unfinished"
-                      || message.includes("dropping malformed tool call")
-                    if (isUnfinished) {
-                      const raw = String((context as any)?.toolCall ?? "")
-                      const nameFromCtx = (context as any)?.toolName as string | undefined
-                      const nameFromRaw = nameFromCtx ?? raw.match(/"name"\s*:\s*"([^"]+)"/)?.[1]
+                    const dropped = _detectDroppedToolCall(message, context)
+                    if (dropped) {
                       const arr = droppedToolCallsMap.get(input.sessionID)
-                      if (arr) arr.push({ toolName: nameFromRaw, raw })
+                      if (arr) arr.push({ toolName: dropped.toolName, raw: dropped.raw })
                     }
                     let ctx: string | undefined
                     try { ctx = context ? JSON.stringify(context).slice(0, 200) : undefined } catch { ctx = "[unserializable]" }

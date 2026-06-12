@@ -1,185 +1,32 @@
 import { describe, expect, test } from "bun:test"
+import { readdirSync } from "node:fs"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
 
 /**
- * Regression tests for repairToolCallJson logic in @ai-sdk-tool/parser patch.
- *
- * The function is not exported, so we reproduce the core logic here.  These
- * tests pin the behaviour so that patch regeneration cannot silently break it.
+ * Regression tests for repairToolCallJson in the fork's @ai-sdk-tool/parser
+ * patch. The patch exports the REAL function from its dist chunk (C-071 — a
+ * hand-copied mirror here had drifted from the dist semantics it claimed to
+ * pin: null-on-unrepairable, REPAIR_MAX_ARGS_BODY_SIZE, top-level-aware name
+ * extraction were all missing). Loading it from the installed dist means a
+ * patch regeneration that changes behavior fails HERE.
  */
-
-// ── Extracted repair logic (mirrors patched dist) ──────────────────────
-
-function repairToolCallJson(
+const dist = path.dirname(fileURLToPath(import.meta.resolve("@ai-sdk-tool/parser")))
+const chunkExports = await Promise.all(
+  readdirSync(dist)
+    .filter((f) => /^chunk-.*\.js$/.test(f))
+    .map((f) => import(path.join(dist, f))),
+)
+const repairToolCallJson: (
   raw: string,
   knownArgKeys?: string[],
-): { name: string; arguments: Record<string, unknown> } | null {
-  const nameMatch = raw.match(/"name"\s*:\s*"([^"]+)"/)
-  if (!nameMatch) return null
-  const toolName = nameMatch[1]
-  const argsMatch = raw.match(/"arguments"\s*:\s*\{/)
-  if (!argsMatch || argsMatch.index === undefined) return null
-  const argsStart = argsMatch.index + argsMatch[0].length
+) => { name: string; arguments: Record<string, unknown> } | null = chunkExports.find(
+  (m) => typeof m.repairToolCallJson === "function",
+)?.repairToolCallJson!
 
-  let outerClose = -1
-  for (let i = raw.length - 1; i >= argsStart; i--) {
-    if (raw.charAt(i) === "}") {
-      outerClose = i
-      break
-    }
-    if (!/\s/.test(raw.charAt(i))) break
-  }
-  if (outerClose === -1) return null
-  let argsClose = -1
-  for (let j = outerClose - 1; j >= argsStart; j--) {
-    if (raw.charAt(j) === "}") {
-      argsClose = j
-      break
-    }
-    if (!/\s/.test(raw.charAt(j))) break
-  }
-  if (argsClose === -1) return null
-  const argsBody = raw.substring(argsStart, argsClose)
-
-  try {
-    return { name: toolName, arguments: JSON.parse("{" + argsBody + "}") }
-  } catch {
-    /* fall through */
-  }
-
-  const firstKeyMatch = argsBody.match(/^\s*"([^"]+)"\s*:\s*/)
-  if (!firstKeyMatch) return null
-  let allKeys: { key: string; matchStart: number; valueStart: number }[] = [
-    { key: firstKeyMatch[1], matchStart: 0, valueStart: firstKeyMatch[0].length },
-  ]
-  const kvPattern = /,\s*"([^"]+)"\s*:\s*/g
-  let m: RegExpExecArray | null
-  while ((m = kvPattern.exec(argsBody)) !== null) {
-    allKeys.push({ key: m[1], matchStart: m.index, valueStart: m.index + m[0].length })
-  }
-  if (knownArgKeys && knownArgKeys.length > 0) {
-    const known: Record<string, boolean> = {}
-    for (const k of knownArgKeys) known[k] = true
-    allKeys = allKeys.filter((entry) => !!known[entry.key])
-  }
-
-  // Dual-heuristic: try both first and last, pick better scorer
-  const firstByKey: Record<string, number> = {}
-  const lastByKey: Record<string, number> = {}
-  for (let idx = 0; idx < allKeys.length; idx++) {
-    if (!(allKeys[idx].key in firstByKey)) firstByKey[allKeys[idx].key] = idx
-    lastByKey[allKeys[idx].key] = idx
-  }
-  const firstPositions = allKeys.filter((_, i) => firstByKey[allKeys[i].key] === i)
-  const lastPositions = allKeys.filter((_, i) => lastByKey[allKeys[i].key] === i)
-
-  let keyPositions: typeof allKeys
-  if (
-    firstPositions.length === lastPositions.length &&
-    firstPositions.every((fp, i) => fp.matchStart === lastPositions[i].matchStart)
-  ) {
-    keyPositions = firstPositions
-  } else {
-    function scorePositions(positions: typeof allKeys): [number, number] {
-      let raw = 0
-      let repaired = 0
-      for (let si = 0; si < positions.length; si++) {
-        const svs = positions[si].valueStart
-        const sve = si + 1 < positions.length ? positions[si + 1].matchStart : argsBody.length
-        const srv = argsBody.substring(svs, sve).replace(/,\s*$/, "")
-        try {
-          JSON.parse(srv)
-          raw++
-          continue
-        } catch {
-          /* needs repair */
-        }
-        if (srv.charAt(0) === '"') {
-          let seq = srv.length - 1
-          while (seq > 0 && srv.charAt(seq) !== '"') seq--
-          if (seq > 0) {
-            const sinner = srv.substring(1, seq)
-            let sesc = ""
-            let sbs = 0
-            for (const sch of sinner) {
-              if (sch === "\\") {
-                sbs++
-                sesc += sch
-              } else if (sch === '"' && sbs % 2 === 0) {
-                sbs = 0
-                sesc += '\\"'
-              } else {
-                sbs = 0
-                sesc += sch
-              }
-            }
-            sesc = sesc.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")
-            try {
-              JSON.parse('"' + sesc + '"')
-              repaired++
-            } catch {
-              /* skip */
-            }
-          }
-        }
-      }
-      return [raw, repaired]
-    }
-    const fs = scorePositions(firstPositions)
-    const ls = scorePositions(lastPositions)
-    if (ls[0] > fs[0] || (ls[0] === fs[0] && ls[1] > fs[1])) {
-      keyPositions = lastPositions
-    } else {
-      keyPositions = firstPositions
-    }
-  }
-  if (keyPositions.length === 0) return null
-
-  const args: Record<string, unknown> = {}
-  for (let i = 0; i < keyPositions.length; i++) {
-    const kp = keyPositions[i]
-    const vs = kp.valueStart
-    const ve = i + 1 < keyPositions.length ? keyPositions[i + 1].matchStart : argsBody.length
-    let rv = argsBody.substring(vs, ve).replace(/,\s*$/, "")
-    try {
-      args[kp.key] = JSON.parse(rv)
-      continue
-    } catch {
-      /* needs repair */
-    }
-    if (rv.charAt(0) === '"') {
-      let eq = rv.length - 1
-      while (eq > 0 && rv.charAt(eq) !== '"') eq--
-      if (eq <= 0) {
-        args[kp.key] = rv
-        continue
-      }
-      const inner = rv.substring(1, eq)
-      let esc = ""
-      let bs = 0
-      for (const ch of inner) {
-        if (ch === "\\") {
-          bs++
-          esc += ch
-        } else if (ch === '"' && bs % 2 === 0) {
-          bs = 0
-          esc += '\\"'
-        } else {
-          bs = 0
-          esc += ch
-        }
-      }
-      esc = esc.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")
-      try {
-        args[kp.key] = JSON.parse('"' + esc + '"')
-      } catch {
-        args[kp.key] = inner
-      }
-    } else {
-      args[kp.key] = rv
-    }
-  }
-  return { name: toolName, arguments: args }
-}
+test("the patched dist exports repairToolCallJson (C-071 canary)", () => {
+  expect(typeof repairToolCallJson).toBe("function")
+})
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
@@ -313,6 +160,25 @@ describe("repairToolCallJson", () => {
       expect(r).not.toBeNull()
       expect(r!.arguments.offset).toBe(42)
       expect(r!.arguments.limit).toBe(100)
+    })
+  })
+
+  // Dist-only semantics the old hand-copied mirror lacked (C-071): these pin
+  // the REAL patched implementation so a patch re-roll that loses them fails.
+  describe("dist-only guards (C-071)", () => {
+    test("unrepairable non-string value rejects the whole repair (null, not raw passthrough)", () => {
+      expect(repairToolCallJson('{"name":"x","arguments":{"a": foo bar}}', ["a"])).toBeNull()
+    })
+
+    test("args body over REPAIR_MAX_ARGS_BODY_SIZE (100KiB) is rejected", () => {
+      const huge = '{"name":"x","arguments":{"a":"' + "y".repeat(103_000) + '"}}'
+      expect(repairToolCallJson(huge, ["a"])).toBeNull()
+    })
+
+    test("name after arguments is rejected structurally (top-level-aware, no bogus name from values)", () => {
+      // The old mirror's naive /"name":/ regex extracted "bogus" from the value.
+      const raw = String.raw`{"arguments": {"content": "mentions \"name\": \"bogus\" inline"}, "name": "real"}`
+      expect(repairToolCallJson(raw, ["content"])).toBeNull()
     })
   })
 })

@@ -34,6 +34,7 @@ import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionProcessor } from "./processor"
+import * as ToolGate from "./tool-gate"
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
@@ -89,7 +90,7 @@ const COMPLETE_DESCRIPTION = `Call this tool ONLY when the entire task is finish
  * Detect whether the last assistant text output looks incomplete (truncated mid-sentence).
  * Used to decide if an automatic "continue" should be injected.
  */
-function looksIncomplete(text: string): { incomplete: boolean; reason?: string } {
+export function looksIncomplete(text: string): { incomplete: boolean; reason?: string } {
   const trimmed = text.trimEnd()
   if (!trimmed) return { incomplete: false }
 
@@ -97,9 +98,12 @@ function looksIncomplete(text: string): { incomplete: boolean; reason?: string }
   const fenceCount = (trimmed.match(/^```/gm) || []).length
   if (fenceCount % 2 !== 0) return { incomplete: true, reason: "unclosed-code-fence" }
 
-  // Unclosed markdown table (last line starts with |)
+  // Truncated markdown table row. GFM makes the trailing pipe optional, so a
+  // multi-cell row like "| a | b" is valid and complete — only flag a row that
+  // starts with "|" but has no interior "|" either (e.g. "| cel" cut mid first
+  // cell), which is the unambiguous truncation signal (C-012).
   const lastLine = trimmed.split("\n").pop()?.trim() ?? ""
-  if (lastLine.startsWith("|") && !lastLine.endsWith("|"))
+  if (lastLine.startsWith("|") && !lastLine.endsWith("|") && !lastLine.slice(1).includes("|"))
     return { incomplete: true, reason: "unclosed-table-row" }
 
   // Ends with a heading or list marker without content
@@ -316,11 +320,19 @@ export const layer = Layer.effect(
       processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
       bypassAgentCheck: boolean
       messages: MessageV2.WithParts[]
+      /** Spam/dedup/near-dup gating must happen in the execute wrappers, not
+       *  in the processor's stream-event handler: the AI SDK runs `execute`
+       *  inside its own pipeline, upstream of the processor, so only this
+       *  layer can prevent the side effect (C-003/C-004). The gate is created
+       *  by the caller (one per step) so that complete/StructuredOutput —
+       *  added to the tool set after resolveTools returns — share it. */
+      gate: ToolGate.ToolExecutionGate
     }) {
       using _ = log.time("resolveTools")
       const tools: Record<string, AITool> = {}
       const run = yield* runner()
       const promptOps = yield* ops()
+      const gate = input.gate
 
       const context = (args: any, options: ToolExecutionOptions): Tool.Context => ({
         sessionID: input.session.id,
@@ -367,6 +379,14 @@ export const layer = Layer.effect(
             description: item.description,
           inputSchema: jsonSchema(schema),
           execute(args, options) {
+            const decision = gate.check(
+              item.id,
+              options.toolCallId,
+              args as Record<string, unknown>,
+              options.messages?.length,
+            )
+            if (decision.action === "skip") return Promise.resolve(decision.output)
+            if (decision.action === "block") return Promise.reject(new Error(decision.error))
             return run.promise(
               Effect.gen(function* () {
                 const ctx = context(args, options)
@@ -407,8 +427,16 @@ export const layer = Layer.effect(
         const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
         const transformed = ProviderTransform.schema(input.model, schema)
         item.inputSchema = jsonSchema(transformed)
-        item.execute = (args, opts) =>
-          run.promise(
+        item.execute = (args, opts) => {
+          const decision = gate.check(key, opts.toolCallId, args as Record<string, unknown>, opts.messages?.length)
+          if (decision.action === "skip")
+            // Match the real MCP output shape (which carries result.content).
+            return Promise.resolve({
+              ...decision.output,
+              content: [{ type: "text" as const, text: decision.output.output }],
+            })
+          if (decision.action === "block") return Promise.reject(new Error(decision.error))
+          return run.promise(
             Effect.gen(function* () {
               const ctx = context(args, opts)
               yield* plugin.trigger(
@@ -475,6 +503,7 @@ export const layer = Layer.effect(
               return output
             }),
           )
+        }
         tools[key] = item
       }
   
@@ -752,6 +781,13 @@ export const layer = Layer.effect(
           const invocations: Record<string, { args: string[] }> = {
             nu: { args: ["-c", input.command] },
             fish: { args: ["-c", input.command] },
+            // The command is passed to zsh/bash via the OPENCODE_SHELL_COMMAND
+            // env var (set below), not interpolated into this script. Embedding
+            // it with `eval ${JSON.stringify(command)}` placed it inside shell
+            // double quotes, where JSON escapes like \n and \t are literal and
+            // mangle multi-line / tab-containing commands (C-013). Reading the
+            // raw bytes from the env var and `eval`-ing them preserves the
+            // command exactly and keeps it out of the parsed script source.
             zsh: {
               args: [
                 "-l",
@@ -761,7 +797,7 @@ export const layer = Layer.effect(
                   [[ -f ~/.zshenv ]] && source ~/.zshenv >/dev/null 2>&1 || true
                   [[ -f "\${ZDOTDIR:-$HOME}/.zshrc" ]] && source "\${ZDOTDIR:-$HOME}/.zshrc" >/dev/null 2>&1 || true
                   cd "$__oc_cwd"
-                  eval ${JSON.stringify(input.command)}
+                  eval "$OPENCODE_SHELL_COMMAND"
                 `,
               ],
             },
@@ -774,7 +810,7 @@ export const layer = Layer.effect(
                   shopt -s expand_aliases
                   [[ -f ~/.bashrc ]] && source ~/.bashrc >/dev/null 2>&1 || true
                   cd "$__oc_cwd"
-                  eval ${JSON.stringify(input.command)}
+                  eval "$OPENCODE_SHELL_COMMAND"
                 `,
               ],
             },
@@ -794,7 +830,9 @@ export const layer = Layer.effect(
           const cmd = ChildProcess.make(sh, args, {
             cwd,
             extendEnv: true,
-            env: { ...shellEnv.env, TERM: "dumb" },
+            // zsh/bash read the command from this env var (eval "$OPENCODE_SHELL_COMMAND")
+            // so it is never interpolated into the shell script source (C-013).
+            env: { ...shellEnv.env, TERM: "dumb", OPENCODE_SHELL_COMMAND: input.command },
             stdin: "ignore",
             forceKillAfter: "3 seconds",
           })
@@ -1591,6 +1629,15 @@ export const layer = Layer.effect(
             const lastUserMsg = msgs.findLast((m) => m.info.role === "user")
             const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
 
+            const providerInfo = yield* provider.getProvider(model.providerID)
+            const toolParserMode = model.options?.toolParser ?? providerInfo.options?.toolParser
+
+            // One gate per step. The toolParserActive predicate matches
+            // streamInput.toolParserActive below modulo the tool-set emptiness
+            // check — with no tools there are no execute callbacks, so the
+            // gate never fires anyway.
+            const gate = ToolGate.createToolExecutionGate({ toolParserActive: !!toolParserMode })
+
             const tools = yield* resolveTools({
               agent,
               session,
@@ -1599,21 +1646,35 @@ export const layer = Layer.effect(
               processor: handle,
               bypassAgentCheck,
               messages: msgs,
+              gate,
             })
 
+            // complete/StructuredOutput live outside resolveTools but must
+            // share the gate: for `complete` the spam block is load-bearing —
+            // a blocked call yields an error part, so validateCompleteFromParts
+            // rejects the completion instead of persisting a contaminated
+            // summary as the final visible message.
             if (lastUser.format?.type === "json_schema") {
-              tools["StructuredOutput"] = createStructuredOutputTool({
-                schema: lastUser.format.schema,
-                onSuccess(output) {
-                  structured = output
-                },
-              })
+              tools["StructuredOutput"] = ToolGate.gateExecute(
+                gate,
+                "StructuredOutput",
+                createStructuredOutputTool({
+                  schema: lastUser.format.schema,
+                  onSuccess(output) {
+                    structured = output
+                  },
+                }),
+              )
             } else {
-              tools["complete"] = createCompleteTool({
-                onSuccess(summary) {
-                  completed = summary
-                },
-              })
+              tools["complete"] = ToolGate.gateExecute(
+                gate,
+                "complete",
+                createCompleteTool({
+                  onSuccess(summary) {
+                    completed = summary
+                  },
+                }),
+              )
             }
 
             if (step === 1)
@@ -1682,8 +1743,6 @@ export const layer = Layer.effect(
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
-            const providerInfo = yield* provider.getProvider(model.providerID)
-            const toolParserMode = model.options?.toolParser ?? providerInfo.options?.toolParser
             const activeTools = isLastStep ? {} : tools
             const activeToolChoice = isLastStep ? "none" as const : format.type === "json_schema" ? "required" : undefined
             const result = yield* handle.process({
@@ -1698,6 +1757,7 @@ export const layer = Layer.effect(
               model,
               toolChoice: activeToolChoice,
               toolParserActive: !!(toolParserMode && activeToolChoice !== "none" && Object.keys(activeTools).length > 0),
+              toolGate: gate,
               failureTracker: tracker,
               appendPendingDirective,
             })
@@ -1743,6 +1803,18 @@ export const layer = Layer.effect(
 
             const finished = handle.message.finish && !["tool-calls", "unknown"].includes(handle.message.finish)
             if (finished && !handle.message.error) {
+              // Surface any content-filter finish (e.g. Anthropic stop_reason:
+              // refusal) as an error. These turns may have produced no visible
+              // output at all — previously the session went idle silently — or
+              // partial text that was cut off by the provider's filter.
+              if (handle.message.finish === "content-filter") {
+                handle.message.error = new MessageV2.ContentFilterError({
+                  message: "The response was blocked by the provider's content filter",
+                }).toObject()
+                yield* sessions.updateMessage(handle.message)
+                yield* events.publish(Session.Event.Error, { sessionID, error: handle.message.error })
+                return "break" as const
+              }
               if (format.type === "json_schema") {
                 handle.message.error = new MessageV2.StructuredOutputError({
                   message: "Model did not produce structured output",

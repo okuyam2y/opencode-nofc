@@ -10,7 +10,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isImageAttachment, sniffAttachmentMime } from "@/util/media"
-import { extractDocumentText, extractImageText, isDocumentFile } from "./document"
+import { extractDocumentText, extractImageText, isDocumentFile, type OcrResult } from "./document"
 import { Config } from "@/config/config"
 import type { Provider } from "@/provider/provider"
 
@@ -367,7 +367,14 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
         const shouldOCR = hasToolParser || canReceiveImage === false
 
         if (shouldOCR) {
-          const result = yield* Effect.promise(() => extractImageText(filepath))
+          // extractImageText can reject (runVisionOcr's fs.mkdir sits outside
+          // its try/catch); Effect.promise would turn that rejection into an
+          // uncatchable defect — route it into the error channel like the
+          // document path below (C-058).
+          const result = yield* Effect.tryPromise({
+            try: () => extractImageText(filepath),
+            catch: (cause): OcrResult => ({ status: "error", message: String(cause).slice(0, 200) }),
+          }).pipe(Effect.catch((failure) => Effect.succeed(failure)))
           if (result.status === "ok") {
             let output = `<path>${filepath}</path>\n<type>Image (OCR)</type>\n<content>\n${result.text}\n</content>`
             if (loaded.length > 0) {

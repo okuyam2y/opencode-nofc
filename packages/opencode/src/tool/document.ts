@@ -108,8 +108,9 @@ async function runVisionOcr(imagePaths: string[], timeoutMs: number): Promise<st
 
   // 2. Fall back to swift script interpretation
   if (await commandExists("swift")) {
-    const tmpDir = path.join(tmpdir(), `opencode-ocr-${Date.now()}`)
-    await fs.mkdir(tmpDir, { recursive: true })
+    // mkdtemp, not Date.now(): two OCR runs in the same millisecond would share
+    // a directory and delete each other's in-flight files (C-050/C-051).
+    const tmpDir = await fs.mkdtemp(path.join(tmpdir(), "opencode-ocr-"))
     try {
       const scriptPath = path.join(tmpDir, "ocr.swift")
       await fs.writeFile(scriptPath, VISION_OCR_SWIFT)
@@ -134,8 +135,7 @@ async function ocrPdf(filepath: string, numPages: number): Promise<string> {
   const hasPdftoppm = await commandExists("pdftoppm")
   if (!hasPdftoppm) return ""
 
-  const tmpDir = path.join(tmpdir(), `opencode-ocr-${Date.now()}`)
-  await fs.mkdir(tmpDir, { recursive: true })
+  const tmpDir = await fs.mkdtemp(path.join(tmpdir(), "opencode-ocr-"))
 
   try {
     const prefix = path.join(tmpDir, "page")
@@ -215,6 +215,38 @@ export async function extractDocxText(filepath: string): Promise<string> {
 }
 
 /**
+ * Numeric order for sheetN.xml / slideN.xml entries. Plain localeCompare orders
+ * "slide10" before "slide2"; OOXML parts are 1-based numeric (C-016).
+ */
+export function sheetIndex(filename: string): number {
+  const n = filename.match(/(\d+)\.xml$/)
+  return n ? Number.parseInt(n[1], 10) : 0
+}
+
+/**
+ * Parse an xlsx sharedStrings.xml into the per-<si> string table. Each <si> is
+ * one shared string; rich-text <si> hold multiple <t> runs that must be joined
+ * so cell references by <si> index stay aligned (C-005). Exported for testing.
+ */
+export function parseXlsxSharedStrings(xml: string): string[] {
+  const out: string[] = []
+  let sawSi = false
+  for (const si of xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)) {
+    sawSi = true
+    // <rPh> phonetic runs hold IME furigana, not display text (ECMA-376);
+    // keeping them turns 東京 into 東京トウキョウ in IME-authored files.
+    const body = si[1].replace(/<rPh\b[^>]*>[\s\S]*?<\/rPh>/g, "")
+    let combined = ""
+    for (const t of body.matchAll(/<t[^>]*>([^<]*)<\/t>/g)) combined += decodeXmlEntities(t[1])
+    out.push(combined)
+  }
+  if (!sawSi) {
+    for (const m of xml.matchAll(/<t[^>]*>([^<]*)<\/t>/g)) out.push(decodeXmlEntities(m[1]))
+  }
+  return out
+}
+
+/**
  * Extract text from an .xlsx file.
  * Reads shared strings and sheet data from the ZIP archive.
  */
@@ -225,13 +257,10 @@ export async function extractXlsxText(filepath: string): Promise<string> {
   const sharedStringsEntry = entries.find(
     (e) => e.filename === "xl/sharedStrings.xml",
   )
-  const sharedStrings: string[] = []
+  let sharedStrings: string[] = []
   if (sharedStringsEntry) {
     const xml = await sharedStringsEntry.getData!(new TextWriter())
-    const matches = xml.matchAll(/<t[^>]*>([^<]*)<\/t>/g)
-    for (const m of matches) {
-      sharedStrings.push(decodeXmlEntities(m[1]))
-    }
+    sharedStrings = parseXlsxSharedStrings(xml)
   }
 
   // Build sheet filename -> tab name mapping from workbook.xml + rels
@@ -240,7 +269,7 @@ export async function extractXlsxText(filepath: string): Promise<string> {
   // Read sheets
   const sheetEntries = entries
     .filter((e) => /^xl\/worksheets\/sheet\d+\.xml$/.test(e.filename))
-    .sort((a, b) => a.filename.localeCompare(b.filename))
+    .sort((a, b) => sheetIndex(a.filename) - sheetIndex(b.filename))
 
   const output: string[] = []
   for (const entry of sheetEntries) {
@@ -308,17 +337,43 @@ async function buildSheetNameMap(
   return map
 }
 
-function parseSheetXml(xml: string, sharedStrings: string[]): string[][] {
+/**
+ * Linear scanner for <name ...>body</name> blocks. The previous nested lazy
+ * regexes (/<row[^>]*>[\s\S]*?<\/row>/) rescan to end-of-input for every
+ * unclosed opener, going quadratic on crafted sheets (C-052); indexOf-based
+ * scanning keeps the same first-close-after-opener semantics in O(n).
+ */
+function* tagBlocks(xml: string, name: string): Generator<{ attrs: string; body: string }> {
+  const open = "<" + name
+  const close = "</" + name + ">"
+  let pos = 0
+  while (true) {
+    const start = xml.indexOf(open, pos)
+    if (start === -1) return
+    // Tag-name boundary: the opener must be followed by whitespace, "/" or
+    // ">", otherwise this is a longer tag name (<count>, <cols>).
+    const next = xml[start + open.length]
+    if (next === undefined || !/[\s/>]/.test(next)) {
+      pos = start + open.length
+      continue
+    }
+    const gt = xml.indexOf(">", start)
+    if (gt === -1) return
+    const end = xml.indexOf(close, gt + 1)
+    if (end === -1) return
+    yield { attrs: xml.slice(start + open.length, gt), body: xml.slice(gt + 1, end) }
+    pos = end + close.length
+  }
+}
+
+/** Exported for testing (C-052). */
+export function parseSheetXml(xml: string, sharedStrings: string[]): string[][] {
   const rows: string[][] = []
-  const rowMatches = xml.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)
-  for (const rowMatch of rowMatches) {
+  for (const rowMatch of tagBlocks(xml, "row")) {
     const cells: string[] = []
-    const cellMatches = rowMatch[1].matchAll(
-      /<c\b([^>]*)>([\s\S]*?)<\/c>/g,
-    )
-    for (const cellMatch of cellMatches) {
-      const attrs = cellMatch[1]
-      const inner = cellMatch[2]
+    for (const cellMatch of tagBlocks(rowMatch.body, "c")) {
+      const attrs = cellMatch.attrs
+      const inner = cellMatch.body
       const typeMatch = attrs.match(/\bt=["']?([^"'\s>]+)["']?/)
       const type = typeMatch?.[1]
       if (type === "inlineStr") {
@@ -345,25 +400,37 @@ function parseSheetXml(xml: string, sharedStrings: string[]): string[][] {
   return rows
 }
 
+// Per-part inflation cap (C-053): MAX_TEXT_LENGTH bounds the OUTPUT only after
+// a part is fully inflated, so a zip-bomb part could allocate multi-GB strings
+// first. Anything this large can't contribute more than MAX_TEXT_LENGTH chars
+// anyway. (A header that under-declares its size is caught by zip.js's own
+// size-mismatch check during inflation, which rejects via the callers'
+// tryPromise fallback.)
+const MAX_ZIP_PART_BYTES = 64 * 1024 * 1024
+
 async function readZipEntries(filepath: string) {
   const buf = await fs.readFile(filepath)
   const blob = new Blob([new Uint8Array(buf)])
   const reader = new ZipReader(new BlobReader(blob))
   const entries = await reader.getEntries()
-  return entries
+  return entries.filter((e) => (e.uncompressedSize ?? 0) <= MAX_ZIP_PART_BYTES)
 }
 
-function decodeXmlEntities(text: string): string {
-  return text
-    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, code) =>
-      String.fromCodePoint(parseInt(code, 16)),
-    )
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
+/**
+ * Single-pass entity decode. Sequential replaces double-decode nested escapes:
+ * literal "&lt;" is stored as "&amp;lt;", and an &amp;-first chain turns it
+ * into "<" instead of "&lt;" (C-054). Exported for testing.
+ */
+export function decodeXmlEntities(text: string): string {
+  return text.replace(/&(?:#(\d+)|#x([0-9a-fA-F]+)|(amp|lt|gt|quot|apos));/g, (match, dec, hex, named) => {
+    if (dec !== undefined || hex !== undefined) {
+      const code = dec !== undefined ? Number(dec) : parseInt(hex, 16)
+      // Out-of-range code points would make fromCodePoint throw and abort the
+      // whole extraction; keep the raw reference instead.
+      return code <= 0x10ffff ? String.fromCodePoint(code) : match
+    }
+    return { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" }[named as "amp"]
+  })
 }
 
 function stripXmlTags(xml: string): string {
@@ -386,7 +453,7 @@ export async function extractPptxText(filepath: string): Promise<string> {
 
   const slideEntries = entries
     .filter((e) => /^ppt\/slides\/slide\d+\.xml$/.test(e.filename))
-    .sort((a, b) => a.filename.localeCompare(b.filename))
+    .sort((a, b) => sheetIndex(a.filename) - sheetIndex(b.filename))
 
   const output: string[] = []
   for (let i = 0; i < slideEntries.length; i++) {

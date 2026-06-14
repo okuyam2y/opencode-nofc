@@ -1445,6 +1445,12 @@ const DOOM_LOOP_THRESHOLD = 3
           ctx.hasToolCalls = false
           ctx.needsCompaction = false
           hasExecutedTool = false
+          // Discard hermes drop-recovery entries left over from a previous step
+          // that ended without reaching its finish-step drain (e.g. the graceful
+          // stall step-end in halt()). They belong to that step's assistant
+          // message and must not be injected into this one. Within a normal step
+          // the buffer is already drained at finish-step, so this is a no-op there.
+          yield* llm.consumeDroppedToolCalls(ctx.sessionID)
           ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
 
           // Baseline for attempt rollback — captured before stream starts
@@ -1497,6 +1503,10 @@ const DOOM_LOOP_THRESHOLD = 3
             // its executes must not suppress re-issued calls in the retry
             // (mirrors the old ctx.acceptedToolKeys/writeFilePaths clears).
             ctx.lastStreamInput?.toolGate?.reset()
+            // Same rationale for hermes drop-recovery: drops detected during the
+            // failed attempt were undone with its parts, so discard them instead
+            // of injecting stale synthetic error parts into the retry's message.
+            yield* llm.consumeDroppedToolCalls(ctx.sessionID)
             ctx.currentText = undefined
             ctx.tagFilter = undefined
             ctx.reasoningMap = {}

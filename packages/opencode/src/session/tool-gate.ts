@@ -29,6 +29,38 @@ export const DEDUP_SKIP_TOOLS = new Set(["read", "glob", "grep", "webfetch", "we
 
 export const DUPLICATE_SKIP_OUTPUT =
   "[Duplicate tool call skipped; an identical call already ran in this step. Use that result.]"
+
+/**
+ * After an identical call has been skipped this many times in one step, the
+ * model is ignoring the soft "use that result" note and cycling (M3,
+ * docs/TODO.md「同一ツールコールの『Duplicate tool call skipped』無限ループ」: a
+ * test→ls→grep cycle that the doom-loop detector misses because it needs three
+ * *consecutive* identical parts, not a period>1 loop). The escalated output
+ * names the repeat count and tells the model to stop and finalize — but stays a
+ * `skip` (completed), never an error: returning an error for a deduped call
+ * makes the model treat the tool as broken and stop the whole session
+ * (docs/lessons/design.md「安全のために弾いた操作を『失敗』として見せるな」, the
+ * 2026-04-16 error→completed reversal).
+ */
+export const DUPLICATE_SKIP_ESCALATE_AFTER = 2
+
+/** Output text for a deduped call, escalated once it has been skipped
+ *  {@link DUPLICATE_SKIP_ESCALATE_AFTER}+ times in the step.
+ *  `skipCount` counts skips only; total emissions = the one that ran + skips,
+ *  so the model-facing count is `skipCount + 1`. */
+export function duplicateSkipOutput(skipCount: number): string {
+  if (skipCount < DUPLICATE_SKIP_ESCALATE_AFTER) return DUPLICATE_SKIP_OUTPUT
+  // Purely factual loop-break notice — NO termination language ("finish",
+  // "final answer", "conclude"). This is a completed (success) tool output, so
+  // steering the model toward ending the task would be an unsafe place to force
+  // early finalization (round-2 reviewer). State the count, that the prior
+  // result stands, and to stop reissuing it; what to do next is the model's call.
+  return (
+    `[Duplicate tool call skipped — this identical call has now been issued ${skipCount + 1} times with no change; ` +
+    `the first call's result (above) still stands and repeating it produces nothing new. ` +
+    `Stop reissuing it: use that result, or take a different action.]`
+  )
+}
 export const SPAM_BLOCK_ERROR = "Tool call blocked: training data contamination detected in arguments"
 export const NEAR_DUPLICATE_WRITE_ERROR = "Near-duplicate write to same filePath skipped (shorter content)"
 
@@ -150,6 +182,9 @@ export function gateExecute<T extends { execute?: (args: any, options: any) => a
 export function createToolExecutionGate(input: { toolParserActive: boolean }): ToolExecutionGate {
   /** dedupKey → first accepted toolCallId, scoped to the current stepKey. */
   const acceptedKeys = new Map<string, string>()
+  /** dedupKey → number of times a duplicate has been skipped this step (for
+   *  escalating the skip hint when the model cycles — M3). */
+  const skipCounts = new Map<string, number>()
   /** filePath → last allowed write, scoped to the current stepKey. */
   const writeFilePaths = new Map<string, { toolCallId: string; contentLength: number }>()
   /** toolCallIds answered with skip or block (not executed). */
@@ -162,6 +197,7 @@ export function createToolExecutionGate(input: { toolParserActive: boolean }): T
     },
     reset() {
       acceptedKeys.clear()
+      skipCounts.clear()
       writeFilePaths.clear()
       gatedCallIds.clear()
       currentStepKey = undefined
@@ -172,6 +208,7 @@ export function createToolExecutionGate(input: { toolParserActive: boolean }): T
       if (currentStepKey !== stepKey) {
         currentStepKey = stepKey
         acceptedKeys.clear()
+        skipCounts.clear()
         writeFilePaths.clear()
         gatedCallIds.clear()
       }
@@ -184,10 +221,14 @@ export function createToolExecutionGate(input: { toolParserActive: boolean }): T
 
       const firstCallId = !DEDUP_SKIP_TOOLS.has(toolName) ? isDuplicate(acceptedKeys, toolName, args) : undefined
       if (firstCallId) {
+        const key = dedupKey(toolName, args)
+        const skipCount = (skipCounts.get(key) ?? 0) + 1
+        skipCounts.set(key, skipCount)
         log.warn("tool execution deduplicated", {
           toolCallId,
           toolName,
           firstCallId,
+          skipCount,
           input: JSON.stringify(args).slice(0, 200),
         })
         gatedCallIds.add(toolCallId)
@@ -196,7 +237,7 @@ export function createToolExecutionGate(input: { toolParserActive: boolean }): T
           output: {
             title: "deduplicated",
             metadata: { deduplicated: true, dedupOf: firstCallId },
-            output: DUPLICATE_SKIP_OUTPUT,
+            output: duplicateSkipOutput(skipCount),
           },
         }
       }

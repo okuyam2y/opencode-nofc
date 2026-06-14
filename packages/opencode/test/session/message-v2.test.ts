@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { z } from "zod"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { APICallError } from "ai"
+import { APICallError, modelMessageSchema } from "ai"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionRetry } from "../../src/session/retry"
 import { ProviderTransform } from "@/provider/transform"
@@ -1995,7 +1996,13 @@ describe("session.message-v2.fromError", () => {
             metadata: {
               notFound: true,
               resetDirective: "should never reach provider",
-              customPassthrough: "keep-me",
+              // A passthrough field must survive — but it must be a settings
+              // OBJECT, not a scalar.  AI SDK providerOptions is typed
+              // Record<string, Record<string, JSONValue>>; a bare scalar value
+              // fails ModelMessage[] validation and kills the stream (the exact
+              // session-death this file regresses), so providerMeta() drops
+              // non-object top-level entries as defense-in-depth.
+              customPassthrough: { keep: "me" },
             },
           },
         ] as MessageV2.Part[],
@@ -2010,10 +2017,10 @@ describe("session.message-v2.fromError", () => {
     const value: string = resultItem.output.value
     expect(value).toBe("[File does not exist — use glob to search for the correct path]")
     // providerMeta() behavior: internal flags stripped from callProviderMetadata,
-    // passthrough field preserved.  Without asserting on providerOptions the
-    // test would still pass if providerMeta() were a no-op, so this is the
-    // load-bearing assertion.
-    expect(resultItem.providerOptions).toEqual({ customPassthrough: "keep-me" })
+    // object-valued passthrough field preserved.  Without asserting on
+    // providerOptions the test would still pass if providerMeta() were a no-op,
+    // so this is the load-bearing assertion.
+    expect(resultItem.providerOptions).toEqual({ customPassthrough: { keep: "me" } })
   })
 
   test("providerMeta forwards passthrough metadata on hermes notFound rewrite", async () => {
@@ -2622,5 +2629,82 @@ describe("MessageV2.fromError forceNonRetryable on plain-text rate limits (C-044
     expect(SessionRetry.retryable(result, "test")).toMatchObject({
       message: expect.stringContaining("rate limit"),
     })
+  })
+})
+
+describe("MessageV2.toModelMessages internal-flag metadata does not break ModelMessage schema", () => {
+  // Regression for the hermes "incomplete tool call → Invalid prompt: messages
+  // do not match the ModelMessage[] schema" session-death. The drop-recovery
+  // synthetic tool part (processor.ts) carries metadata { dropRecovery: true }.
+  // When the rebuild runs with the SAME model (differentModel === false), that
+  // flat boolean used to flow through callProviderMetadata into AI SDK
+  // providerOptions, whose schema requires every value to be a settings object.
+  // The boolean failed validation and killed the whole stream. providerMeta()
+  // must strip it (and any other flat top-level flag).
+  test("drop-recovery tool part validates against AI SDK modelMessageSchema", async () => {
+    const messageID = "m-asst"
+    const input: SessionV1.WithParts[] = [
+      {
+        // assistantInfo with no meta → providerID/modelID match `model`, so
+        // differentModel === false (the production rebuild path).
+        info: assistantInfo(messageID, "m-parent"),
+        parts: [
+          { ...basePart(messageID, "p0"), type: "step-start" },
+          {
+            ...basePart(messageID, "p1"),
+            type: "tool",
+            tool: "grep",
+            // Non-standard callID (no "call_" prefix) like the synthetic part
+            callID: "Z7pisxEXP060hQDJ",
+            state: {
+              status: "error",
+              input: {},
+              error: "Tool call was incomplete (closing tag missing). Tool: grep. Please retry this tool call.",
+              time: { start: 0, end: 0 },
+            },
+            metadata: { dropRecovery: true },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+
+    const out = await MessageV2.toModelMessages(input, model)
+    // 1. The whole prompt must validate against the schema standardizePrompt uses.
+    expect(z.array(modelMessageSchema).safeParse(out).success).toBe(true)
+    // 2. The internal flag must not survive as providerOptions on the tool-call.
+    const assistant = out.find((m) => m.role === "assistant")!
+    const toolCall = (assistant.content as any[]).find((c) => c.type === "tool-call")
+    expect(toolCall.providerOptions).toBeUndefined()
+  })
+
+  test("object-valued provider metadata still passes through", async () => {
+    const messageID = "m-asst2"
+    const input: SessionV1.WithParts[] = [
+      {
+        info: assistantInfo(messageID, "m-parent"),
+        parts: [
+          {
+            ...basePart(messageID, "p1"),
+            type: "tool",
+            tool: "grep",
+            callID: "call_legit",
+            state: {
+              status: "error",
+              input: { pattern: "x" },
+              error: "boom",
+              time: { start: 0, end: 0 },
+            },
+            // A real provider settings object must survive the sanitization.
+            metadata: { anthropic: { cacheControl: { type: "ephemeral" } } },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+
+    const out = await MessageV2.toModelMessages(input, model)
+    expect(z.array(modelMessageSchema).safeParse(out).success).toBe(true)
+    const assistant = out.find((m) => m.role === "assistant")!
+    const toolCall = (assistant.content as any[]).find((c) => c.type === "tool-call")
+    expect(toolCall.providerOptions).toEqual({ anthropic: { cacheControl: { type: "ephemeral" } } })
   })
 })

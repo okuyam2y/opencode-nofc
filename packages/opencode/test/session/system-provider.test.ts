@@ -13,8 +13,8 @@ const ANTHROPIC_FRONTIER_MARK = "# Engineering discipline"
 
 describe("SystemPrompt.provider() dispatch", () => {
   describe("baseline (no promptVariant)", () => {
-    test("gpt-5.4-gus routes to gpt.txt, not frontier", () => {
-      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"))
+    test("gpt-5.4 routes to gpt.txt, not frontier", () => {
+      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4"))
       expect(prompt).not.toContain(FRONTIER_MARK)
       expect(prompt).not.toContain(GPT_FRONTIER_MARK)
       expect(prompt).toContain("You are OpenCode")
@@ -29,8 +29,8 @@ describe("SystemPrompt.provider() dispatch", () => {
   })
 
   describe("promptVariant = 'frontier'", () => {
-    test("gpt-5.4-gus routes to gpt-frontier.txt", () => {
-      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), { promptVariant: "frontier" })
+    test("gpt-5.4 routes to gpt-frontier.txt", () => {
+      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4"), { promptVariant: "frontier" })
       expect(prompt).toContain(FRONTIER_MARK)
       expect(prompt).toContain(GPT_FRONTIER_MARK)
     })
@@ -71,20 +71,20 @@ describe("SystemPrompt.provider() dispatch", () => {
 
   describe("promptVariant = other value", () => {
     test("unrecognized promptVariant value falls back to baseline", () => {
-      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), { promptVariant: "experimental" })
+      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4"), { promptVariant: "experimental" })
       expect(prompt).not.toContain(FRONTIER_MARK)
       expect(prompt).not.toContain(GPT_FRONTIER_MARK)
     })
 
     test("undefined promptVariant matches undefined option", () => {
-      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), {})
+      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4"), {})
       expect(prompt).not.toContain(FRONTIER_MARK)
     })
   })
 
   describe("toolParser interaction", () => {
     test("frontier variant still gets toolParser apply_patch rewrite when toolParser is set", () => {
-      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), {
+      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4"), {
         promptVariant: "frontier",
         toolParser: "hermes",
       })
@@ -94,7 +94,7 @@ describe("SystemPrompt.provider() dispatch", () => {
     })
 
     test("baseline with toolParser also rewrites apply_patch", () => {
-      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), { toolParser: "hermes" })
+      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4"), { toolParser: "hermes" })
       expect(prompt).not.toContain(FRONTIER_MARK)
       expect(prompt).not.toContain("Always use apply_patch for manual code edits.")
       expect(prompt).toContain("Tool-parser environment rules")
@@ -103,16 +103,16 @@ describe("SystemPrompt.provider() dispatch", () => {
     test("toolParser rewrite drops the multi_tool_use.parallel mandate (C-045)", () => {
       // The pseudo-tool is OpenAI-native; in the tool-parser environment it is
       // not registered and the mandate produced observed hermes hallucinations.
-      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), { toolParser: "hermes" })
+      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4"), { toolParser: "hermes" })
       expect(prompt).not.toContain("multi_tool_use.parallel")
       expect(prompt).toContain("Parallelize tool calls")
-      const [frontier] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), {
+      const [frontier] = SystemPrompt.provider(fakeModel("gpt-5.4"), {
         toolParser: "hermes",
         promptVariant: "frontier",
       })
       expect(frontier).not.toContain("multi_tool_use.parallel")
       // Without toolParser, the OpenAI-native guidance stays.
-      const [baseline] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), {})
+      const [baseline] = SystemPrompt.provider(fakeModel("gpt-5.4"), {})
       expect(baseline).toContain("multi_tool_use.parallel")
     })
   })
@@ -125,7 +125,7 @@ describe("SystemPrompt.provider() dispatch", () => {
 
     test("provider-level frontier propagates when model has no override", () => {
       const opts = resolve({ provider: { promptVariant: "frontier" } })
-      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), opts)
+      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4"), opts)
       expect(prompt).toContain(FRONTIER_MARK)
     })
 
@@ -137,13 +137,13 @@ describe("SystemPrompt.provider() dispatch", () => {
 
     test("model-level unset override with empty string does NOT disable (unrecognized value → baseline)", () => {
       const opts = resolve({ model: { promptVariant: "" }, provider: { promptVariant: "frontier" } })
-      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), opts)
+      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4"), opts)
       expect(prompt).not.toContain(FRONTIER_MARK)
     })
 
     test("neither level sets promptVariant → baseline", () => {
       const opts = resolve({ model: {}, provider: {} })
-      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4-gus"), opts)
+      const [prompt] = SystemPrompt.provider(fakeModel("gpt-5.4"), opts)
       expect(prompt).not.toContain(FRONTIER_MARK)
     })
 

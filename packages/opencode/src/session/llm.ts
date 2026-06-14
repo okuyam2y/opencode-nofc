@@ -513,11 +513,20 @@ export function _detectDroppedToolCall(
                     ruleset: [],
                   }),
                 )
-                for (const name of uniqueNames) approvedToolsForSession.add(name)
-                workflowModel.sessionPreapprovedTools = [
-                  ...(workflowModel.sessionPreapprovedTools ?? []),
-                  ...uniqueNames,
-                ]
+                // Only promote to the session-wide auto-approve cache when the
+                // user chose "always". A "once" reply approves this single batch
+                // without suppressing future prompts for the same tool — the
+                // captured `reply` was previously unused, silently treating
+                // "once" like "always". (Race-safe: if the Replied event has not
+                // landed yet, reply stays undefined and we re-ask next time
+                // instead of over-approving.)
+                if (reply === "always") {
+                  for (const name of uniqueNames) approvedToolsForSession.add(name)
+                  workflowModel.sessionPreapprovedTools = [
+                    ...(workflowModel.sessionPreapprovedTools ?? []),
+                    ...uniqueNames,
+                  ]
+                }
                 return { approved: true }
               } catch {
                 return { approved: false }

@@ -228,6 +228,71 @@ describe("gate decisions (unit)", () => {
     expect(gate.check("bash", "c2", { command: "b" }).action).toBe("allow")
   })
 
+  // Helper: assert a decision is a skip and return its output text (fails the
+  // test if it regressed to allow/block, closing the false-green gap Codex #7).
+  function skipOutput(decision: ToolGate.GateDecision): string {
+    expect(decision.action).toBe("skip")
+    if (decision.action !== "skip") throw new Error("expected skip")
+    return decision.output.output
+  }
+
+  test("the skip hint escalates after repeated skips of the same call (M3)", () => {
+    const gate = ToolGate.createToolExecutionGate({ toolParserActive: true })
+    expect(gate.check("bash", "c1", args).action).toBe("allow")
+
+    // First skip (2nd emission): gentle baseline note.
+    const first = gate.check("bash", "c2", args)
+    expect(skipOutput(first)).toBe(ToolGate.DUPLICATE_SKIP_OUTPUT)
+
+    // Second skip (3rd emission): forceful directive naming the total count.
+    const second = gate.check("bash", "c3", args)
+    const secondOut = skipOutput(second)
+    expect(secondOut).not.toBe(ToolGate.DUPLICATE_SKIP_OUTPUT)
+    expect(secondOut).toContain("3 times")
+    // Still a completed skip, never an error (design.md / 2026-04-16).
+    if (second.action === "skip") {
+      expect(second.output.metadata).toEqual({ deduplicated: true, dedupOf: "c1" })
+    }
+
+    // Third skip (4th emission): count keeps climbing.
+    expect(skipOutput(gate.check("bash", "c4", args))).toContain("4 times")
+  })
+
+  test("the escalated hint carries no termination language (round-2 reviewer)", () => {
+    const gate = ToolGate.createToolExecutionGate({ toolParserActive: true })
+    gate.check("bash", "c1", args)
+    gate.check("bash", "c2", args) // skip #1
+    const escalated = skipOutput(gate.check("bash", "c3", args)).toLowerCase()
+    // A completed (success) tool output must not steer the model to end the task.
+    for (const word of ["finish", "final answer", "conclude", "complete"]) {
+      expect(escalated).not.toContain(word)
+    }
+  })
+
+  test("skip-count escalation is per dedupKey and resets across steps", () => {
+    const gate = ToolGate.createToolExecutionGate({ toolParserActive: true })
+    gate.check("bash", "a1", { command: "x" })
+    gate.check("bash", "a2", { command: "x" }) // skip #1 for x
+    // A different command's first skip stays gentle (independent counter).
+    gate.check("bash", "b1", { command: "y" })
+    expect(skipOutput(gate.check("bash", "b2", { command: "y" }))).toBe(ToolGate.DUPLICATE_SKIP_OUTPUT)
+    // Next step resets the counters — x's skip is gentle again.
+    gate.check("bash", "c1", { command: "x" }, 9)
+    expect(skipOutput(gate.check("bash", "c2", { command: "x" }, 9))).toBe(ToolGate.DUPLICATE_SKIP_OUTPUT)
+  })
+
+  test("reset() clears the skip counter (no stale escalation after rollback)", () => {
+    const gate = ToolGate.createToolExecutionGate({ toolParserActive: true })
+    gate.check("bash", "c1", args)
+    gate.check("bash", "c2", args) // skip #1
+    gate.check("bash", "c3", args) // skip #2 → escalated
+    gate.reset()
+    // After rollback the same call runs for real again...
+    expect(gate.check("bash", "c4", args).action).toBe("allow")
+    // ...and its first post-reset skip is gentle, not carried over as escalated.
+    expect(skipOutput(gate.check("bash", "c5", args))).toBe(ToolGate.DUPLICATE_SKIP_OUTPUT)
+  })
+
   test("a step-key change resets dedup state (multi-step defense)", () => {
     const gate = ToolGate.createToolExecutionGate({ toolParserActive: true })
     expect(gate.check("bash", "c1", args, 5).action).toBe("allow")

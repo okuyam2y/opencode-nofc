@@ -1,0 +1,41 @@
+OpenCode
+Copyright the OpenCode authors.
+
+This product is licensed under the MIT License.
+
+--------------------------------------------------------------------------------
+Third-party attribution: Codex CLI prompt principles
+--------------------------------------------------------------------------------
+
+The opt-in frontier system-prompt variants:
+
+  packages/opencode/src/session/prompt/gpt-frontier.txt
+  packages/opencode/src/session/prompt/anthropic-frontier.txt
+
+paraphrase selected operating principles from the Codex CLI system and review
+prompts:
+
+  Codex CLI — https://github.com/openai/codex
+  Licensed under the Apache License, Version 2.0
+  https://www.apache.org/licenses/LICENSE-2.0
+
+The adapted principles are: stronger task persistence, root-cause fix preference
+over surface-level patches, not fixing unrelated bugs, testing discipline
+(start from the narrowest reproducer and broaden), ambition-vs-precision
+judgment for existing codebases, and a preference for ripgrep. The text was
+re-written for OpenCode's identity, formatting rules, and tool names; no Codex
+source file is copied verbatim. The Anthropic variant ports a conservative
+subset only (task-persistence language is intentionally omitted).
+
+The following clauses in these files are original to this project and are NOT
+derived from Codex:
+
+  - the public-API silent-semantic-change elevation rule (flag a changed
+    public contract — e.g. signed→unsigned comparison, nullable contract,
+    ordering rule — at Medium minimum even when the type signature is
+    unchanged);
+  - the configured-build-tool-only rule (use the project's configured build
+    tool for verification; do not fall back to raw compilers such as javac);
+  - the session-end narrative-fidelity clause (when summarizing, describe only
+    events citable from your own tool-call history; do not invent a mechanism
+    to explain an uncertain outcome).

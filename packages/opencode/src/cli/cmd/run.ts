@@ -22,7 +22,12 @@ import { EOL } from "os"
 import { Filesystem } from "@/util/filesystem"
 import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@opencode-ai/sdk/v2"
 import { FormatError, FormatUnknownError } from "../error"
-import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
+import {
+  INTERACTIVE_INPUT_ERROR,
+  PIPED_STDIN_GRACE_MS,
+  readPipedStdin,
+  resolveInteractiveStdin,
+} from "./run/runtime.stdin"
 
 type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
 
@@ -377,7 +382,23 @@ export const RunCommand = effectCmd({
         }
       }
 
-      const piped = process.stdin.isTTY ? undefined : await Bun.stdin.text()
+      // A message arg, a command, or --interactive (whose real input is the
+      // controlling terminal, opened separately) means stdin is supplementary,
+      // so we can bound the wait for it (inherited never-closing stdin must not
+      // hang). With none of those, stdin is the only input and is read to EOF.
+      const piped = await readPipedStdin(process.stdin, {
+        hasFallback:
+          (typeof message === "string" && message.trim().length > 0) || !!args.command || !!args.interactive,
+        // Don't silently drop a slow pipe: if the first-signal wait times out we
+        // proceed with the fallback, but tell the user any later stdin was lost.
+        onTimeout: () =>
+          UI.println(
+            UI.Style.TEXT_WARNING_BOLD +
+              `⚠ no stdin received within ${PIPED_STDIN_GRACE_MS}ms; proceeding without piped input ` +
+              `(any input piped after the timeout was not read).` +
+              UI.Style.TEXT_NORMAL,
+          ),
+      })
       message = resolveRunInput(message, piped) ?? ""
       const initialInput = resolveRunInput(rawMessage, piped)
 
@@ -686,6 +707,29 @@ export const RunCommand = effectCmd({
               toggles.set("start", true)
             }
 
+            // Fail-loud on a fatal assistant message error (e.g. an UnknownError
+            // from a failed prompt rebuild). These land in the message `error`
+            // field but do NOT always emit a `session.error` event, so without
+            // this branch run mode would print nothing and exit 0 — the worst
+            // possible outcome for a non-interactive caller. Dedupe per message
+            // id since message.updated fires repeatedly for the same message.
+            if (
+              event.type === "message.updated" &&
+              event.properties.sessionID === sessionID &&
+              event.properties.info.role === "assistant" &&
+              event.properties.info.error &&
+              toggles.get("error_" + event.properties.info.id) !== true
+            ) {
+              toggles.set("error_" + event.properties.info.id, true)
+              const e = event.properties.info.error
+              let err = String(e.name)
+              if ("data" in e && e.data && "message" in e.data) {
+                err = String(e.data.message)
+              }
+              error = error ? error + EOL + err : err
+              if (!emit("error", { error: e })) UI.error(err)
+            }
+
             if (event.type === "message.part.updated") {
               const part = event.properties.part
               if (part.sessionID !== sessionID) continue
@@ -897,7 +941,10 @@ export const RunCommand = effectCmd({
         const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
           const { Server } = await import("@/server/server")
           const request = new Request(input, init)
-          return Server.Default().app.fetch(request)
+          const headers = new Headers(request.headers)
+          const auth = ServerAuth.header()
+          if (auth) headers.set("Authorization", auth)
+          return Server.Default().app.fetch(new Request(request, { headers }))
         }) as typeof globalThis.fetch
 
         try {
@@ -932,7 +979,10 @@ export const RunCommand = effectCmd({
       const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
         const { Server } = await import("@/server/server")
         const request = new Request(input, init)
-        return Server.Default().app.fetch(request)
+        const headers = new Headers(request.headers)
+        const auth = ServerAuth.header()
+        if (auth) headers.set("Authorization", auth)
+        return Server.Default().app.fetch(new Request(request, { headers }))
       }) as typeof globalThis.fetch
       const sdk = createOpencodeClient({
         baseUrl: "http://opencode.internal",

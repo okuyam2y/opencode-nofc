@@ -92,15 +92,24 @@ for (const file of [`${wrapperDir}/bin/opencode`, `${wrapperDir}/postinstall.mjs
   const patched = content
     .replaceAll('`opencode-${platform}-${arch}`', '`opencode-ai-nofc-${platform}-${arch}`')
     .replaceAll('"opencode-" + platform + "-" + arch', '"opencode-ai-nofc-" + platform + "-" + arch')
-  if (patched === content) {
-    // A silent no-op here ships a wrapper that resolves UPSTREAM package names
-    // (bin/opencode's findBinary walks up node_modules, so it could execute an
-    // installed upstream binary instead of the fork) — fail loud (C-076).
-    console.error(`Binary-name pattern not found in ${file} — upstream refactored the name expression; update publish-nofc.ts.`)
+  // Verify the END STATE, not whether a replacement happened. sync-public.sh
+  // already rewrites the wrapper name in the committed public source, so a no-op
+  // here is expected (source already fork-scoped). The real C-076 hazard is a
+  // wrapper that resolves UPSTREAM package names (bin/opencode's findBinary walks
+  // up node_modules, so it could execute an installed upstream binary instead of
+  // the fork). Fail loud only if the fork name is ABSENT — that means upstream
+  // refactored the name expression and neither the source nor our replaceAll
+  // produced it.
+  if (!patched.includes("opencode-ai-nofc-")) {
+    console.error(`Fork binary-name not found in ${file} — upstream refactored the name expression; update publish-nofc.ts.`)
     process.exit(1)
   }
-  await Bun.file(file).write(patched)
-  console.log(`Patched binary name in ${file}`)
+  if (patched !== content) {
+    await Bun.file(file).write(patched)
+    console.log(`Patched binary name in ${file}`)
+  } else {
+    console.log(`Binary name already fork-scoped in ${file} (no patch needed)`)
+  }
 }
 
 await Bun.file(`${wrapperDir}/package.json`).write(

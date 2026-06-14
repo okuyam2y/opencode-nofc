@@ -626,11 +626,23 @@ function providerMeta(metadata: Record<string, any> | undefined) {
   //  - providerExecuted: AI SDK bookkeeping for provider-side tool execution
   //  - notFound: hermes-only marker that tells toModelMessages to rewrite
   //    a File-not-found result into a minimal fixed-text reply
+  //  - dropRecovery: hermes-only marker set on synthetic tool parts created
+  //    for incomplete (dropped) tool calls (processor.ts). Like notFound it
+  //    is internal bookkeeping, never provider settings.
   //  - resetDirective: legacy field from rev.3 of tool-failure-reset-hook
   //    (never actually written in rev.4+, dropped here for forward safety if
   //    historical DB rows or a future bug resurrected it)
-  const { providerExecuted: _, notFound: _n, resetDirective: _r, ...rest } = metadata
-  return Object.keys(rest).length > 0 ? rest : undefined
+  const { providerExecuted: _, notFound: _n, dropRecovery: _d, resetDirective: _r, ...rest } = metadata
+  // The result becomes AI SDK providerOptions, whose schema requires every
+  // value to be a settings object (Record<string, JSONValue>). A flat marker
+  // (e.g. a stray boolean) would fail ModelMessage[] validation and kill the
+  // whole stream with "Invalid prompt". Defense-in-depth against any future
+  // top-level flag we forget to name above: keep only object-valued entries.
+  const safe: Record<string, any> = {}
+  for (const [key, value] of Object.entries(rest)) {
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) safe[key] = value
+  }
+  return Object.keys(safe).length > 0 ? safe : undefined
 }
 
 export const toModelMessagesEffect = Effect.fnUntraced(function* (

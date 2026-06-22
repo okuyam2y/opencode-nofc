@@ -157,9 +157,6 @@ export async function handler(
       logger.metric({
         provider: providerInfo.id,
         "provider.model": providerInfo.model,
-        ...(providerBudgetUsage?.[providerInfo.id]
-          ? { "provider.budget_usage": providerBudgetUsage?.[providerInfo.id] }
-          : {}),
       })
 
       const startTimestamp = Date.now()
@@ -198,6 +195,13 @@ export async function handler(
           providerInfo.modifyHeaders(headers, providerInfo.apiKey, stickyId)
           Object.entries(providerInfo.headerMappings ?? {}).forEach(([k, v]) => {
             headers.set(k, headers.get(v)!)
+          })
+          Object.entries(providerInfo.headerModifier ?? {}).forEach(([k, v]) => {
+            if (v === "$ip") return headers.set(k, ip)
+            if (v === "$session") return headers.set(k, sessionId)
+            if (v === "$model") return headers.set(k, model)
+            if (v === "$request") return headers.set(k, requestId)
+            headers.set(k, v)
           })
           headers.delete("host")
           headers.delete("content-length")

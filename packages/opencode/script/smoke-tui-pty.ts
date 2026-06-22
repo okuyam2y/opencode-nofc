@@ -135,8 +135,14 @@ if (state.exited && state.exited.exitCode !== 0)
 // (d): ask the TUI to quit and require a clean exit (a hung TUI never exits).
 // ctrl+d is bound only to app_exit; ctrl+c also clears a non-empty input, so send
 // ctrl+d first, then ctrl+c / leader-q as fallbacks.
+// Wait out the (scoped) shutdown before escalating: upstream's exit refactor
+// (#31524 centralize application exit / #31805 scoped-shutdown epilogue) made
+// teardown take >500ms, and a second quit signal arriving mid-shutdown throws
+// (non-zero exit). A single ctrl+d already exits cleanly (code 0); only escalate
+// to ctrl+c if ctrl+d genuinely failed to start an exit, so the fallback still
+// catches a real hang without racing a normal shutdown into a false code-1.
 proc.write("\x04") // ctrl+d
-await sleep(500)
+for (let i = 0; i < 15 && !state.exited; i++) await sleep(200) // up to 3s grace
 if (!state.exited) proc.write("\x03") // ctrl+c
 await sleep(500)
 

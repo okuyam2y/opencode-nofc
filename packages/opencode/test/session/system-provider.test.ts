@@ -157,4 +157,47 @@ describe("SystemPrompt.provider() dispatch", () => {
       ).toBeUndefined()
     })
   })
+
+  // Fork-internal option keys must never reach the provider request body.
+  // model.options is mergeDeep'd into the send-path `options`, which
+  // @ai-sdk/openai-compatible spreads into the body; strict gateways reject
+  // unknown fields with `400 Unknown parameter` (observed with promptVariant).
+  describe("strip internal options (send-path body hygiene)", () => {
+    const strip = LLM._stripInternalOptions
+
+    test("removes every fork-internal key", () => {
+      const out = strip({
+        toolParser: "hermes",
+        promptVariant: "frontier",
+        noMaxTokens: true,
+        litellmProxy: true,
+      })
+      expect(out).toEqual({})
+    })
+
+    test("preserves real provider options (reasoning_effort, verbosity, max_tokens)", () => {
+      const out = strip({
+        promptVariant: "frontier",
+        reasoning_effort: "medium",
+        verbosity: "low",
+        max_tokens: 65536,
+      })
+      expect(out).toEqual({ reasoning_effort: "medium", verbosity: "low", max_tokens: 65536 })
+    })
+
+    test("every key listed in INTERNAL_OPTION_KEYS is stripped", () => {
+      const input = Object.fromEntries(LLM.INTERNAL_OPTION_KEYS.map((k) => [k, "x"]))
+      expect(strip(input)).toEqual({})
+    })
+
+    test("normalizes undefined to an empty object", () => {
+      expect(strip(undefined)).toEqual({})
+    })
+
+    test("does not mutate the input object", () => {
+      const input = { promptVariant: "frontier", reasoning_effort: "high" }
+      strip(input)
+      expect(input).toEqual({ promptVariant: "frontier", reasoning_effort: "high" })
+    })
+  })
 })

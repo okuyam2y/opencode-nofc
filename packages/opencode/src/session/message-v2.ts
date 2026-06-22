@@ -2,6 +2,8 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { SessionID, MessageID, PartID } from "./schema"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError, convertToModelMessages, LoadAPIKeyError, type ModelMessage, type UIMessage } from "ai"
+import { Database as DatabaseV2 } from "@opencode-ai/core/database/database"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { LSP } from "@/lsp/lsp"
 import { Snapshot } from "@/snapshot"
 import { Database } from "@/storage/db"
@@ -26,6 +28,8 @@ import * as Observability from "@opencode-ai/core/observability"
 import { MessageError } from "./message-error"
 import { AuthError, OutputLengthError } from "./message-error"
 export { AuthError, OutputLengthError } from "./message-error"
+
+export const node = LayerNode.group([DatabaseV2.node])
 
 /** Error shape thrown by Bun's fetch() when gzip/br decompression fails mid-stream */
 interface FetchDecompressionError extends Error {
@@ -506,7 +510,7 @@ export type Info = User | Assistant
 export const Event = {
   Updated: EventV2.define({
     type: "message.updated",
-    sync: { version: 1, aggregate: "sessionID" },
+    durable: { version: 1, aggregate: "sessionID" },
     schema: {
       sessionID: SessionID,
       info: Info,
@@ -514,7 +518,7 @@ export const Event = {
   }),
   Removed: EventV2.define({
     type: "message.removed",
-    sync: { version: 1, aggregate: "sessionID" },
+    durable: { version: 1, aggregate: "sessionID" },
     schema: {
       sessionID: SessionID,
       messageID: MessageID,
@@ -522,7 +526,7 @@ export const Event = {
   }),
   PartUpdated: EventV2.define({
     type: "message.part.updated",
-    sync: { version: 1, aggregate: "sessionID" },
+    durable: { version: 1, aggregate: "sessionID" },
     schema: {
       sessionID: SessionID,
       part: Part,
@@ -541,7 +545,7 @@ export const Event = {
   }),
   PartRemoved: EventV2.define({
     type: "message.part.removed",
-    sync: { version: 1, aggregate: "sessionID" },
+    durable: { version: 1, aggregate: "sessionID" },
     schema: {
       sessionID: SessionID,
       messageID: MessageID,

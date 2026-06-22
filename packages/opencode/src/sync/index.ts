@@ -218,11 +218,11 @@ export function reset() {
 export function init(input: { projectors: Array<[Definition, ProjectorFunc]>; convertEvent?: ConvertEvent }) {
   projectors = new Map(input.projectors.map(([def, func]) => [versionedType(def.type, def.version), func]))
   for (let entry of EventV2.registry.values()) {
-    if (!entry.sync) continue
+    if (!entry.durable) continue
     register({
       type: entry.type,
-      version: entry.sync.version,
-      aggregate: entry.sync.aggregate,
+      version: entry.durable.version,
+      aggregate: entry.durable.aggregate,
       properties: entry.data,
       schema: entry.data,
     })
@@ -392,15 +392,15 @@ export function effectPayloads() {
       .values()
       .filter(
         (definition) =>
-          definition.sync !== undefined && !registry.has(versionedType(definition.type, definition.sync.version)),
+          definition.durable !== undefined && !registry.has(versionedType(definition.type, definition.durable.version)),
       )
       .map((definition) =>
         EffectSchema.Struct({
           type: EffectSchema.Literal("sync"),
-          name: EffectSchema.Literal(versionedType(definition.type, definition.sync!.version)),
+          name: EffectSchema.Literal(versionedType(definition.type, definition.durable!.version)),
           id: EffectSchema.String,
           seq: EffectSchema.Finite,
-          aggregateID: EffectSchema.Literal(definition.sync!.aggregate),
+          aggregateID: EffectSchema.Literal(definition.durable!.aggregate),
           data: definition.data,
         }).annotate({ identifier: `SyncEvent.${definition.type}` }),
       )

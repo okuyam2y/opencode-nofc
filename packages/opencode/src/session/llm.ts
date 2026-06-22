@@ -155,6 +155,25 @@ export function _resolvePromptOptions<T extends string = string>(args: {
 }
 
 /**
+ * Fork-internal model/agent option keys that drive local behavior (system
+ * prompt variant selection, tool-parser middleware, token-limit handling,
+ * litellm-proxy detection) and must NEVER be forwarded to the provider.
+ *
+ * model.options is merged into the request `options` (see mergeDeep below),
+ * which @ai-sdk/openai-compatible spreads into the request body. Strict
+ * gateways (e.g. litellm) reject unknown body fields with
+ * `400 Unknown parameter: '...'`. These keys are read directly off
+ * input.model.options / item.options elsewhere, so stripping the send-path
+ * copy does not affect internal resolution. Exported for unit testing.
+ */
+export const INTERNAL_OPTION_KEYS = ["toolParser", "promptVariant", "noMaxTokens", "litellmProxy"] as const
+
+export function _stripInternalOptions<T extends Record<string, any>>(options: T | undefined): Partial<T> {
+  const internal = INTERNAL_OPTION_KEYS as readonly string[]
+  return Object.fromEntries(Object.entries(options ?? {}).filter(([k]) => !internal.includes(k))) as Partial<T>
+}
+
+/**
  * Decide whether a tool-parser `onError` callback signals a dropped (unparseable)
  * tool call, and extract its raw text + name for hermes-drop-recovery. The signal
  * differs across @ai-sdk-tool/parser versions — see C-002 (the 4.1.20 upgrade
@@ -328,9 +347,9 @@ export function _detectDroppedToolCall(
               })
           const options: Record<string, any> = pipe(
             base,
-            mergeDeep(input.model.options),
-            mergeDeep(input.agent.options),
-            mergeDeep(variant),
+            mergeDeep(_stripInternalOptions(input.model.options)),
+            mergeDeep(_stripInternalOptions(input.agent.options)),
+            mergeDeep(_stripInternalOptions(variant)),
           )
           if (isOpenaiOauth) {
             options.instructions = system.join("\n")

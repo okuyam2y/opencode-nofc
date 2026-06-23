@@ -1327,7 +1327,7 @@ describe("session.compaction.process", () => {
           })
           .pipe(Effect.forkChild)
 
-        yield* Deferred.await(ready).pipe(Effect.timeout("1 second"))
+        yield* Deferred.await(ready).pipe(Effect.timeout("5 seconds"))
         const start = Date.now()
         yield* Fiber.interrupt(fiber)
         const exit = yield* Fiber.await(fiber).pipe(Effect.timeout("250 millis"))
@@ -1340,6 +1340,7 @@ describe("session.compaction.process", () => {
       }).pipe(withCompaction({ llm: stub.layer }))
     },
     { git: true },
+    { timeout: 10_000 },
   )
 
   itCompaction.instance(

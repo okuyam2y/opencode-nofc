@@ -19,18 +19,21 @@ Heap.start()
 
 // Deliberately keep the worker alive on uncaught errors (server resilience) —
 // but log the full stack, not just the message, so the swallowed exception is
-// diagnosable (C-030).
-process.on("unhandledRejection", (e) => {
+// diagnosable (C-030). Named handlers so the dispose path can process.off them.
+const onUnhandledRejection = (e: unknown) => {
   log.error("rejection", {
     e: e instanceof Error ? (e.stack ?? e.message) : e,
   })
-})
+}
 
-process.on("uncaughtException", (e) => {
+const onUncaughtException = (e: Error) => {
   log.error("exception", {
     e: e instanceof Error ? (e.stack ?? e.message) : e,
   })
-})
+}
+
+process.on("unhandledRejection", onUnhandledRejection)
+process.on("uncaughtException", onUncaughtException)
 
 // Subscribe to global events and forward them via RPC
 GlobalBus.on("event", (event) => {
@@ -86,6 +89,8 @@ export const rpc = {
 
     await InstanceRuntime.disposeAllInstances()
     if (server) await server.stop(true)
+    process.off("unhandledRejection", onUnhandledRejection)
+    process.off("uncaughtException", onUncaughtException)
   },
 }
 

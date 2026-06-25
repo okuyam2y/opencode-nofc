@@ -1336,12 +1336,12 @@ export const layer = Layer.effect(
           }
           if (part.type === "file") {
             result.files.push(
-              new FileAttachment({
+              FileAttachment.make({
                 uri: part.url,
                 mime: part.mime,
                 name: part.filename,
                 source: part.source
-                  ? new Source({
+                  ? Source.make({
                       start: part.source.text.start,
                       end: part.source.text.end,
                       text: part.source.text.value,
@@ -1352,10 +1352,10 @@ export const layer = Layer.effect(
           }
           if (part.type === "agent") {
             result.agents.push(
-              new AgentAttachment({
+              AgentAttachment.make({
                 name: part.name,
                 source: part.source
-                  ? new Source({
+                  ? Source.make({
                       start: part.source.start,
                       end: part.source.end,
                       text: part.source.value,
@@ -1379,7 +1379,7 @@ export const layer = Layer.effect(
           messageID: SessionMessage.ID.create(),
           timestamp: DateTime.makeUnsafe(info.time.created),
           delivery: "steer",
-          prompt: new Prompt({
+          prompt: Prompt.make({
             text: nextPrompt.text.join("\n"),
             files: nextPrompt.files,
             agents: nextPrompt.agents,
@@ -1764,11 +1764,12 @@ export const layer = Layer.effect(
               map.set(partID, existing ? `${existing}\n\n${directive}` : directive)
             }
 
-            const [skills, env, gitState, instructions, modelMsgs] = yield* Effect.all([
+            const [skills, env, gitState, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               sys.gitState(),
               instruction.system().pipe(Effect.orDie),
+              sys.mcp(agent, session.permission),
               MessageV2.toModelMessagesEffect(msgs, model, { pendingDirectives: pending }),
             ])
             const system = [
@@ -1776,6 +1777,7 @@ export const layer = Layer.effect(
               ...(gitState ? [gitState] : []),
               ...(skills ? [skills] : []),
               ...instructions,
+              ...(mcpInstructions ? [mcpInstructions] : []),
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)

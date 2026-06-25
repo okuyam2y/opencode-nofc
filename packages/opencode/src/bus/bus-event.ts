@@ -1,5 +1,7 @@
 import { Schema } from "effect"
-import { EventV2 } from "@opencode-ai/core/event"
+// Upstream removed the global EventV2.registry; enumerate the full set of event
+// definitions (durable + non-durable) from the aggregated event manifest.
+import { EventManifest } from "@/event-manifest"
 
 export type Definition<Type extends string = string, Properties extends Schema.Top = Schema.Top> = {
   type: Type
@@ -29,16 +31,13 @@ export function effectPayloads() {
         }).annotate({ identifier: `Event.${type}` }),
       )
       .toArray(),
-    ...EventV2.registry
-      .values()
-      .map((definition) =>
-        Schema.Struct({
-          id: Schema.String,
-          type: Schema.Literal(definition.type),
-          properties: definition.data,
-        }).annotate({ identifier: `Event.${definition.type}` }),
-      )
-      .toArray(),
+    ...EventManifest.Definitions.map((definition) =>
+      Schema.Struct({
+        id: Schema.String,
+        type: Schema.Literal(definition.type),
+        properties: definition.data,
+      }).annotate({ identifier: `Event.${definition.type}` }),
+    ),
   ]
 }
 

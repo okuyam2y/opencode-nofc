@@ -7,6 +7,7 @@ export type ClientOptions = {
 export type Event =
   | EventModelsDevRefreshed
   | EventIntegrationUpdated
+  | EventIntegrationConnectionUpdated
   | EventCatalogUpdated
   | EventSessionCreated
   | EventSessionUpdated
@@ -44,7 +45,9 @@ export type Event =
   | EventSessionNextCompactionStarted
   | EventSessionNextCompactionDelta
   | EventSessionNextCompactionEnded
-  | EventLspUpdated
+  | EventSessionNextRevertStaged
+  | EventSessionNextRevertCleared
+  | EventSessionNextRevertCommitted
   | EventMessagePartDelta
   | EventSessionDiff
   | EventSessionError
@@ -65,6 +68,7 @@ export type Event =
   | EventQuestionV2Replied
   | EventQuestionV2Rejected
   | EventTodoUpdated
+  | EventLspUpdated
   | EventPermissionAsked
   | EventPermissionReplied
   | EventTuiPromptAppend2
@@ -316,7 +320,6 @@ export type ApiError = {
     message: string
     statusCode?: number
     isRetryable: boolean
-    nonRetryable?: boolean
     responseHeaders?: {
       [key: string]: string
     }
@@ -641,22 +644,6 @@ export type Prompt = {
   agents?: Array<PromptAgentAttachment>
 }
 
-export type ApiError1 = {
-  name: "APIError"
-  data: {
-    message: string
-    statusCode?: number
-    isRetryable: boolean
-    responseHeaders?: {
-      [key: string]: string
-    }
-    responseBody?: string
-    metadata?: {
-      [key: string]: string
-    }
-  }
-}
-
 export type Pty = {
   id: string
   title: string
@@ -757,6 +744,13 @@ export type GlobalEvent = {
         type: "integration.updated"
         properties: {
           [key: string]: unknown
+        }
+      }
+    | {
+        id: string
+        type: "integration.connection.updated"
+        properties: {
+          integrationID: string
         }
       }
     | {
@@ -956,6 +950,7 @@ export type GlobalEvent = {
             }
           }
           snapshot?: string
+          files?: Array<string>
         }
       }
     | {
@@ -1199,9 +1194,34 @@ export type GlobalEvent = {
       }
     | {
         id: string
-        type: "lsp.updated"
+        type: "session.next.revert.staged"
         properties: {
-          [key: string]: unknown
+          timestamp: number
+          sessionID: string
+          revert: {
+            messageID: string
+            partID?: string
+            snapshot?: string
+            diff?: string
+            files?: Array<FileDiff>
+          }
+        }
+      }
+    | {
+        id: string
+        type: "session.next.revert.cleared"
+        properties: {
+          timestamp: number
+          sessionID: string
+        }
+      }
+    | {
+        id: string
+        type: "session.next.revert.committed"
+        properties: {
+          timestamp: number
+          sessionID: string
+          messageID: string
         }
       }
     | {
@@ -1236,7 +1256,7 @@ export type GlobalEvent = {
             | StructuredOutputError
             | ContextOverflowError
             | ContentFilterError
-            | ApiError1
+            | ApiError
         }
       }
     | {
@@ -1378,6 +1398,13 @@ export type GlobalEvent = {
         properties: {
           sessionID: string
           todos: Array<Todo>
+        }
+      }
+    | {
+        id: string
+        type: "lsp.updated"
+        properties: {
+          [key: string]: unknown
         }
       }
     | {
@@ -1653,6 +1680,9 @@ export type GlobalEvent = {
     | SyncEventSessionNextRetried
     | SyncEventSessionNextCompactionStarted
     | SyncEventSessionNextCompactionEnded
+    | SyncEventSessionNextRevertStaged
+    | SyncEventSessionNextRevertCleared
+    | SyncEventSessionNextRevertCommitted
 }
 
 /**
@@ -1772,7 +1802,10 @@ export type ProviderConfig = {
      * Timeout in milliseconds to wait for response headers. Provider integrations may set defaults. Set to false to disable timeout.
      */
     headerTimeout?: number | false
-    chunkTimeout?: number
+    /**
+     * Timeout in milliseconds between streamed SSE chunks for this provider. If no chunk arrives within this window, the request is aborted. Set to false to disable (default 300000).
+     */
+    chunkTimeout?: number | false
     toolParser?: "hermes" | "hermes-strict" | "xml"
     promptVariant?: "frontier"
     [key: string]:
@@ -1784,6 +1817,7 @@ export type ProviderConfig = {
       | number
       | false
       | number
+      | false
       | "hermes"
       | "hermes-strict"
       | "xml"
@@ -2567,7 +2601,7 @@ export type ProviderAuthAuthorization = {
   instructions: string
 }
 
-export type ProviderAuthError2 = {
+export type ProviderAuthError1 = {
   name:
     | "BadRequest"
     | "ProviderAuthOauthMissing"
@@ -2586,31 +2620,6 @@ export type NotFoundError = {
   name: "NotFoundError"
   data: {
     message: string
-  }
-}
-
-export type UserMessage1 = {
-  id: string
-  sessionID: string
-  role: "user"
-  time: {
-    created: number
-  }
-  format?: OutputFormat
-  summary?: {
-    title?: string
-    body?: string
-    diffs: Array<SnapshotFileDiff>
-  }
-  agent: string
-  model: {
-    providerID: string
-    modelID: string
-    variant?: string
-  }
-  system?: string
-  tools?: {
-    [key: string]: boolean
   }
 }
 
@@ -2780,6 +2789,13 @@ export type ServiceUnavailableError = {
   service?: string
 }
 
+export type MessageNotFoundError = {
+  _tag: "MessageNotFoundError"
+  sessionID: string
+  messageID: string
+  message: string
+}
+
 export type UnknownError1 = {
   _tag: "UnknownError"
   message: string
@@ -2803,6 +2819,7 @@ export type ProviderNotFoundError = {
 export type V2Event =
   | V2EventModelsDevRefreshed
   | V2EventIntegrationUpdated
+  | V2EventIntegrationConnectionUpdated
   | V2EventCatalogUpdated
   | V2EventSessionCreated
   | V2EventSessionUpdated
@@ -2840,6 +2857,9 @@ export type V2Event =
   | V2EventSessionNextCompactionStarted
   | V2EventSessionNextCompactionDelta
   | V2EventSessionNextCompactionEnded
+  | V2EventSessionNextRevertStaged
+  | V2EventSessionNextRevertCleared
+  | V2EventSessionNextRevertCommitted
   | V2EventMessagePartDelta
   | V2EventSessionDiff
   | V2EventSessionError
@@ -2903,22 +2923,6 @@ export type EffectHttpApiErrorForbidden = {
   _tag: "Forbidden"
 }
 
-export type ApiError3 = {
-  name: "APIError"
-  data: {
-    message: string
-    statusCode?: number
-    isRetryable: boolean
-    responseHeaders?: {
-      [key: string]: string
-    }
-    responseBody?: string
-    metadata?: {
-      [key: string]: string
-    }
-  }
-}
-
 export type EventTuiPromptAppend2 = {
   id: string
   type: "tui.prompt.append"
@@ -2973,6 +2977,21 @@ export type EventTuiSessionSelect2 = {
     sessionID: string
   }
 }
+
+export type CredentialValue = CredentialOAuth | CredentialKey
+
+export type IntegrationInputs = {
+  [key: string]: string
+}
+
+export type IntegrationMethod = IntegrationOAuthMethod | IntegrationKeyMethod | IntegrationEnvMethod
+
+export type IntegrationRef = {
+  id: string
+  name: string
+}
+
+export type SkillV2Source = SkillV2DirectorySource | SkillV2UrlSource | SkillV2EmbeddedSource
 
 export type MoveSessionDestination = {
   directory: string
@@ -3030,6 +3049,14 @@ export type SessionNextRetryError = {
   metadata?: {
     [key: string]: string
   }
+}
+
+export type FileDiff = {
+  path: string
+  status: "added" | "modified" | "deleted"
+  additions: number
+  deletions: number
+  patch: string
 }
 
 export type PermissionV2Source = {
@@ -3397,6 +3424,7 @@ export type SyncEventSessionNextStepEnded = {
         }
       }
       snapshot?: string
+      files?: Array<string>
     }
   }
 }
@@ -3695,6 +3723,59 @@ export type SyncEventSessionNextCompactionEnded = {
   }
 }
 
+export type SyncEventSessionNextRevertStaged = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.revert.staged.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      revert: {
+        messageID: string
+        partID?: string
+        snapshot?: string
+        diff?: string
+        files?: Array<FileDiff>
+      }
+    }
+  }
+}
+
+export type SyncEventSessionNextRevertCleared = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.revert.cleared.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+    }
+  }
+}
+
+export type SyncEventSessionNextRevertCommitted = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.revert.committed.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      messageID: string
+    }
+  }
+}
+
 export type ConfigV2ReferenceGit = {
   repository: string
   branch?: string
@@ -3792,6 +3873,13 @@ export type SessionV2Info = {
   title: string
   location: LocationRef
   subpath?: string
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+    files?: Array<FileDiff>
+  }
 }
 
 export type SessionInputAdmitted = {
@@ -3996,6 +4084,7 @@ export type SessionMessageAssistant = {
   snapshot?: {
     start?: string
     end?: string
+    files?: Array<string>
   }
   finish?: string
   cost?: number
@@ -4070,19 +4159,6 @@ export type ModelV2Info = {
     body: {
       [key: string]: unknown
     }
-    generation?: {
-      maxTokens?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      temperature?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      topP?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      topK?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      frequencyPenalty?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      presencePenalty?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      seed?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      stop?: Array<string>
-    }
-    options?: {
-      [key: string]: unknown
-    }
     variant?: string
   }
   variants: Array<{
@@ -4091,19 +4167,6 @@ export type ModelV2Info = {
       [key: string]: string
     }
     body: {
-      [key: string]: unknown
-    }
-    generation?: {
-      maxTokens?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      temperature?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      topP?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      topK?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      frequencyPenalty?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      presencePenalty?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      seed?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-      stop?: Array<string>
-    }
-    options?: {
       [key: string]: unknown
     }
   }>
@@ -4133,6 +4196,7 @@ export type ModelV2Info = {
 
 export type ProviderV2Info = {
   id: string
+  integrationID?: string
   name: string
   disabled?: boolean
   api:
@@ -4220,7 +4284,7 @@ export type ConnectionInfo = ConnectionCredentialInfo | ConnectionEnvInfo
 export type IntegrationInfo = {
   id: string
   name: string
-  methods: Array<IntegrationOAuthMethod | IntegrationKeyMethod | IntegrationEnvMethod>
+  methods: Array<IntegrationMethod>
   connections: Array<ConnectionInfo>
 }
 
@@ -4257,7 +4321,6 @@ export type PermissionSavedInfo = {
 export type FileSystemEntry = {
   path: string
   type: "file" | "directory"
-  mime: string
 }
 
 export type CommandV2Info = {
@@ -4312,6 +4375,23 @@ export type V2EventIntegrationUpdated = {
   type: "integration.updated"
   data: {
     [key: string]: unknown
+  }
+}
+
+export type V2EventIntegrationConnectionUpdated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  type: "integration.connection.updated"
+  data: {
+    integrationID: string
   }
 }
 
@@ -4701,6 +4781,7 @@ export type V2EventSessionNextStepEnded = {
       }
     }
     snapshot?: string
+    files?: Array<string>
   }
 }
 
@@ -5120,6 +5201,68 @@ export type V2EventSessionNextCompactionEnded = {
     reason: "auto" | "manual"
     text: string
     recent: string
+  }
+}
+
+export type V2EventSessionNextRevertStaged = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  type: "session.next.revert.staged"
+  data: {
+    timestamp: number
+    sessionID: string
+    revert: {
+      messageID: string
+      partID?: string
+      snapshot?: string
+      diff?: string
+      files?: Array<FileDiff>
+    }
+  }
+}
+
+export type V2EventSessionNextRevertCleared = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  type: "session.next.revert.cleared"
+  data: {
+    timestamp: number
+    sessionID: string
+  }
+}
+
+export type V2EventSessionNextRevertCommitted = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  type: "session.next.revert.committed"
+  data: {
+    timestamp: number
+    sessionID: string
+    messageID: string
   }
 }
 
@@ -6056,6 +6199,14 @@ export type EventIntegrationUpdated = {
   }
 }
 
+export type EventIntegrationConnectionUpdated = {
+  id: string
+  type: "integration.connection.updated"
+  properties: {
+    integrationID: string
+  }
+}
+
 export type EventCatalogUpdated = {
   id: string
   type: "catalog.updated"
@@ -6271,6 +6422,7 @@ export type EventSessionNextStepEnded = {
       }
     }
     snapshot?: string
+    files?: Array<string>
   }
 }
 
@@ -6531,11 +6683,38 @@ export type EventSessionNextCompactionEnded = {
   }
 }
 
-export type EventLspUpdated = {
+export type EventSessionNextRevertStaged = {
   id: string
-  type: "lsp.updated"
+  type: "session.next.revert.staged"
   properties: {
-    [key: string]: unknown
+    timestamp: number
+    sessionID: string
+    revert: {
+      messageID: string
+      partID?: string
+      snapshot?: string
+      diff?: string
+      files?: Array<FileDiff>
+    }
+  }
+}
+
+export type EventSessionNextRevertCleared = {
+  id: string
+  type: "session.next.revert.cleared"
+  properties: {
+    timestamp: number
+    sessionID: string
+  }
+}
+
+export type EventSessionNextRevertCommitted = {
+  id: string
+  type: "session.next.revert.committed"
+  properties: {
+    timestamp: number
+    sessionID: string
+    messageID: string
   }
 }
 
@@ -6573,7 +6752,7 @@ export type EventSessionError = {
       | StructuredOutputError
       | ContextOverflowError
       | ContentFilterError
-      | ApiError3
+      | ApiError
   }
 }
 
@@ -6732,6 +6911,14 @@ export type EventTodoUpdated = {
   properties: {
     sessionID: string
     todos: Array<Todo>
+  }
+}
+
+export type EventLspUpdated = {
+  id: string
+  type: "lsp.updated"
+  properties: {
+    [key: string]: unknown
   }
 }
 
@@ -6942,6 +7129,40 @@ export type EventGlobalDisposed = {
   properties: {
     [key: string]: unknown
   }
+}
+
+export type CredentialOAuth = {
+  type: "oauth"
+  methodID: string
+  refresh: string
+  access: string
+  expires: number
+  metadata?: {
+    [key: string]: unknown
+  }
+}
+
+export type CredentialKey = {
+  type: "key"
+  key: string
+  metadata?: {
+    [key: string]: unknown
+  }
+}
+
+export type SkillV2DirectorySource = {
+  type: "directory"
+  path: string
+}
+
+export type SkillV2UrlSource = {
+  type: "url"
+  url: string
+}
+
+export type SkillV2EmbeddedSource = {
+  type: "embedded"
+  skill: SkillV2Info
 }
 
 export type BadRequestError = {
@@ -9219,7 +9440,7 @@ export type ProviderAuthErrors = {
   400: BadRequestError
 }
 
-export type ProviderAuthError3 = ProviderAuthErrors[keyof ProviderAuthErrors]
+export type ProviderAuthError2 = ProviderAuthErrors[keyof ProviderAuthErrors]
 
 export type ProviderAuthResponses = {
   /**
@@ -9256,7 +9477,7 @@ export type ProviderOauthAuthorizeErrors = {
   /**
    * ProviderAuthError | InvalidRequestError
    */
-  400: ProviderAuthError2 | InvalidRequestError
+  400: ProviderAuthError1 | InvalidRequestError
 }
 
 export type ProviderOauthAuthorizeError = ProviderOauthAuthorizeErrors[keyof ProviderOauthAuthorizeErrors]
@@ -9292,7 +9513,7 @@ export type ProviderOauthCallbackErrors = {
   /**
    * ProviderAuthError | InvalidRequestError
    */
-  400: ProviderAuthError2 | InvalidRequestError
+  400: ProviderAuthError1 | InvalidRequestError
 }
 
 export type ProviderOauthCallbackError = ProviderOauthCallbackErrors[keyof ProviderOauthCallbackErrors]
@@ -11521,6 +11742,130 @@ export type V2SessionWaitResponses = {
 }
 
 export type V2SessionWaitResponse = V2SessionWaitResponses[keyof V2SessionWaitResponses]
+
+export type V2SessionRevertStageData = {
+  body: {
+    messageID: string
+    files?: boolean
+  }
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/revert/stage"
+}
+
+export type V2SessionRevertStageErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * MessageNotFoundError | SessionNotFoundError
+   */
+  404: MessageNotFoundError | SessionNotFoundError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
+}
+
+export type V2SessionRevertStageError = V2SessionRevertStageErrors[keyof V2SessionRevertStageErrors]
+
+export type V2SessionRevertStageResponses = {
+  /**
+   * Success
+   */
+  200: {
+    data: {
+      messageID: string
+      partID?: string
+      snapshot?: string
+      diff?: string
+      files?: Array<FileDiff>
+    }
+  }
+}
+
+export type V2SessionRevertStageResponse = V2SessionRevertStageResponses[keyof V2SessionRevertStageResponses]
+
+export type V2SessionRevertClearData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/revert/clear"
+}
+
+export type V2SessionRevertClearErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+  /**
+   * UnknownError
+   */
+  500: UnknownError1
+}
+
+export type V2SessionRevertClearError = V2SessionRevertClearErrors[keyof V2SessionRevertClearErrors]
+
+export type V2SessionRevertClearResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2SessionRevertClearResponse = V2SessionRevertClearResponses[keyof V2SessionRevertClearResponses]
+
+export type V2SessionRevertCommitData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/api/session/{sessionID}/revert/commit"
+}
+
+export type V2SessionRevertCommitErrors = {
+  /**
+   * InvalidRequestError
+   */
+  400: InvalidRequestError
+  /**
+   * UnauthorizedError
+   */
+  401: UnauthorizedError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+}
+
+export type V2SessionRevertCommitError = V2SessionRevertCommitErrors[keyof V2SessionRevertCommitErrors]
+
+export type V2SessionRevertCommitResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type V2SessionRevertCommitResponse = V2SessionRevertCommitResponses[keyof V2SessionRevertCommitResponses]
 
 export type V2SessionContextData = {
   body?: never

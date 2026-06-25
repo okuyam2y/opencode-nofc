@@ -531,12 +531,11 @@ export const layer = Layer.effect(
             }
           }).pipe(
             Effect.withSpan("Config.loadActiveOrgConfig"),
-            Effect.catch((err) => {
-              log.debug("failed to fetch remote account config", {
+            Effect.catch((err) =>
+              Effect.logDebug("failed to fetch remote account config", {
                 error: err instanceof Error ? err.message : String(err),
-              })
-              return Effect.void
-            }),
+              }),
+            ),
           )
         }
 

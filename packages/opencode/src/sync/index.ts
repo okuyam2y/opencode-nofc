@@ -12,6 +12,10 @@ import { EventID } from "./schema"
 import { Context, Effect, Layer, Schema as EffectSchema } from "effect"
 import type { DeepMutable } from "@opencode-ai/core/schema"
 import { EventV2 } from "@opencode-ai/core/event"
+// Upstream removed the global EventV2.registry (auto-populated on define) in
+// favor of an explicit durable-event manifest. Enumerate durable definitions
+// from that manifest instead.
+import { Durable } from "@opencode-ai/schema/durable-event-manifest"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -217,7 +221,7 @@ export function reset() {
 
 export function init(input: { projectors: Array<[Definition, ProjectorFunc]>; convertEvent?: ConvertEvent }) {
   projectors = new Map(input.projectors.map(([def, func]) => [versionedType(def.type, def.version), func]))
-  for (let entry of EventV2.registry.values()) {
+  for (let entry of Durable.values()) {
     if (!entry.durable) continue
     register({
       type: entry.type,
@@ -388,8 +392,7 @@ export function effectPayloads() {
         }).annotate({ identifier: `SyncEvent.${type}` }),
       )
       .toArray(),
-    ...EventV2.registry
-      .values()
+    ...Durable.values()
       .filter(
         (definition) =>
           definition.durable !== undefined && !registry.has(versionedType(definition.type, definition.durable.version)),

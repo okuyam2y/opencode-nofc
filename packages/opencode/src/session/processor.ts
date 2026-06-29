@@ -1622,19 +1622,23 @@ const DOOM_LOOP_THRESHOLD = 3
     ),
   )
 
-export const node = LayerNode.make(layer, [
-  Session.node,
-  Config.node,
-  Snapshot.node,
-  Agent.node,
-  LLM.node,
-  Permission.node,
-  Plugin.node,
-  SessionSummary.node,
-  SessionStatus.node,
-  EventV2Bridge.node,
-  RuntimeFlags.node,
-  Database.node,
-])
+export const node = LayerNode.make({
+  service: Service,
+  layer: layer,
+  deps: [
+    Session.node,
+    Config.node,
+    Snapshot.node,
+    Agent.node,
+    LLM.node,
+    Permission.node,
+    Plugin.node,
+    SessionSummary.node,
+    SessionStatus.node,
+    EventV2Bridge.node,
+    RuntimeFlags.node,
+    Database.node,
+  ],
+})
 
 export * as SessionProcessor from "./processor"

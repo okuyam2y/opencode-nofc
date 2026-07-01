@@ -1,5 +1,6 @@
 // @ts-nocheck — rebase #59 WIP: post-DB-schema-refactor (#29068) follow-up needed
 import { afterEach, describe, expect, test } from "bun:test"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import fs from "fs/promises"
 import path from "path"
 import { Effect, Layer } from "effect"
@@ -8,7 +9,6 @@ import { Skill } from "../../src/skill"
 import { Permission } from "../../src/permission"
 import { SystemPrompt } from "../../src/session/system"
 import { MCP } from "../../src/mcp"
-import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
 import { testEffect } from "../lib/effect"
 import { disposeAllInstances, provideInstance, tmpdir } from "../fixture/fixture"
 
@@ -53,9 +53,9 @@ const build: Agent.Info = {
 }
 
 const it = testEffect(
-  SystemPrompt.layer.pipe(
-    Layer.provide(locationServiceMapLayer),
-    Layer.provide(
+  LayerNode.compile(SystemPrompt.node, [
+    [
+      MCP.node,
       Layer.mock(MCP.Service, {
         instructions: () =>
           Effect.succeed([
@@ -71,8 +71,9 @@ const it = testEffect(
             },
           ]),
       }),
-    ),
-    Layer.provide(
+    ],
+    [
+      Skill.node,
       Layer.succeed(
         Skill.Service,
         Skill.Service.of({
@@ -87,8 +88,8 @@ const it = testEffect(
           available: () => Effect.succeed(skills),
         }),
       ),
-    ),
-  ),
+    ],
+  ]),
 )
 
 describe("session.system", () => {

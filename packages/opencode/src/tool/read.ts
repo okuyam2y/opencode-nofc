@@ -12,6 +12,7 @@ import { Instruction } from "../session/instruction"
 import { isImageAttachment, sniffAttachmentMime } from "@/util/media"
 import { extractDocumentText, extractImageText, isDocumentFile, type OcrResult } from "./document"
 import { Config } from "@/config/config"
+import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import type { Provider } from "@/provider/provider"
 
 const DEFAULT_READ_LIMIT = 2000
@@ -357,7 +358,7 @@ Do NOT retry the same path. Run glob or grep to locate the correct file before t
         // (e.g. gateway strips image_url, or model lacks image input capability).
         const model = ctx.extra?.model as Provider.Model | undefined
         const canReceiveImage = model?.capabilities?.input?.image
-        const cfg = yield* Config.Service.use((svc) => svc.get()).pipe(Effect.provide(Config.defaultLayer))
+        const cfg = yield* Config.Service.use((svc) => svc.get()).pipe(Effect.provide(AppNodeBuilder.build(Config.node)))
         const providerCfg = model ? cfg.provider?.[model.providerID] : undefined
         const hasToolParser = !!(
           (model?.id ? providerCfg?.models?.[model.id]?.options?.toolParser : undefined) ??

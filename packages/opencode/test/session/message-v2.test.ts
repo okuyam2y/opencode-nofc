@@ -2458,6 +2458,22 @@ describe("MessageV2.StreamRetryableError without statusCode (connection errors)"
       expect(result.data.statusCode).toBeUndefined()
     }
   })
+
+  test("fromError classifies a bare PrematureClose Error as retryable, not Unknown", () => {
+    // When the gateway's PrematureCloseException reaches classification as a
+    // plain thrown Error (not an SSE error part), it has no `.code` and no HTTP
+    // status — without the message-based case it falls to NamedError.Unknown and
+    // the session dies non-retryable (the planetiler review symptom).
+    const e = new Error("Connection prematurely closed BEFORE response")
+    const result = MessageV2.fromError(e, { providerID })
+
+    expect(MessageV2.APIError.isInstance(result)).toBe(true)
+    if (MessageV2.APIError.isInstance(result)) {
+      expect(result.data.isRetryable).toBe(true)
+      expect(result.data.statusCode).toBeUndefined()
+      expect(result.data.message).toContain("prematurely closed")
+    }
+  })
 })
 
 describe("MessageV2.tryEscalateStreamError", () => {
@@ -2566,6 +2582,27 @@ describe("MessageV2.tryEscalateStreamError", () => {
       }),
     ).toBeUndefined()
   })
+
+  test("escalates reactor-netty PrematureClose relayed by the gateway (observed planetiler review, TODO 2026-04-18)", () => {
+    // GPT-5.4 review-agent on planetiler died mid-review when the gateway relayed
+    // its upstream model drop as a message-only PrematureCloseException with no
+    // Node `.code`. Both the BEFORE and DURING variants must escalate.
+    for (const message of [
+      "Connection prematurely closed BEFORE response",
+      "Connection prematurely closed DURING response",
+    ]) {
+      const escalated = MessageV2.tryEscalateStreamError({ type: "error" as const, error: { message } })
+      expect(escalated).toBeInstanceOf(MessageV2.StreamRetryableError)
+      expect(escalated?.statusCode).toBeUndefined()
+    }
+    // bare-string form too
+    expect(
+      MessageV2.tryEscalateStreamError({
+        type: "error",
+        error: "Connection prematurely closed BEFORE response",
+      }),
+    ).toBeInstanceOf(MessageV2.StreamRetryableError)
+  })
 })
 
 describe("MessageV2.isConnectionErrorMessage", () => {
@@ -2573,6 +2610,8 @@ describe("MessageV2.isConnectionErrorMessage", () => {
     expect(MessageV2.isConnectionErrorMessage("recvAddress(..) failed with error(-104): Connection reset by peer")).toBe(true)
     expect(MessageV2.isConnectionErrorMessage({ message: "The socket connection was closed unexpectedly" })).toBe(true)
     expect(MessageV2.isConnectionErrorMessage({ data: { message: "Connection reset by server" } })).toBe(true)
+    expect(MessageV2.isConnectionErrorMessage("Connection prematurely closed BEFORE response")).toBe(true)
+    expect(MessageV2.isConnectionErrorMessage({ message: "Connection prematurely closed DURING response" })).toBe(true)
   })
 
   test("rejects non-connection messages and non-string shapes", () => {

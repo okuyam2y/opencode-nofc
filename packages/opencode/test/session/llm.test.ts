@@ -24,6 +24,8 @@ import { LLMAISDK } from "@/session/llm/ai-sdk"
 import { Session as SessionNs } from "@/session/session"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 
 type ConfigModel = NonNullable<NonNullable<ConfigV1.Info["provider"]>[string]["models"]>[string]
 
@@ -49,7 +51,7 @@ const openAIConfig = (model: ModelsDev.Provider["models"][string], baseURL: stri
   }
 }
 
-const it = testEffect(Layer.mergeAll(LLM.defaultLayer, Provider.defaultLayer))
+const it = testEffect(AppNodeBuilder.build(LayerNode.group([LLM.node, Provider.node])))
 
 // LLM.stream returns a Stream, not an Effect, so we can't use the serviceUse proxy.
 const drain = (input: LLM.StreamInput) => LLM.Service.use((svc) => svc.stream(input).pipe(Stream.runDrain))

@@ -816,37 +816,25 @@ export function _detectDroppedToolCall(
       }),
     )
 
-  export const defaultLayer = Layer.suspend(() =>
-    layer.pipe(
-      Layer.provide(Auth.defaultLayer),
-      Layer.provide(Config.defaultLayer),
-      Layer.provide(Provider.defaultLayer),
-      Layer.provide(Plugin.defaultLayer),
-      Layer.provide(Permission.defaultLayer),
-      Layer.provide(EventV2Bridge.defaultLayer),
-      Layer.provide(RuntimeFlags.defaultLayer),
-    ),
+function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "permission" | "user">) {
+  const disabled = Permission.disabled(
+    Object.keys(input.tools),
+    Permission.merge(input.agent.permission, input.permission ?? []),
   )
+  return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
+}
 
-  function resolveTools(input: Pick<StreamInput, "tools" | "agent" | "permission" | "user">) {
-    const disabled = Permission.disabled(
-      Object.keys(input.tools),
-      Permission.merge(input.agent.permission, input.permission ?? []),
-    )
-    return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
-  }
-
-  // Check if messages contain any tool-call content
-  // Used to determine if a dummy tool should be added for LiteLLM proxy compatibility
-  export function hasToolCalls(messages: ModelMessage[]): boolean {
-    for (const msg of messages) {
-      if (!Array.isArray(msg.content)) continue
-      for (const part of msg.content) {
-        if (part.type === "tool-call" || part.type === "tool-result") return true
-      }
+// Check if messages contain any tool-call content
+// Used to determine if a dummy tool should be added for LiteLLM proxy compatibility
+export function hasToolCalls(messages: ModelMessage[]): boolean {
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue
+    for (const part of msg.content) {
+      if (part.type === "tool-call" || part.type === "tool-result") return true
     }
-    return false
   }
+  return false
+}
 
 export const node = LayerNode.make({
   service: Service,

@@ -97,7 +97,7 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SystemPrompt") {}
 
-export const layer = Layer.effect(
+const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const skill = yield* Skill.Service
@@ -194,13 +194,6 @@ export const layer = Layer.effect(
       }),
     })
   }),
-)
-
-export const defaultLayer = layer.pipe(
-  Layer.provide(Skill.defaultLayer),
-  Layer.provide(MCP.defaultLayer),
-  Layer.provide(locationServiceMapLayer),
-  Layer.provide(Vcs.defaultLayer),
 )
 
 const locationServiceMapNode = LayerNode.make({

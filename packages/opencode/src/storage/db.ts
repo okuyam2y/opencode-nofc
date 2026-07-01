@@ -2,6 +2,7 @@ import { type SQLiteBunDatabase } from "drizzle-orm/bun-sqlite"
 import { migrate } from "drizzle-orm/bun-sqlite/migrator"
 import { type SQLiteTransaction } from "drizzle-orm/sqlite-core"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LocalContext } from "@/util/local-context"
 import * as log from "@/util/log-sync"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -21,7 +22,7 @@ export const NotFoundError = NamedError.create("NotFoundError", {
 type DatabaseFlags = Pick<RuntimeFlags.Info, "disableChannelDb" | "skipMigrations">
 
 const readRuntimeFlags = () =>
-  Effect.runSync(RuntimeFlags.Service.useSync((flags) => flags).pipe(Effect.provide(RuntimeFlags.defaultLayer)))
+  Effect.runSync(RuntimeFlags.Service.useSync((flags) => flags).pipe(Effect.provide(AppNodeBuilder.build(RuntimeFlags.node))))
 
 // Delegate to core's authoritative resolver so the fork's compatibility shim and
 // core's Database service ALWAYS open the same file. They previously diverged on

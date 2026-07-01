@@ -1197,8 +1197,12 @@ const CONNECTION_ERROR_CODES = new Set(["ECONNRESET", "EPIPE", "ETIMEDOUT", "ECO
  *  Bun's socket layer surfaces them as bare strings or message-only errors
  *  (e.g. "recvAddress(..) failed with error(-104): Connection reset by peer",
  *  "The socket connection was closed unexpectedly"), which the shape-based
- *  extractConnectionErrorCode cannot see. */
-const CONNECTION_ERROR_MESSAGE_RE = /connection reset|econnreset|socket connection was closed/i
+ *  extractConnectionErrorCode cannot see. Also covers reactor-netty's
+ *  PrematureCloseException ("Connection prematurely closed BEFORE/DURING
+ *  response"), which the gateway relays as a message-only error with no Node
+ *  `.code` when its upstream model connection drops before/at the response. */
+const CONNECTION_ERROR_MESSAGE_RE =
+  /connection reset|econnreset|socket connection was closed|prematurely closed/i
 
 /** Extract HTTP status code from heterogeneous error shapes (plain objects, Error subclasses, JSON-encoded messages). */
 export function extractStatusCode(e: unknown): number | undefined {
@@ -1439,6 +1443,21 @@ function fromErrorInner(
           responseHeaders: parsed.responseHeaders,
           responseBody: parsed.responseBody,
           metadata: parsed.metadata,
+        },
+        { cause: e },
+      ).toObject()
+    // Connection drops that carry no HTTP status and no Node `.code` — e.g.
+    // reactor-netty "Connection prematurely closed BEFORE/DURING response"
+    // relayed by the gateway as a bare Error/string. tryEscalateStreamError
+    // catches these on the SSE error-part path; this closes the path where the
+    // same error reaches classification as a plain thrown error. Gated on no
+    // extractable status so HTTP verdicts (4xx/5xx) keep their own handling,
+    // mirroring tryEscalateStreamError's message-based branch.
+    case extractStatusCode(e) === undefined && isConnectionErrorMessage(e):
+      return new APIError(
+        {
+          message: streamErrorMessage(e),
+          isRetryable: true,
         },
         { cause: e },
       ).toObject()

@@ -17,6 +17,7 @@ import { EventV2 } from "@opencode-ai/core/event"
 // from that manifest instead.
 import { Durable } from "@opencode-ai/schema/durable-event-manifest"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
+import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EffectBridge } from "@/effect/bridge"
@@ -203,7 +204,9 @@ export const layer = Layer.effect(Service)(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide([ProjectBus.defaultLayer, RuntimeFlags.defaultLayer]))
+export const defaultLayer = layer.pipe(
+  Layer.provide([ProjectBus.defaultLayer, AppNodeBuilder.build(RuntimeFlags.node)]),
+)
 
 export const use = serviceUse(Service)
 

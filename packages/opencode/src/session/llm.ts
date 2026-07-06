@@ -166,7 +166,19 @@ export function _resolvePromptOptions<T extends string = string>(args: {
  * input.model.options / item.options elsewhere, so stripping the send-path
  * copy does not affect internal resolution. Exported for unit testing.
  */
-export const INTERNAL_OPTION_KEYS = ["toolParser", "promptVariant", "noMaxTokens", "litellmProxy"] as const
+export const INTERNAL_OPTION_KEYS = [
+  "toolParser",
+  "promptVariant",
+  "noMaxTokens",
+  "litellmProxy",
+  // Control flags read directly off raw config in the provider.ts fetch wrapper
+  // (requestedModel.options / provider.options), NOT off this send-path copy, so
+  // stripping them here does not affect their behavior. They must be stripped or
+  // @ai-sdk/openai-compatible forwards a model-level value into the body and strict
+  // gateways reject it with `400 Unknown parameter`.
+  "dropReasoningEffortWithTools",
+  "useMaxCompletionTokens",
+] as const
 
 export function _stripInternalOptions<T extends Record<string, any>>(options: T | undefined): Partial<T> {
   const internal = INTERNAL_OPTION_KEYS as readonly string[]

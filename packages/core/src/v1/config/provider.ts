@@ -128,6 +128,10 @@ export const Info = Schema.Struct({
           description:
             "Select an alternate system prompt variant. 'frontier' uses the fork's frontier-tuned prompt for GPT (non-codex) and Claude families; other families fall back to the baseline. Unset means baseline. Can be overridden per-model via model.options.promptVariant.",
         }),
+        dropReasoningEffortWithTools: Schema.optional(Schema.Boolean).annotate({
+          description:
+            "When true, strip `reasoning_effort` from the request body whenever a non-empty tools array is present. Workaround for litellm-fronted gateways that 404 on the tools + reasoning_effort combination (the key's presence is the trigger; the value is irrelevant). Opt-in; set per-provider or per-model via model.options.dropReasoningEffortWithTools.",
+        }),
       }),
       [Schema.Record(Schema.String, Schema.Any)],
     ),

@@ -1821,6 +1821,17 @@ const layer = Layer.effect(
                 ? Object.values(providerModels ?? {}).filter((m) => m.api.id === requestedModelID)
                 : []
               const requestedModel = apiIdMatches.length === 1 ? apiIdMatches[0] : undefined
+
+              // Strip reasoning_effort when tools are present, for litellm-fronted gateways
+              // that 404 on the tools + reasoning_effort combination (opt-in). Operates on
+              // the already-parsed `body` to avoid a second JSON.parse; re-stringifies once.
+              const dropReasoningEffortWithTools =
+                requestedModel?.options?.["dropReasoningEffortWithTools"] ??
+                provider.options?.["dropReasoningEffortWithTools"]
+              if (dropReasoningEffortWithTools && dropReasoningEffortFromBody(body)) {
+                opts.body = JSON.stringify(body)
+              }
+
               const useMaxCompletionTokens =
                 requestedModel?.options?.["useMaxCompletionTokens"] ??
                 provider.options?.["useMaxCompletionTokens"]
@@ -2088,6 +2099,30 @@ export function applyMaxCompletionTokensTransform(bodyStr: string): string {
     // non-JSON body — pass through unchanged
   }
   return bodyStr
+}
+
+/**
+ * Delete `reasoning_effort` from a parsed chat/completions body when a non-empty
+ * `tools` array is present. Workaround for litellm-fronted gateways that route the
+ * tools + reasoning_effort combination to a deployment that 404s. The key's
+ * presence is the trigger (the value is irrelevant, so "none" also 404s), so the
+ * whole field is removed. The `_noop` compat stub (llm.ts) counts as a tool and
+ * also triggers the 404, so it is intentionally NOT excluded from the check.
+ *
+ * Mutates `body` in place; returns whether it changed. Exported for tests.
+ */
+export function dropReasoningEffortFromBody(body: any): boolean {
+  if (
+    body &&
+    typeof body === "object" &&
+    Array.isArray(body.tools) &&
+    body.tools.length > 0 &&
+    "reasoning_effort" in body
+  ) {
+    delete body.reasoning_effort
+    return true
+  }
+  return false
 }
 
 const priority = ["gpt-5", "claude-sonnet-4", "big-pickle", "gemini-3-pro"]

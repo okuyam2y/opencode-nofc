@@ -171,8 +171,28 @@ describe("SystemPrompt.provider() dispatch", () => {
         promptVariant: "frontier",
         noMaxTokens: true,
         litellmProxy: true,
+        dropReasoningEffortWithTools: true,
+        useMaxCompletionTokens: true,
       })
       expect(out).toEqual({})
+    })
+
+    test("strips useMaxCompletionTokens so a model-level value cannot leak into the body", () => {
+      // Regression: useMaxCompletionTokens is read off raw config in the provider.ts
+      // fetch wrapper, but model.options is also merged into the send-path options and
+      // spread into the body by @ai-sdk/openai-compatible. Without stripping, a
+      // model-level useMaxCompletionTokens reached the body → `400 Unknown parameter`.
+      expect(LLM.INTERNAL_OPTION_KEYS).toContain("useMaxCompletionTokens")
+      expect(strip({ useMaxCompletionTokens: true, reasoning_effort: "medium" })).toEqual({
+        reasoning_effort: "medium",
+      })
+    })
+
+    test("strips dropReasoningEffortWithTools control flag from the send-path copy", () => {
+      expect(LLM.INTERNAL_OPTION_KEYS).toContain("dropReasoningEffortWithTools")
+      expect(strip({ dropReasoningEffortWithTools: true, reasoning_effort: "high" })).toEqual({
+        reasoning_effort: "high",
+      })
     })
 
     test("preserves real provider options (reasoning_effort, verbosity, max_tokens)", () => {

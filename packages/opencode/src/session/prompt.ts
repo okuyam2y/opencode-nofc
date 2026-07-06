@@ -23,6 +23,7 @@ import { Plugin } from "../plugin"
 import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
+import { McpCatalog } from "@/mcp/catalog"
 import { LSP } from "@/lsp/lsp"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { ulid } from "ulid"
@@ -440,12 +441,15 @@ const layer = Layer.effect(
         })
       }
   
-      for (const [key, item] of Object.entries(yield* mcp.tools())) {
+      for (const [key, entry] of Object.entries(yield* mcp.tools())) {
+        // Upstream #35103 exposes MCP tools in native shape ({ def, client, timeout });
+        // convert to an AI SDK tool (with execute/inputSchema) before wrapping.
+        const item = McpCatalog.convertTool(entry.def, entry.client, entry.timeout)
         const execute = item.execute
         if (!execute) continue
   
         const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
-        const transformed = ProviderTransform.schema(input.model, schema)
+        const transformed = ProviderTransform.schema(input.model, { ...schema, properties: schema.properties ?? {} })
         item.inputSchema = jsonSchema(transformed)
         item.execute = (args, opts) => {
           const decision = gate.check(key, opts.toolCallId, args as Record<string, unknown>, opts.messages?.length)

@@ -7,6 +7,7 @@ import { Effect, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { Skill } from "../../src/skill"
 import { Permission } from "../../src/permission"
+import type { Provider } from "../../src/provider/provider"
 import { SystemPrompt } from "../../src/session/system"
 import { MCP } from "../../src/mcp"
 import { testEffect } from "../lib/effect"
@@ -93,6 +94,12 @@ const it = testEffect(
 )
 
 describe("session.system", () => {
+  test("selects the Meta prompt for Muse Spark model IDs", () => {
+    expect(SystemPrompt.provider({ api: { id: "meta/muse-spark-preview" } } as Provider.Model)[0]).toContain(
+      "Meta Muse Spark",
+    )
+  })
+
   describe("gitState", () => {
     afterEach(async () => {
       delete process.env.OPENCODE_ENABLE_GIT_STATE

@@ -415,6 +415,19 @@ const parser = lazy(async () => {
   return { bash, ps }
 })
 
+// hermes (non-native-FC) 経路で model が tool-call を二重エンコードすると、parser が
+// 内層 envelope 断片を bash の command 引数として渡し shell で実行してしまう
+// (観測: `name": "bash", "arguments": {"command": "..."}` → `command not found: name:`)。
+// command 先頭が leaked envelope なら実行前に弾く。設計: docs/designs/bash-nested-envelope-guard.md
+//   分岐A: `{"<任意キー>":` / `[{...`（JSON object/array リテラル＝非コマンド。キー名非依存）
+//   分岐B: bare `name":` / `arguments":`（parser が外側 `{` を剥がした観測ケース）
+// `[` は `(?:\[\s*)?` として `[` 存在に束縛し、先頭 `^\s*` との空白取り合い(quadratic backtracking)を防ぐ。
+const LEAKED_TOOL_CALL_ENVELOPE = /^\s*(?:(?:\[\s*)?\{\s*"[^"]*"|"?(?:name|arguments)")\s*:/
+
+export function isLeakedToolCallEnvelope(command: string): boolean {
+  return LEAKED_TOOL_CALL_ENVELOPE.test(command)
+}
+
 export const ShellTool = Tool.define(
   ShellID.ToolID,
   Effect.gen(function* () {
@@ -701,6 +714,13 @@ export const ShellTool = Tool.define(
           parameters: prompt.parameters,
           execute: (params: Parameters, ctx: Tool.Context) =>
             Effect.gen(function* () {
+              if (isLeakedToolCallEnvelope(params.command)) {
+                throw new Error(
+                  "Command looks like a malformed/double-encoded tool call (it starts with a JSON tool-call envelope such as " +
+                    '`{"name": ...}` or `name": ...`), not a shell command. Do NOT wrap the tool call in JSON inside the ' +
+                    "command. Re-issue the bash tool call with only the raw shell command as `command`.",
+                )
+              }
               const instanceCtx = yield* InstanceState.context
               const cwd = params.workdir
                 ? yield* resolvePath(params.workdir, instanceCtx.directory, shell)

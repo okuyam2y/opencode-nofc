@@ -1,5 +1,5 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer } from "effect"
 import type * as Scope from "effect/Scope"
@@ -7,7 +7,7 @@ import os from "os"
 import path from "path"
 import { Config } from "@/config/config"
 import { Shell } from "@opencode-ai/core/shell"
-import { ShellTool, SHELL_CONTEXT_MAX_BYTES } from "../../src/tool/shell"
+import { ShellTool, SHELL_CONTEXT_MAX_BYTES, isLeakedToolCallEnvelope } from "../../src/tool/shell"
 import { Filesystem } from "@/util/filesystem"
 import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import type { Permission } from "../../src/permission"
@@ -1235,6 +1235,68 @@ describe("tool.shell truncation", () => {
           description: "List files in a non-existent workdir",
         })
         expect(err.message).toMatch(/workdir .* does not exist/)
+      }),
+    ),
+  )
+})
+
+describe("isLeakedToolCallEnvelope (nested-envelope guard)", () => {
+  const block = [
+    // observed case: parser stripped outer brace, inner OpenAI envelope leaked
+    `name": "bash", "arguments": {"command": "git diff HEAD~10...HEAD --stat`,
+    `"arguments": {}`,
+    // branch A: JSON object literal, any key
+    `{"name":"bash","arguments":{}}`,
+    `  {"name": "x"}`,
+    `{"id":"call_xyz","type":"function"}`, // OpenAI first-key `id`
+    `{"index":0,"id":"call_x"}`, // streamed delta
+    `{"input":{}}`, // Anthropic
+    `{"functionCall":{}}`, // Gemini
+    `{"tool_calls":[]}`,
+    `[{"name":"x"}]`, // array form
+    `[{"index":0}]`,
+    `[ { "name": "x" } ]`, // spaced array form
+  ]
+  const pass = [
+    `git diff HEAD~10...HEAD --stat`,
+    `name=foo && echo $name`, // assignment, `=` not `:`
+    `echo '{"name": "x"}'`, // echo-prefixed
+    `command ls`, // builtin
+    `id -u`, // real command starting with `id`
+    `input.txt`,
+    `function foo { :; }`, // keyword, no `":`
+    `type ls`, // builtin
+    `[ -f x ] && ls`, // test builtin, key mismatch
+    `[ "name": = "name:" ]`, // test expr, bare `[` without `{` (R2 regression)
+    `[[ "arguments": == x ]]`, // same
+    `{ echo hi; }`, // brace group
+    `ls`,
+    `python3 hello.py`,
+  ]
+  for (const c of block) test(`blocks: ${JSON.stringify(c).slice(0, 50)}`, () => expect(isLeakedToolCallEnvelope(c)).toBe(true))
+  for (const c of pass) test(`passes: ${JSON.stringify(c).slice(0, 50)}`, () => expect(isLeakedToolCallEnvelope(c)).toBe(false))
+
+  test("no quadratic backtracking on whitespace-prefixed incomplete object", () => {
+    // pathological shape: many leading spaces + `{x` (fails at missing quote/colon).
+    // `\[?\s*` form was ~400ms at 32K spaces; `(?:\[\s*)?` form is linear.
+    const pathological = " ".repeat(50000) + "{x"
+    const start = performance.now()
+    expect(isLeakedToolCallEnvelope(pathological)).toBe(false)
+    const elapsed = performance.now() - start
+    expect(elapsed).toBeLessThan(50) // linear: sub-ms in practice, 50ms is a generous ceiling
+  })
+})
+
+describe("shell tool rejects leaked tool-call envelope end-to-end", () => {
+  it.live("throws an instructive error instead of running the leaked envelope", () =>
+    runIn(
+      os.tmpdir(),
+      Effect.gen(function* () {
+        const err = yield* fail(
+          { command: `name": "bash", "arguments": {"command": "git diff HEAD~10...HEAD --stat` },
+          ctx,
+        )
+        expect(err.message).toMatch(/malformed\/double-encoded tool call/)
       }),
     ),
   )

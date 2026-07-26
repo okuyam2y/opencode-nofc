@@ -33,7 +33,7 @@ import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
 
-const OPENAI_HEADER_TIMEOUT_DEFAULT = 10_000
+const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
 // Default inter-chunk timeout for SSE bodies. macOS sleep (and silent network
 // drops) tear down the TCP stream without raising ECONNRESET — the pending read

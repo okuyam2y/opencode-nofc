@@ -230,4 +230,93 @@ describe("SessionProcessor.dedupStreamOverlap", () => {
     const delta = "=".repeat(18) + " trailing"
     expect(SessionProcessor.dedupStreamOverlap(acc, delta)).toBe(0)
   })
+
+  describe("chunk-boundary alignment", () => {
+    // A gateway retransmission re-sends whole previously delivered chunks, so the
+    // overlap lands exactly on a chunk boundary.  A coincidental repeat in
+    // repetitive output (diff context lines, enumerated test-run lists) lands at
+    // an arbitrary offset.  Only the former may be stripped.
+
+    test("retransmission of a whole previous chunk is deduped", () => {
+      const c1 = "実行結果をまとめます。\n\n"
+      const c2 = "- `tests/test_parser_step_b.py` → `154 passed`\n"
+      const acc = c1 + c2
+      const boundaries = [0, c1.length, acc.length]
+      // Gateway re-sends c2, then continues.
+      const delta = c2 + "- `tests/test_parser_step_c.py` → `98 passed`\n"
+      expect(SessionProcessor.dedupStreamOverlap(acc, delta, boundaries)).toBe(c2.length)
+    })
+
+    test("retransmission spanning several previous chunks is deduped in full", () => {
+      const c1 = "前置きのテキストです。\n"
+      const c2 = "- 手順その一を実行しました\n"
+      const c3 = "- 手順その二を実行しました\n"
+      const acc = c1 + c2 + c3
+      const boundaries = [0, c1.length, c1.length + c2.length, acc.length]
+      const delta = c2 + c3 + "- 手順その三を実行しました\n"
+      expect(SessionProcessor.dedupStreamOverlap(acc, delta, boundaries)).toBe(c2.length + c3.length)
+    })
+
+    test("regression: coincidental repeat at a non-boundary offset is NOT deduped", () => {
+      // Observed in a real session: an enumerated pytest run list where the
+      // next delta's leading run of `-q` / path text matched the buffer tail at
+      // an offset no chunk ever started at.  The legacy arbitrary-offset scan
+      // stripped it and silently deleted real characters, producing output like
+      // "-q`reader_step_b.py" with "tests/test_" missing.
+      // The model listed the same path twice in one pytest invocation, so the
+      // intended text genuinely contains the segment back to back, and raw
+      // concatenation is the correct output.
+      const arg = "tests/test_reader_step_b.py "
+      const c1 = "- 全体: `uv run -m pytest "
+      // The repeat starts mid-chunk, so no chunk boundary sits at its start.
+      const c2 = "および " + arg
+      const acc = c1 + c2
+      const boundaries = [0, c1.length, acc.length]
+      const delta = arg + "tests/test_reader_step_c.py -q`\n"
+      // No chunk started where the repeat begins, so the overlap is left alone.
+      expect(SessionProcessor.dedupStreamOverlap(acc, delta, boundaries)).toBe(0)
+      // The legacy boundary-less scan strips it and deletes one of the two
+      // legitimate occurrences — the corruption observed in the smoke run.
+      expect(SessionProcessor.dedupStreamOverlap(acc, delta)).toBeGreaterThan(0)
+    })
+
+    test("known residual: a legitimate repeat that IS one whole chunk stays ambiguous", () => {
+      // Boundary alignment narrows the false-positive surface but cannot close it:
+      // when the doubled segment happens to be exactly the last chunk, content and
+      // boundaries agree with both readings and the overlap is still stripped.
+      // Documented rather than silently tolerated — closing this needs an
+      // out-of-band retransmission signal, not a better content heuristic.
+      const arg = "tests/test_reader_step_b.py "
+      const c1 = "- 全体: `uv run -m pytest "
+      const acc = c1 + arg
+      const boundaries = [0, c1.length, acc.length]
+      const delta = arg + "tests/test_reader_step_c.py -q`\n"
+      expect(SessionProcessor.dedupStreamOverlap(acc, delta, boundaries)).toBe(arg.length)
+    })
+
+    test("regression: over-long coincidental match is not preferred over the boundary", () => {
+      // The legacy scan walked len down from 200 and returned the FIRST (longest)
+      // match, so in repetitive content it could strip far more than the chunk
+      // that was actually retransmitted.
+      const unit = "  - `tests/test_step_x.py` → `12 passed`\n"
+      const c1 = "見出し\n" + unit
+      const c2 = unit
+      const acc = c1 + c2
+      const boundaries = [0, c1.length, acc.length]
+      // Only the last chunk (one unit) was retransmitted, but the delta happens
+      // to open with two units because the next list entry repeats the line.
+      const delta = unit + unit + "おわり\n"
+      expect(SessionProcessor.dedupStreamOverlap(acc, delta, boundaries)).toBe(unit.length)
+      // The legacy scan takes the longest match and strips both units.
+      expect(SessionProcessor.dedupStreamOverlap(acc, delta)).toBe(unit.length * 2)
+    })
+
+    test("boundaries that scrolled past the 200-char window yield no overlap", () => {
+      const c1 = "x".repeat(30) + "unique-head-marker\n"
+      const acc = c1 + "y".repeat(400)
+      const boundaries = [0, c1.length, acc.length]
+      // c1 is far outside the window, so its boundary produces no candidate.
+      expect(SessionProcessor.dedupStreamOverlap(acc, c1 + "tail", boundaries)).toBe(0)
+    })
+  })
 })

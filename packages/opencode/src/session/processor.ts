@@ -336,6 +336,11 @@ function estimateTokensFromInput(input: { messages: unknown[]; system: string[];
 
 const DOOM_LOOP_THRESHOLD = 3
 
+  /** Maximum retransmission overlap we are willing to strip, in characters. */
+  const DEDUP_WINDOW = 200
+  /** Minimum overlap length that counts as a retransmission rather than coincidence. */
+  const DEDUP_MIN = 15
+
   /**
    * Detect overlapping retransmission of streaming text. Returns the number of
    * leading characters of `delta` that duplicate the tail of `accumulated` and
@@ -345,16 +350,37 @@ const DOOM_LOOP_THRESHOLD = 3
    * run of a single character (e.g. "----" rules, "====" separators, blank-line
    * runs): a uniform run trivially matches the buffer tail without being a real
    * retransmission, and slicing it would permanently corrupt legitimate content.
+   *
+   * `boundaries` are the accumulated-text offsets at which previously received
+   * deltas start (ascending, `0` for the first one). When supplied, only overlaps
+   * that land exactly on one of those offsets are stripped.  Content alone cannot
+   * distinguish "the gateway re-sent a chunk" from "the model legitimately wrote
+   * a repeating line", so the arbitrary-offset longest-match scan corrupts
+   * repetitive output (diffs where a signature appears as both context and added
+   * line, enumerated `tests/test_x_step_{b,c,d}.py` run lists, per-file Java
+   * package+import headers).  A real retransmission re-sends whole previously
+   * delivered chunks and is therefore boundary-aligned by construction, while a
+   * coincidental repeat almost never terminates exactly on a chunk boundary.
+   * Passing no `boundaries` keeps the legacy arbitrary-offset scan.
    * Exported for unit testing.
    */
-  export function dedupStreamOverlap(accumulated: string, delta: string): number {
-    if (accumulated.length < 15 || delta.length < 15) return 0
-    const tail = accumulated.slice(-200)
-    for (let len = Math.min(tail.length, delta.length); len >= 15; len--) {
-      if (tail.endsWith(delta.slice(0, len))) {
-        const seg = delta.slice(0, len)
-        return [...seg].some((c) => c !== seg[0]) ? len : 0
-      }
+  export function dedupStreamOverlap(accumulated: string, delta: string, boundaries?: readonly number[]): number {
+    if (accumulated.length < DEDUP_MIN || delta.length < DEDUP_MIN) return 0
+    const max = Math.min(DEDUP_WINDOW, accumulated.length, delta.length)
+    if (max < DEDUP_MIN) return 0
+    // Candidate overlap lengths, longest first.  A multi-chunk retransmission
+    // matches longer than a single-chunk one, so prefer the longest candidate —
+    // but only among lengths that correspond to a real chunk boundary.
+    const candidates = boundaries
+      ? [...boundaries]
+          .map((offset) => accumulated.length - offset)
+          .filter((len) => len >= DEDUP_MIN && len <= max)
+          .sort((a, b) => b - a)
+      : Array.from({ length: max - DEDUP_MIN + 1 }, (_, i) => max - i)
+    for (const len of candidates) {
+      if (!accumulated.endsWith(delta.slice(0, len))) continue
+      const seg = delta.slice(0, len)
+      return [...seg].some((c) => c !== seg[0]) ? len : 0
     }
     return 0
   }
@@ -482,6 +508,10 @@ const DOOM_LOOP_THRESHOLD = 3
     blocked: boolean
     needsCompaction: boolean
     currentText: MessageV2.TextPart | undefined
+    /** Offsets into `currentText.text` at which each received text-delta starts
+     *  (ascending, `0` first).  dedupStreamOverlap only strips an overlap that
+     *  lands on one of these chunk boundaries — see its docs. */
+    textDeltaBoundaries: number[]
     tagFilter: ReturnType<typeof createStreamingTagFilter> | undefined
     reasoningMap: Record<string, MessageV2.ReasoningPart>
     lastStreamInput: LLM.StreamInput | undefined
@@ -548,6 +578,7 @@ const DOOM_LOOP_THRESHOLD = 3
           blocked: false,
           needsCompaction: false,
           currentText: undefined,
+          textDeltaBoundaries: [0],
           tagFilter: undefined,
           lastStreamInput: undefined,
           maxReportedInput: 0,
@@ -1217,6 +1248,7 @@ const DOOM_LOOP_THRESHOLD = 3
                 time: { start: Date.now() },
                 metadata: value.providerMetadata,
               }
+              ctx.textDeltaBoundaries = [0]
               ctx.tagFilter = createStreamingTagFilter()
               yield* session.updatePart(ctx.currentText)
               return
@@ -1227,17 +1259,29 @@ const DOOM_LOOP_THRESHOLD = 3
               // (see dedupStreamOverlap — excludes uniform runs to avoid corrupting
               // markdown rules / separators / blank-line runs).
               let deduped = value.text
-              const overlap = dedupStreamOverlap(ctx.currentText.text, deduped)
+              const overlap = dedupStreamOverlap(ctx.currentText.text, deduped, ctx.textDeltaBoundaries)
               if (overlap > 0) {
+                // Log the FULL stripped segment, not a 50-char prefix: overlaps
+                // routinely exceed 100 chars, so a truncated excerpt cannot be
+                // checked against the buffer afterwards and made the corruption
+                // this gate caused undiagnosable from logs alone.
                 log.warn("text-delta-dedup", {
                   overlap,
-                  tail: ctx.currentText.text.slice(-50),
-                  deltaStart: deduped.slice(0, 50),
+                  stripped: deduped.slice(0, overlap),
+                  tail: ctx.currentText.text.slice(-(overlap + 50)),
+                  boundaries: ctx.textDeltaBoundaries.slice(-5),
                 })
                 deduped = deduped.slice(overlap)
                 if (!deduped) return
               }
               ctx.currentText.text += deduped
+              ctx.textDeltaBoundaries.push(ctx.currentText.text.length)
+              // Only the last DEDUP_WINDOW chars can ever produce an overlap, so
+              // drop boundaries that have scrolled out of reach.
+              const boundaryFloor = ctx.currentText.text.length - DEDUP_WINDOW
+              while (ctx.textDeltaBoundaries.length > 1 && ctx.textDeltaBoundaries[0] < boundaryFloor) {
+                ctx.textDeltaBoundaries.shift()
+              }
               if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
               // Filter stripped tags from streaming delta to prevent UI flicker
               const filtered = ctx.tagFilter ? ctx.tagFilter.push(deduped) : deduped

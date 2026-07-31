@@ -231,11 +231,23 @@ describe("SessionProcessor.dedupStreamOverlap", () => {
     expect(SessionProcessor.dedupStreamOverlap(acc, delta)).toBe(0)
   })
 
-  describe("chunk-boundary alignment", () => {
-    // A gateway retransmission re-sends whole previously delivered chunks, so the
-    // overlap lands exactly on a chunk boundary.  A coincidental repeat in
-    // repetitive output (diff context lines, enumerated test-run lists) lands at
-    // an arbitrary offset.  Only the former may be stripped.
+  test("regression: uniform supplementary-plane (emoji) run is NOT deduped (llm-review R3 P1)", () => {
+    // seg[0] is a UTF-16 code unit; [...seg] yields code points. Comparing the
+    // two treated a uniform emoji run as "varied" and stripped it.
+    const run = "🎉".repeat(10) // 20 UTF-16 units >= DEDUP_MIN
+    const acc = "intro paragraph\n" + run
+    const delta = run + "\nnext paragraph"
+    expect(SessionProcessor.dedupStreamOverlap(acc, delta)).toBe(0)
+  })
+
+  describe("chunk-boundary alignment (optional mode, NOT used at runtime)", () => {
+    // These pin the semantics of the optional `boundaries` argument.  The mode
+    // was live 2026-07-30..31 on the assumption that a retransmission re-sends
+    // whole previously delivered chunks and is therefore boundary-aligned; a
+    // measurement probe refuted that (91 declined overlaps in one session, ≥87
+    // true retransmissions, none starting on a boundary — distances 1–63), so
+    // the runtime call-site reverted to the boundary-less scan.  The tests stay
+    // so the trade-off both modes make remains executable documentation.
 
     test("retransmission of a whole previous chunk is deduped", () => {
       const c1 = "実行結果をまとめます。\n\n"

@@ -1,14 +1,35 @@
+diff --git a/node_modules/@ai-sdk-tool/parser/.bun-tag-960e00456ec46242 b/.bun-tag-960e00456ec46242
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@ai-sdk-tool/parser/.bun-tag-99b8f0d5d421348d b/.bun-tag-99b8f0d5d421348d
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@ai-sdk-tool/parser/.bun-tag-ac0b09bd9fd5c262 b/.bun-tag-ac0b09bd9fd5c262
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@ai-sdk-tool/parser/.bun-tag-c7316a9ab4d0efae b/.bun-tag-c7316a9ab4d0efae
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/node_modules/@ai-sdk-tool/parser/.bun-tag-cdcfafbef0b3bca b/.bun-tag-cdcfafbef0b3bca
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/node_modules/@ai-sdk-tool/parser/.bun-tag-d68f21c8515dd879 b/.bun-tag-d68f21c8515dd879
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@ai-sdk-tool/parser/.bun-tag-db84462e0215e2b1 b/.bun-tag-db84462e0215e2b1
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@ai-sdk-tool/parser/.bun-tag-e6b565a242adb0f8 b/.bun-tag-e6b565a242adb0f8
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@ai-sdk-tool/parser/.bun-tag-f19915cee88a538f b/.bun-tag-f19915cee88a538f
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/chunk-AELRIRO2.js b/dist/chunk-AELRIRO2.js
-index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404faa1d162 100644
+index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..214c22b7288a5e5b9aaaaa2ab97ccc2ebdf00ae8 100644
 --- a/dist/chunk-AELRIRO2.js
 +++ b/dist/chunk-AELRIRO2.js
-@@ -482,13 +482,204 @@ function shouldEmitRawToolCallTextOnError(options) {
+@@ -482,13 +482,253 @@ function shouldEmitRawToolCallTextOnError(options) {
  }
  
  // src/core/protocols/hermes-protocol.ts
@@ -86,6 +107,53 @@ index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404
 +  const tool = (tools || []).find((t) => t.name === toolName);
 +  if (!tool || !tool.inputSchema || !tool.inputSchema.properties) return void 0;
 +  return Object.keys(tool.inputSchema.properties);
++}
++function firstUnescapedQuote(rv) {
++  let bs = 0;
++  for (let i = 1; i < rv.length; i++) {
++    const ch = rv.charAt(i);
++    if (ch === "\\") { bs++; continue; }
++    if (ch === '"' && bs % 2 === 0) return i;
++    bs = 0;
++  }
++  return -1;
++}
++function sliceSplicedEnvelope(rv, knownArgKeys, keyName) {
++  const close = firstUnescapedQuote(rv);
++  if (close <= 0 || close === rv.length - 1) return null;
++  const rest = rv.substring(close + 1);
++  const keyed = rest.match(/^\s*,\s*"([^"]+)"\s*:/);
++  const isKeyedDebris = !!(keyed && (keyed[1] === "name" || keyed[1] === "arguments" || (knownArgKeys || []).includes(keyed[1])));
++  const isValueDebris = !isKeyedDebris && /^\s*[,:]\s*"/.test(rest) && /"arguments"\s*:\s*\{/.test(rest.substring(0, 80));
++  if (!isKeyedDebris && !isValueDebris) return null;
++  let kept;
++  try { kept = JSON.parse(rv.substring(0, close + 1)); } catch (e) { return null; }
++  if (typeof kept !== "string" || !keyName) return null;
++  const needle = '"' + keyName + '"';
++  const markerRe = /"arguments"\s*:\s*\{/g;
++  let confirmed = false;
++  let best = null;
++  let marker;
++  while ((marker = markerRe.exec(rest)) !== null) {
++    const bodyStart = marker.index + marker[0].length;
++    const lead = rest.substring(bodyStart).match(/^\s*"/);
++    if (!lead) continue;
++    const keyStart = bodyStart + lead[0].length - 1;
++    if (rest.substring(keyStart, keyStart + needle.length) !== needle) continue;
++    const afterKey = rest.substring(keyStart + needle.length).match(/^\s*:\s*"/);
++    if (!afterKey) continue;
++    const seg = rest.substring(keyStart + needle.length + afterKey[0].length - 1);
++    const dupClose = firstUnescapedQuote(seg);
++    if (dupClose <= 0) continue;
++    try {
++      const dupVal = JSON.parse(seg.substring(0, dupClose + 1));
++      if (typeof dupVal !== "string") continue;
++      if (dupVal === kept || dupVal.startsWith(kept) || kept.startsWith(dupVal)) confirmed = true;
++      if (dupVal.length > kept.length && dupVal.startsWith(kept) && (best === null || dupVal.length > best.length)) best = dupVal;
++    } catch (e) { /* skip this candidate */ }
++  }
++  if (!confirmed) return null;
++  return best !== null ? best : kept;
 +}
 +function repairToolCallJson(raw, knownArgKeys) {
 +  const toolName = extractTopLevelStringProperty(raw, "name");
@@ -189,6 +257,8 @@ index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404
 +    const rv = argsBody.substring(vs, ve).replace(/,\s*$/, "");
 +    try { args[kp.key] = JSON.parse(rv); continue; } catch (e) { /* needs repair */ }
 +    if (rv.charAt(0) === '"') {
++      const spliced = sliceSplicedEnvelope(rv, knownArgKeys, kp.key);
++      if (spliced !== null) { args[kp.key] = spliced; continue; }
 +      let eq = rv.length - 1;
 +      while (eq > 0 && rv.charAt(eq) !== '"') eq--;
 +      if (eq <= 0) return null;
@@ -215,7 +285,7 @@ index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404
      processedElements.push({
        type: "tool-call",
        toolCallId: generateToolCallId(),
-@@ -496,6 +687,19 @@ function processToolCallJson(toolCallJson, fullMatch, processedElements, options
+@@ -496,6 +736,19 @@ function processToolCallJson(toolCallJson, fullMatch, processedElements, options
        input: canonicalizeToolInput(parsedToolCall.arguments)
      });
    } catch (error) {
@@ -235,7 +305,7 @@ index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404
      logParseFailure({
        phase: "generated-text",
        reason: "Failed to parse tool call JSON segment",
-@@ -511,7 +715,7 @@ function processToolCallJson(toolCallJson, fullMatch, processedElements, options
+@@ -511,7 +764,7 @@ function processToolCallJson(toolCallJson, fullMatch, processedElements, options
    }
  }
  function processMatchedToolCall(context) {
@@ -244,7 +314,7 @@ index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404
    const startIndex = match.index;
    const toolCallJson = match[1];
    if (startIndex > currentIndex) {
-@@ -519,7 +723,7 @@ function processMatchedToolCall(context) {
+@@ -519,7 +772,7 @@ function processMatchedToolCall(context) {
      addTextSegment(textSegment, processedElements);
    }
    if (toolCallJson) {
@@ -253,7 +323,7 @@ index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404
    }
    return startIndex + match[0].length;
  }
-@@ -789,7 +993,7 @@ function canonicalizeArgumentsProgressInput(progress, toolName, tools) {
+@@ -789,7 +1042,7 @@ function canonicalizeArgumentsProgressInput(progress, toolName, tools) {
      return void 0;
    }
    try {
@@ -262,7 +332,7 @@ index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404
      return stringifyToolInputWithSchema({
        toolName,
        args: parsedArguments,
-@@ -856,7 +1060,7 @@ function emitIncompleteToolCall(state, controller, toolCallStart, trailingBuffer
+@@ -856,7 +1109,7 @@ function emitIncompleteToolCall(state, controller, toolCallStart, trailingBuffer
    }
    if (state.currentToolCallJson) {
      try {
@@ -271,7 +341,7 @@ index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404
        emitToolCallFromParsed(state, controller, parsedToolCall, tools);
        state.currentToolCallJson = "";
        state.isInsideToolCall = false;
-@@ -940,9 +1144,17 @@ function emitToolCall(context) {
+@@ -940,9 +1193,17 @@ function emitToolCall(context) {
    var _a;
    const { state, controller, toolCallStart, toolCallEnd, options, tools } = context;
    try {
@@ -290,7 +360,7 @@ index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404
      const errorContent = `${toolCallStart}${state.currentToolCallJson}${toolCallEnd}`;
      const shouldEmitRawFallback = shouldEmitRawToolCallTextOnError(options);
      logParseFailure({
-@@ -1000,6 +1212,19 @@ function processBufferTags(context) {
+@@ -1000,6 +1261,19 @@ function processBufferTags(context) {
      if (startIndex + tag.length > state.buffer.length) {
        break;
      }
@@ -310,7 +380,7 @@ index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404
      publishText(state.buffer.slice(0, startIndex), state, controller, tools);
      state.buffer = state.buffer.slice(startIndex + tag.length);
      processTagMatch(context);
-@@ -1066,26 +1291,63 @@ var hermesProtocol = ({
+@@ -1066,26 +1340,63 @@ var hermesProtocol = ({
    },
    parseGeneratedText({
      text,
@@ -390,7 +460,7 @@ index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404
      }
      if (currentIndex < text.length) {
        const remainingText = text.slice(currentIndex);
-@@ -1138,14 +1400,48 @@ var hermesProtocol = ({
+@@ -1138,14 +1449,48 @@ var hermesProtocol = ({
      });
    },
    extractToolCallSegments({ text }) {
@@ -446,7 +516,7 @@ index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404
      }
      return segments;
    }
-@@ -6025,15 +6321,24 @@ function unwrapToolResult(result, mediaStrategy) {
+@@ -6025,15 +6370,24 @@ function unwrapToolResult(result, mediaStrategy) {
  }
  
  // src/core/prompts/hermes-prompt.ts
@@ -473,7 +543,7 @@ index 742c615240bcd8bf95d45284a5dbde2e936c9c8d..cde87098f814e8603a79eca9920c6404
  }
  function formatToolResponseAsHermes(toolResult) {
    return formatToolResponseAsHermesWithOptions(toolResult);
-@@ -7286,6 +7591,7 @@ var yamlXmlToolMiddleware = createToolMiddleware({
+@@ -7286,6 +7640,7 @@ var yamlXmlToolMiddleware = createToolMiddleware({
  });
  
  export {

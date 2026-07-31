@@ -351,17 +351,24 @@ const DOOM_LOOP_THRESHOLD = 3
    * runs): a uniform run trivially matches the buffer tail without being a real
    * retransmission, and slicing it would permanently corrupt legitimate content.
    *
-   * `boundaries` are the accumulated-text offsets at which previously received
-   * deltas start (ascending, `0` for the first one). When supplied, only overlaps
-   * that land exactly on one of those offsets are stripped.  Content alone cannot
-   * distinguish "the gateway re-sent a chunk" from "the model legitimately wrote
-   * a repeating line", so the arbitrary-offset longest-match scan corrupts
-   * repetitive output (diffs where a signature appears as both context and added
-   * line, enumerated `tests/test_x_step_{b,c,d}.py` run lists, per-file Java
-   * package+import headers).  A real retransmission re-sends whole previously
-   * delivered chunks and is therefore boundary-aligned by construction, while a
-   * coincidental repeat almost never terminates exactly on a chunk boundary.
-   * Passing no `boundaries` keeps the legacy arbitrary-offset scan.
+   * The scan matches at any offset in the window (longest match wins).  Content
+   * alone cannot distinguish "the gateway re-sent a chunk" from "the model
+   * legitimately wrote a repeating line", so this can rarely strip a legitimate
+   * repeat (observed: an enumerated pytest-path list welded into
+   * "-q`reader_step_b.py"). The full stripped segment is logged at the call
+   * site so such false positives stay diagnosable post-hoc.
+   *
+   * `boundaries` restricts stripping to overlaps that start exactly on one of
+   * the given chunk-start offsets (ascending, `0` first).  This mode is NOT
+   * used at runtime.  It was added 2026-07-30 on the assumption that a real
+   * retransmission re-sends whole previously delivered chunks and is therefore
+   * boundary-aligned by construction — and reverted 2026-07-31 when a
+   * measurement probe refuted the premise: in one heavy session the rule
+   * declined 91 overlaps, ≥87 of them (~96%) true retransmissions left in the
+   * text as visible duplicates, none a confirmed legitimate repeat, and none
+   * starting exactly on a boundary (distances 1–63; retransmissions begin
+   * mid-chunk in practice).  The parameter is retained so tests keep both
+   * semantics pinned; see docs/opencode/internals.md for the postmortem.
    * Exported for unit testing.
    */
   export function dedupStreamOverlap(accumulated: string, delta: string, boundaries?: readonly number[]): number {
@@ -379,8 +386,11 @@ const DOOM_LOOP_THRESHOLD = 3
       : Array.from({ length: max - DEDUP_MIN + 1 }, (_, i) => max - i)
     for (const len of candidates) {
       if (!accumulated.endsWith(delta.slice(0, len))) continue
-      const seg = delta.slice(0, len)
-      return [...seg].some((c) => c !== seg[0]) ? len : 0
+      // Uniform-run check must compare code points to code points: seg[0] is a
+      // UTF-16 unit, so a run of supplementary-plane chars (emoji) would never
+      // equal it and got stripped as "varied" (llm-review R3 P1).
+      const chars = [...delta.slice(0, len)]
+      return chars.some((c) => c !== chars[0]) ? len : 0
     }
     return 0
   }
@@ -1259,14 +1269,25 @@ const DOOM_LOOP_THRESHOLD = 3
               // (see dedupStreamOverlap — excludes uniform runs to avoid corrupting
               // markdown rules / separators / blank-line runs).
               let deduped = value.text
-              const overlap = dedupStreamOverlap(ctx.currentText.text, deduped, ctx.textDeltaBoundaries)
+              // Legacy arbitrary-offset scan (no boundaries argument): a
+              // boundary-alignment restriction added 2026-07-30 was reverted
+              // 2026-07-31 after measurement — see dedupStreamOverlap docs.
+              const overlap = dedupStreamOverlap(ctx.currentText.text, deduped)
               if (overlap > 0) {
                 // Log the FULL stripped segment, not a 50-char prefix: overlaps
                 // routinely exceed 100 chars, so a truncated excerpt cannot be
                 // checked against the buffer afterwards and made the corruption
                 // this gate caused undiagnosable from logs alone.
+                // distanceToBoundary keeps the alignment measurement running on
+                // every strip (0 would mean chunk-aligned; observed 1–63).
+                const overlapStart = ctx.currentText.text.length - overlap
+                let distanceToBoundary = Number.POSITIVE_INFINITY
+                for (const b of ctx.textDeltaBoundaries) {
+                  distanceToBoundary = Math.min(distanceToBoundary, Math.abs(b - overlapStart))
+                }
                 log.warn("text-delta-dedup", {
                   overlap,
+                  distanceToBoundary,
                   stripped: deduped.slice(0, overlap),
                   tail: ctx.currentText.text.slice(-(overlap + 50)),
                   boundaries: ctx.textDeltaBoundaries.slice(-5),

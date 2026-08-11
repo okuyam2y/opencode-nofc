@@ -29,7 +29,10 @@ import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 
 export function provider(model: Provider.Model, options?: { toolParser?: string; promptVariant?: string }) {
-  if (model.api.id.includes("muse-spark")) return [PROMPT_META]
+  if (model.api.id.includes("muse")) {
+    const name = model.api.id.includes("muse-glimmer") ? "Muse Glimmer" : "Muse Spark"
+    return [PROMPT_META.replaceAll("{{MODEL_NAME}}", name)]
+  }
   const frontier = options?.promptVariant === "frontier"
   let prompts: string[]
   if (model.api.id.includes("gpt-4") || model.api.id.includes("o1") || model.api.id.includes("o3"))

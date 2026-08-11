@@ -1461,7 +1461,7 @@ const layer = Layer.effect(
             lastAssistant?.finish &&
             !["tool-calls"].includes(lastAssistant.finish) &&
             !hasToolCalls &&
-            lastUser.id < lastAssistant.id
+            lastAssistant.parentID === lastUser.id
           ) {
             // Auto-continue: if the last text output looks truncated, inject a
             // synthetic "continue" message instead of breaking.

@@ -25,6 +25,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Wildcard } from "@/util/wildcard"
 import { SessionID } from "@/session/schema"
+import { buildParseFailureSpliceReport } from "./splice-audit"
 import { Auth } from "@/auth"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { EffectBridge } from "@/effect/bridge"
@@ -205,6 +206,38 @@ export function _detectDroppedToolCall(
   const nameFromCtx = (context as any)?.toolName as string | undefined
   const toolName = nameFromCtx ?? raw.match(/"name"\s*:\s*"([^"]+)"/)?.[1]
   return { toolName, raw }
+}
+
+/**
+ * Build the parse-failure-stage `tool-input-splice-suspect` payload, or
+ * undefined when this onError shape carries no raw envelope. onError is the
+ * parser's GENERAL warning channel: hermes parse failures pass the raw text
+ * as `context.toolCall`, but xml-mode warnings ({tag, occurrences}),
+ * originalTools validation ({index, tool}) and onMismatch metadata
+ * ({emittedLength, finalLength}) do not — running marker counts on their
+ * stringified metadata systematically miscounts (escaped quotes never match;
+ * serialized tool objects synthesize `{"name"`), so those shapes are skipped
+ * and the adjacent tool-parser warn remains their record. Exported for unit
+ * testing like _detectDroppedToolCall above: the gate depends on the parser's
+ * context shape, which version bumps have changed silently before (C-002).
+ */
+export function _buildParseFailureSpliceWarn(
+  context?: Record<string, unknown>,
+  toolName?: string,
+): Record<string, unknown> | undefined {
+  const raw = String((context as any)?.toolCall ?? "")
+  if (!raw) return undefined
+  const report = buildParseFailureSpliceReport(raw)
+  return {
+    stage: "parse-failure",
+    ...(toolName && { toolName }),
+    // Stringified because the marker keys contain quotes/braces that would
+    // otherwise land unescaped on the logfmt key side of the log formatter.
+    markers: JSON.stringify(report.markers),
+    duplicatedMarkers: report.duplicatedMarkers,
+    ...(report.repeat && { repeat: report.repeat }),
+    head: report.head,
+  }
 }
 
 
@@ -661,6 +694,22 @@ export function _detectDroppedToolCall(
                     let ctx: string | undefined
                     try { ctx = context ? JSON.stringify(context).slice(0, 200) : undefined } catch { ctx = "[unserializable]" }
                     log.warn("tool-parser", { ...lTags,  message, ...(ctx && { context: ctx }) })
+                    // Splice inventory (log-only): parse-stage deaths never
+                    // reach processor.ts's tool-call audit, so without this a
+                    // grep for tool-input-splice-suspect undercounts corruption
+                    // events (measured 4/6 on 2026-08-02: one doubled-tag grep
+                    // call died here with no part, no orphan warn, no retry).
+                    // Emitted for every onError that carries the raw envelope
+                    // (see _buildParseFailureSpliceWarn for why other shapes
+                    // are skipped); duplicatedMarkers/repeat classify
+                    // retransmission damage vs ordinary malformed output —
+                    // counting must filter on those fields, not the warn name.
+                    try {
+                      const spliceWarn = _buildParseFailureSpliceWarn(context, dropped?.toolName)
+                      if (spliceWarn) log.warn("tool-input-splice-suspect", { ...lTags, ...spliceWarn })
+                    } catch (error) {
+                      log.debug("tool-input-splice-audit-failed", { stage: "parse-failure", error: String(error) })
+                    }
                   },
                 } as any,
               }

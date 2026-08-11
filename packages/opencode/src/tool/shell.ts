@@ -421,8 +421,16 @@ const parser = lazy(async () => {
 // command 先頭が leaked envelope なら実行前に弾く。設計: docs/designs/bash-nested-envelope-guard.md
 //   分岐A: `{"<任意キー>":` / `[{...`（JSON object/array リテラル＝非コマンド。キー名非依存）
 //   分岐B: bare `name":` / `arguments":`（parser が外側 `{` を剥がした観測ケース）
+//   分岐C: bare `<tool名>", "arguments":`（分岐Bの一段先まで剥がれ、キーでなく **値** から始まる形。
+//     2026-08-01 に `bash", "arguments": {"command": "git log --oneline -10"...` が実際に zsh へ
+//     到達して実行された。分岐A/Bはどちらも先頭がキーであることを要求するため全て MISS していた）
+// 分岐Cは「識別子の直後にクォート＋カンマ＋`"arguments":`」まで要求して狭く保つ。「先頭N文字以内に
+// `"arguments":{` があれば弾く」形にすると `echo '{"arguments":{"a":1}}'` のような正当なコマンドを
+// 誤爆させるため採らない。
 // `[` は `(?:\[\s*)?` として `[` 存在に束縛し、先頭 `^\s*` との空白取り合い(quadratic backtracking)を防ぐ。
-const LEAKED_TOOL_CALL_ENVELOPE = /^\s*(?:(?:\[\s*)?\{\s*"[^"]*"|"?(?:name|arguments)")\s*:/
+// 分岐Cの `[A-Za-z0-9_-]*` は `"` を含まないので、後続の `"` との間に曖昧さは生じない（線形）。
+const LEAKED_TOOL_CALL_ENVELOPE =
+  /^\s*(?:(?:\[\s*)?\{\s*"[^"]*"\s*:|"?(?:name|arguments)"\s*:|[A-Za-z_][A-Za-z0-9_-]*"\s*,\s*"arguments"\s*:)/
 
 export function isLeakedToolCallEnvelope(command: string): boolean {
   return LEAKED_TOOL_CALL_ENVELOPE.test(command)
@@ -717,8 +725,8 @@ export const ShellTool = Tool.define(
               if (isLeakedToolCallEnvelope(params.command)) {
                 throw new Error(
                   "Command looks like a malformed/double-encoded tool call (it starts with a JSON tool-call envelope such as " +
-                    '`{"name": ...}` or `name": ...`), not a shell command. Do NOT wrap the tool call in JSON inside the ' +
-                    "command. Re-issue the bash tool call with only the raw shell command as `command`.",
+                    '`{"name": ...}`, `name": ...`, or `bash", "arguments": ...`), not a shell command. Do NOT wrap the ' +
+                    "tool call in JSON inside the command. Re-issue the bash tool call with only the raw shell command as `command`.",
                 )
               }
               const instanceCtx = yield* InstanceState.context

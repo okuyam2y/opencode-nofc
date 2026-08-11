@@ -1256,6 +1256,11 @@ describe("isLeakedToolCallEnvelope (nested-envelope guard)", () => {
     `[{"name":"x"}]`, // array form
     `[{"index":0}]`,
     `[ { "name": "x" } ]`, // spaced array form
+    // branch C: stripped one level further than branch B — starts at the tool-name
+    // *value*, not a key.  Exact shape observed 2026-08-01 reaching zsh (ses_0456c35a4ffe).
+    `bash", "arguments": {"command": "git log --oneline -10", "workdir": {"command": "git log --oneline -10`,
+    `read","arguments":{"filePath":"/tmp/x`, // unspaced variant
+    `web_search", "arguments": {`, // underscore in tool name
   ]
   const pass = [
     `git diff HEAD~10...HEAD --stat`,
@@ -1272,6 +1277,13 @@ describe("isLeakedToolCallEnvelope (nested-envelope guard)", () => {
     `{ echo hi; }`, // brace group
     `ls`,
     `python3 hello.py`,
+    // branch C must not fire on legitimate commands that merely mention the envelope.
+    // A broad "`\"arguments\":{` within the first N chars" rule would block these.
+    `echo '{"arguments":{"a":1}}'`,
+    `echo 'bash", "arguments": {}'`,
+    `grep -r '"arguments":' src/`,
+    `jq '.arguments' payload.json`,
+    `curl -d '{"name":"x","arguments":{}}' http://localhost/api`,
   ]
   for (const c of block) test(`blocks: ${JSON.stringify(c).slice(0, 50)}`, () => expect(isLeakedToolCallEnvelope(c)).toBe(true))
   for (const c of pass) test(`passes: ${JSON.stringify(c).slice(0, 50)}`, () => expect(isLeakedToolCallEnvelope(c)).toBe(false))

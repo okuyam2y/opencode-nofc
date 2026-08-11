@@ -18,6 +18,12 @@ import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
 import { SessionStatus } from "./status"
+import {
+  collectStringValues,
+  findAdjacentRepeat,
+  SPLICE_AUDIT_ENVELOPE_MARKERS,
+  SPLICE_AUDIT_MIN_PERIOD,
+} from "./splice-audit"
 import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
 import { Question } from "@/question"
@@ -71,6 +77,24 @@ function stripToolTagsOnce(text: string): string {
     //    standalone tag removal (step 3), otherwise step 3 strips the open tag
     //    but leaves the content (JSON body, etc.) intact.
     .replace(/<\u200b?(?:tool_call|tool_result|tool_response|commentary|multi_tool_use\.parallel)>[\s\S]*$/g, "")
+    // 2b. Remove a malformed tag token whose name is immediately followed by
+    //     JSON envelope debris instead of ">" (observed 2026-08-02:
+    //     `<tool_call"}}` from a retransmitted envelope; ">" never arrives so
+    //     neither the pair rules nor the trailing-partial rule match, and the
+    //     fragment persists into the DB). Only the tag token plus the adjacent
+    //     debris punctuation run is removed. Two guards keep prose that QUOTES
+    //     a tag name intact: the next character must be JSON punctuation (so
+    //     backtick-quoted `<tool_call` survives), and the "<" must not itself
+    //     be preceded by a quote character (so `he wrote "<tool_call" here` and
+    //     JSON-embedded '"<tool_call"' survive \u2014 real debris arrives after a
+    //     newline or plain text, never inside a quotation). Full-width bracket
+    //     variants (\uff1ctool_call, \uff1c\uff0ftool_call) are accepted like
+    //     normalizeDegradedToolTags does, since a debris form has no closing
+    //     bracket for that normalizer to rewrite.
+    .replace(
+      /(?<!["'`])[<\uff1c][\/\uff0f]?\u200b?(?:tool_call|tool_result|tool_response|commentary|multi_tool_use\.parallel)(?=["{}])["{}:,]*/g,
+      "",
+    )
     // 3. Remove orphaned standalone open/close tags
     .replace(/<\/?\u200b?tool_call>/g, "")
     .replace(/<\/?\u200b?tool_response>/g, "")
@@ -279,6 +303,69 @@ function longestValidPrefixLen(text: string): number {
 }
 
 /**
+ * Log-only audit for retransmission damage welded into tool-call arguments.
+ * Detection logic and thresholds live in ./splice-audit — shared with the
+ * parse-failure stage in llm.ts (which cannot import this module without a
+ * cycle). This audit changes nothing about execution — it exists because such
+ * corruption previously left NO parser-side trace, making parser-vs-model
+ * classification impossible after the fact (2026-08-02: 6 corrupted
+ * read/grep/bash args, zero correlated log lines).
+ */
+function auditToolCallInput(toolName: string, callID: string, input: unknown): void {
+  // Diagnostics only — must never break the tool-call path.
+  try {
+    auditToolCallInputInner(toolName, callID, input)
+  } catch (error) {
+    log.debug("tool-input-splice-audit-failed", { toolName, callID, error: String(error) })
+  }
+}
+
+function auditToolCallInputInner(toolName: string, callID: string, input: unknown): void {
+  const values: string[] = []
+  collectStringValues(input, values)
+  for (const v of values) {
+    if (v.length >= SPLICE_AUDIT_MIN_PERIOD * 2) {
+      const repeat = findAdjacentRepeat(v)
+      if (repeat) {
+        // Full unit + generous context: the log must let a human judge whether
+        // the repeat was legitimate (truncated audit output is what made the
+        // text-dedup corruption undiagnosable for weeks — do not trim the unit).
+        log.warn("tool-input-splice-suspect", {
+          stage: "tool-call",
+          toolName,
+          callID,
+          kind: "adjacent-repeat",
+          period: repeat.period,
+          index: repeat.index,
+          unit: repeat.unit,
+          before: v.slice(Math.max(0, repeat.index - 120), repeat.index),
+          after: v.slice(repeat.index + repeat.period * 2, repeat.index + repeat.period * 2 + 120),
+        })
+      }
+    }
+    for (const marker of SPLICE_AUDIT_ENVELOPE_MARKERS) {
+      const markerIndex = v.indexOf(marker)
+      if (markerIndex < 0) continue
+      // Window AROUND the marker, not the value head: the marker may sit past
+      // any fixed head length, and a centered window both guarantees the
+      // suspect region is visible and avoids logging unrelated argument
+      // content (tool args can carry secrets; this is the first log path that
+      // writes argument content, so keep it as narrow as judgment allows).
+      log.warn("tool-input-splice-suspect", {
+        stage: "tool-call",
+        toolName,
+        callID,
+        kind: "envelope-marker",
+        marker,
+        index: markerIndex,
+        context: v.slice(Math.max(0, markerIndex - 150), markerIndex + marker.length + 150),
+      })
+      break
+    }
+  }
+}
+
+/**
  * Estimate character count of an unknown value for token estimation.
  * Strings are measured by length; structured data (object/array/number/boolean/null)
  * is serialized to capture keys, delimiters, and non-string primitives.
@@ -395,10 +482,24 @@ const DOOM_LOOP_THRESHOLD = 3
     return 0
   }
 
+  /**
+   * True when a tool call registered by `tool-input-start` never received any
+   * arguments: it is still pending with an empty input and empty raw buffer.
+   * The tool-call parser produces these when it opens an envelope that never
+   * resolves into a `tool-call` (observed with tool names mis-extracted from
+   * prose).  Such a call never reached execution, so cleanup must not report it
+   * as an interrupted run.
+   */
+  export function toolCallNeverReceivedInput(state: MessageV2.ToolState): boolean {
+    return state.status === "pending" && Object.keys(state.input).length === 0 && state.raw === ""
+  }
+
   /** Re-export for unit testing. */
   export const _stripToolTags = stripToolTags
   /** Re-export for unit testing. */
   export const _createStreamingTagFilter = createStreamingTagFilter
+  /** Re-export for unit testing. */
+  export const _findAdjacentRepeat = findAdjacentRepeat
 
   // Unicode blocks for scripts that are effectively never expected in this fork's
   // Japanese/English sessions: Indic block run (Devanagari..Sinhala), Thai/Lao,
@@ -861,6 +962,7 @@ const DOOM_LOOP_THRESHOLD = 3
 
             case "tool-call": {
               log.debug("tool-call", { toolCallId: value.toolCallId, toolName: value.toolName })
+              auditToolCallInput(value.toolName, value.toolCallId, value.input)
               ctx.hasToolCalls = true
               if (ctx.assistantMessage.summary) {
                 throw new Error(`Tool call not allowed while generating summary: ${value.toolName}`)
@@ -1431,12 +1533,28 @@ const DOOM_LOOP_THRESHOLD = 3
             const part = match.part
             const end = Date.now()
             const metadata = "metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}
+            // Distinguish a call that never received its arguments from one that was
+            // interrupted mid-run.  The former happens when the tool-call parser emits
+            // tool-input-start (sometimes with a tool name mis-extracted from prose)
+            // and no matching tool-call ever arrives: the part stays pending with an
+            // empty input and empty raw, and start==end.  Reporting that as "aborted"
+            // claims an execution that never began and hides the parser misfire.
+            // `interrupted: true` is kept either way — prompt.ts isOrphanedInterruptedTool
+            // and message-v2 output handling key on it, not on the message.
+            const neverReceivedInput = toolCallNeverReceivedInput(part.state)
+            if (neverReceivedInput) {
+              log.warn("tool call discarded without arguments", {
+                ...slogTags,
+                tool: part.tool,
+                callID: part.callID,
+              })
+            }
             yield* session.updatePart({
               ...part,
               state: {
                 ...part.state,
                 status: "error",
-                error: "Tool execution aborted",
+                error: neverReceivedInput ? "Tool call never received arguments" : "Tool execution aborted",
                 metadata: { ...metadata, interrupted: true },
                 time: { start: "time" in part.state ? part.state.time.start : end, end },
               },

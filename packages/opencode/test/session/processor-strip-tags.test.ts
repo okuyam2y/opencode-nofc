@@ -180,4 +180,47 @@ describe("stripToolTags", () => {
       expect(strip("the tool_call format uses tags")).toBe("the tool_call format uses tags")
     })
   })
+
+  // Malformed tag token followed by JSON envelope debris instead of ">".
+  // Observed 2026-08-02: a retransmitted envelope left `<tool_call"}}` in the
+  // text stream; ">" never arrived, so no other rule matched and the fragment
+  // persisted into the DB (few-shot poisoning risk).
+  describe("malformed tag token with JSON debris (rule 2b)", () => {
+    test("removes the observed leak shape entirely (regression 2026-08-02)", () => {
+      expect(strip('\n<tool_call"}}\n</tool_call>\n')).toBe("")
+    })
+
+    test("removes malformed open-tag debris mid-text", () => {
+      expect(strip('before\n<tool_call"}} after')).toBe("before\n after")
+    })
+
+    test("removes malformed close-form debris", () => {
+      expect(strip('text</tool_call"}more')).toBe("textmore")
+    })
+
+    test("removes tag token welded to an envelope body start", () => {
+      expect(strip('x<tool_call{"name')).toBe("xname")
+    })
+
+    test("preserves prose quoting a bare tag name without JSON debris", () => {
+      expect(strip("the `<tool_call` prefix diverges here")).toBe("the `<tool_call` prefix diverges here")
+    })
+
+    test("preserves double-quoted tag names in prose and JSON (review finding)", () => {
+      expect(strip('he wrote "<tool_call" in the log')).toBe('he wrote "<tool_call" in the log')
+      expect(strip('{"tag": "<tool_call"} rest')).toBe('{"tag": "<tool_call"} rest')
+    })
+
+    test("removes ZWS-escaped debris variant", () => {
+      expect(strip('\n<​tool_call"}}\n')).toBe("")
+    })
+
+    test("removes full-width-bracket debris variant", () => {
+      expect(strip('a＜tool_call"}}b')).toBe("ab")
+    })
+
+    test("does not fire across a tag-name boundary", () => {
+      expect(strip('x<tool_calls"}}y')).toBe('x<tool_calls"}}y')
+    })
+  })
 })

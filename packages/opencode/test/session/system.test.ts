@@ -1,4 +1,3 @@
-// @ts-nocheck — rebase #59 WIP: post-DB-schema-refactor (#29068) follow-up needed
 import { afterEach, describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import fs from "fs/promises"
@@ -11,10 +10,15 @@ import type { Provider } from "../../src/provider/provider"
 import { SystemPrompt } from "../../src/session/system"
 import { MCP } from "../../src/mcp"
 import { testEffect } from "../lib/effect"
-import { disposeAllInstances, provideInstance, tmpdir } from "../fixture/fixture"
+import { disposeAllInstances, provideInstance, testInstanceStoreLayer, tmpdir } from "../fixture/fixture"
+
+// LayerNode migration (upstream #34515-34518) removed the per-service `defaultLayer`
+// exports; standalone consumers compile the node graph instead.
+const agentLayer = Layer.mergeAll(LayerNode.compile(Agent.node), testInstanceStoreLayer)
+const systemPromptLayer = Layer.mergeAll(LayerNode.compile(SystemPrompt.node), testInstanceStoreLayer)
 
 function load<A>(dir: string, fn: (svc: Agent.Interface) => Effect.Effect<A>) {
-  return Effect.runPromise(provideInstance(dir)(Agent.Service.use(fn)).pipe(Effect.provide(Agent.defaultLayer)))
+  return Effect.runPromise(provideInstance(dir)(Agent.Service.use(fn)).pipe(Effect.provide(agentLayer)))
 }
 
 // testEffect harness for MCP coverage: mocks MCP.Service + Skill.Service so
@@ -112,6 +116,13 @@ describe("session.system", () => {
     }
   })
 
+  test("selects the Kimi prompt for official provider model IDs", () => {
+    for (const providerID of ["kimi-for-coding", "moonshotai", "moonshotai-cn"]) {
+      const prompt = SystemPrompt.provider({ providerID, api: { id: "k3" } } as Provider.Model)[0]
+      expect(prompt).toContain("# Prompt and Tool Use")
+    }
+  })
+
   describe("gitState", () => {
     afterEach(async () => {
       delete process.env.OPENCODE_ENABLE_GIT_STATE
@@ -120,9 +131,7 @@ describe("session.system", () => {
 
     function load(dir: string) {
       return Effect.runPromise(
-        provideInstance(dir)(SystemPrompt.Service.use((s) => s.gitState())).pipe(
-          Effect.provide(SystemPrompt.defaultLayer),
-        ),
+        provideInstance(dir)(SystemPrompt.Service.use((s) => s.gitState())).pipe(Effect.provide(systemPromptLayer)),
       )
     }
 
@@ -190,7 +199,7 @@ description: ${description}
       const runSkills = Effect.gen(function* () {
         const svc = yield* SystemPrompt.Service
         return yield* svc.skills(build!)
-      }).pipe(Effect.provide(SystemPrompt.defaultLayer), provideInstance(tmp.path))
+      }).pipe(provideInstance(tmp.path), Effect.provide(systemPromptLayer))
 
       const first = await Effect.runPromise(runSkills)
       const second = await Effect.runPromise(runSkills)

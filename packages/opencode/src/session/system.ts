@@ -46,7 +46,11 @@ export function provider(model: Provider.Model, options?: { toolParser?: string;
   } else if (model.api.id.includes("gemini-")) prompts = [PROMPT_GEMINI]
   else if (model.api.id.includes("claude")) prompts = [frontier ? PROMPT_ANTHROPIC_FRONTIER : PROMPT_ANTHROPIC]
   else if (model.api.id.toLowerCase().includes("trinity")) prompts = [PROMPT_TRINITY]
-  else if (model.api.id.toLowerCase().includes("kimi")) prompts = [PROMPT_KIMI]
+  else if (
+    model.api.id.toLowerCase().includes("kimi") ||
+    ["kimi-for-coding", "moonshotai", "moonshotai-cn"].includes(model.providerID)
+  )
+    prompts = [PROMPT_KIMI]
   else prompts = [PROMPT_DEFAULT]
 
   if (options?.toolParser) {

@@ -23,7 +23,16 @@ src/session/
 Integration points:
 
 - `../llm.ts` imports `LLMClient` from `@opencode-ai/llm/route`; native execution is the only path that calls it directly.
-- `../llm.ts` imports `LLMAISDK` from `./llm/ai-sdk`; the AI SDK path still calls `streamText(...)` locally, then adapts `result.fullStream` into shared `LLMEvent`s.
+- **FORK DIVERGENCE — this bullet does not describe this fork.** Upstream's `../llm.ts` imports
+  `LLMAISDK` from `./llm/ai-sdk` and adapts `result.fullStream` into shared `LLMEvent`s. This fork
+  does not: `LLM.stream` returns the raw AI SDK `fullStream` and `processor.ts` switches on AI SDK
+  part types, so **`ai-sdk.ts` is unreachable here and anything upstream fixes inside it has no
+  effect**. Port such fixes to `../llm.ts` instead — the check belongs on the stream
+  `LLM.stream` actually returns. The failure is otherwise silent: `ai-sdk.ts` stays
+  byte-identical to upstream, so a rebase merges upstream's changes cleanly and
+  `git diff upstream/dev` shows nothing. `test/session/ai-sdk-unreachable.test.ts` makes
+  it loud — it fails if `ai-sdk.ts` changes at all, or if anything starts calling
+  `toLLMEvents`, and its failure message says what to do.
 - `../llm.ts` imports `LLMNativeRuntime` from `./llm/native-runtime`; this is the runtime-selection seam. Unsupported native requests return a reason and fall back to AI SDK.
 - `native-runtime.ts` imports `LLMNative` from `./native-request`; this keeps request lowering separate from transport and tool execution.
 - `native-request.ts` is the only adapter file that should construct `LLM.request(...)`, `LLM.model(...)`, `Message.*`, `SystemPart`, `ToolCallPart`, `ToolResultPart`, or `ToolDefinition` values from `@opencode-ai/llm`.

@@ -561,6 +561,36 @@ const DOOM_LOOP_THRESHOLD = 3
     return MessageV2.extractStatusCode(e) === undefined && MessageV2.isConnectionErrorMessage(e)
   }
 
+  /**
+   * What halt() owes a step that died mid-stream, once tools have already run.
+   *
+   * Pure on purpose: every bug in this area so far has been in the decision, not the
+   * effects — billing that sat inside the graceful branch and so skipped the capped
+   * round, and settlement that ended the v2 step even when the failure path was about
+   * to report on it. The matrix is pinned in processor-stall-step-end.test.ts.
+   */
+  export function settlementForStall(input: {
+    /** The error carries the step's usage (only LLM.FinishReasonError does). */
+    hasUsage: boolean
+    hasExecutedTool: boolean
+    /** shouldEndStepAfterStall(...) — the loop continues rather than failing. */
+    endsGracefully: boolean
+  }): { bill: boolean; settleV2: boolean; writeStepFinish: boolean } {
+    // Tools ran, so the step is committed and its tokens were spent — bill it whether or
+    // not the loop goes on. Only FinishReasonError brings the numbers to bill with.
+    const bill = input.hasExecutedTool && input.hasUsage
+    // The v2 step only *ends* when the loop continues. At the consecutive-stall cap the
+    // failure path reports Step.Failed against this same assistant, so ending it here
+    // would split one provider step into a finished one plus an empty failed one.
+    // Not gated on hasUsage: a post-tool chunk timeout or connection drop commits the
+    // step just the same, and leaving it unsettled merges two provider steps into one
+    // v2 step that never ends.
+    const settleV2 = input.hasExecutedTool && input.endsGracefully
+    // A step-finish part records usage, so it needs usage to record.
+    const writeStepFinish = settleV2 && bill
+    return { bill, settleV2, writeStepFinish }
+  }
+
   // Spam/dedup/near-duplicate gating moved to session/tool-gate.ts (C-003/
   // C-004): the AI SDK invokes `execute` upstream of this processor, so only
   // the execute wrapper in resolveTools can actually prevent a side effect.
@@ -761,6 +791,73 @@ const DOOM_LOOP_THRESHOLD = 3
             return
           }
           return { call, part }
+        })
+
+        /**
+         * Gateways that report per-turn usage where the rest of the code assumes
+         * cumulative would otherwise reset the running token counts on every step.
+         * Detects that and substitutes the estimate.  Mutates `usage` in place and
+         * keeps ctx.maxReportedInput current, so every path that bills a step must
+         * go through here -- the graceful post-tool end does too, which is why this
+         * is a shared helper rather than inline in the finish-step handler.
+         *
+         * Returns the estimated input so the caller can reuse it (the overflow check does).
+         */
+        const applyPerTurnUsageFallback = (usage: ReturnType<typeof Session.getUsage>) => {
+          const reportedInput = usage.tokens.input + usage.tokens.cache.read
+          ctx.maxReportedInput = Math.max(ctx.maxReportedInput, reportedInput)
+          const estimatedInput = ctx.lastStreamInput ? estimateTokensFromInput(ctx.lastStreamInput) : 0
+          const isPerTurnMultiStep = ctx.maxReportedInput > 1000 && reportedInput < ctx.maxReportedInput * 0.2
+          const isPerTurnSingleStep =
+            estimatedInput >= 20_000 && reportedInput <= Math.min(estimatedInput * 0.1, 2_000)
+          // Monotonic-decrease: if the reported input dropped significantly from the
+          // confirmed baseline of previous turns, the gateway is returning per-turn
+          // values.  The 0.8 multiplier tolerates minor fluctuations from cache
+          // accounting or prompt shaping.
+          const prevConfirmed = input.confirmedInput ?? 0
+          const isPerTurnMonotonic = prevConfirmed > 0 && reportedInput < prevConfirmed * 0.8
+          if (!((isPerTurnMultiStep || isPerTurnSingleStep || isPerTurnMonotonic) && estimatedInput > reportedInput))
+            return estimatedInput
+          log.debug("usage-fallback", {
+            reportedInput,
+            maxReportedInput: ctx.maxReportedInput,
+            confirmedInput: prevConfirmed,
+            estimatedInput,
+            reportedTotal: usage.tokens.total,
+            trigger: isPerTurnMonotonic ? "monotonic" : isPerTurnMultiStep ? "multi-step" : "single-step",
+          })
+          // estimatedInput represents effective input (cached + uncached).  Zero out
+          // cache.read so downstream (confirmedInput update in prompt.ts:
+          // input + cache.read) doesn't double-count the cache.
+          usage.tokens.input = estimatedInput
+          usage.tokens.cache.read = 0
+          usage.tokens.total = estimatedInput + usage.tokens.output + usage.tokens.cache.write
+          return estimatedInput
+        }
+
+        /**
+         * Flag auto-compaction when a step's usage puts the context over the limit.
+         * Shared so every path that bills a step also gets the check -- the post-tool
+         * stall settlement skipped it at first, which let a near-limit turn continue and
+         * fail on the next request with a context-length error instead of compacting.
+         *
+         * Uses max(reported, estimated) because a provider can report accurate but
+         * delayed usage while the estimate is already close to the limit. The overflow
+         * tokens are ephemeral -- usage.tokens is not modified.
+         */
+        const markCompactionIfOverflow = Effect.fn("SessionProcessor.markCompactionIfOverflow")(function* (
+          usage: ReturnType<typeof Session.getUsage>,
+          estimatedInput: number,
+        ) {
+          if (ctx.assistantMessage.summary) return
+          const reportedTotal =
+            usage.tokens.total ||
+            usage.tokens.input + usage.tokens.output + usage.tokens.cache.read + usage.tokens.cache.write
+          const overflowTotal = Math.max(reportedTotal, estimatedInput + usage.tokens.output)
+          const overflowTokens = { ...usage.tokens, total: overflowTotal }
+          if (isOverflow({ cfg: yield* config.get(), tokens: overflowTokens, model: ctx.model })) {
+            ctx.needsCompaction = true
+          }
         })
 
         const updateToolCall = Effect.fn("SessionProcessor.updateToolCall")(function* (
@@ -1197,40 +1294,7 @@ const DOOM_LOOP_THRESHOLD = 3
               //    (<= min(estimatedInput * 0.1, 2000)), apply the estimate.
               //    This catches single-step responses where maxReportedInput
               //    has no prior baseline to compare against.
-              const reportedInput = usage.tokens.input + usage.tokens.cache.read
-              ctx.maxReportedInput = Math.max(ctx.maxReportedInput, reportedInput)
-              const estimatedInput = ctx.lastStreamInput ? estimateTokensFromInput(ctx.lastStreamInput) : 0
-              const isPerTurnMultiStep =
-                ctx.maxReportedInput > 1000 &&
-                reportedInput < ctx.maxReportedInput * 0.2
-              const isPerTurnSingleStep =
-                estimatedInput >= 20_000 &&
-                reportedInput <= Math.min(estimatedInput * 0.1, 2_000)
-              // 3. Monotonic-decrease: if the reported input dropped significantly
-              //    from the confirmed baseline of previous turns, the gateway is
-              //    returning per-turn values.  The 0.8 multiplier tolerates minor
-              //    fluctuations from cache accounting or prompt shaping.
-              const prevConfirmed = input.confirmedInput ?? 0
-              const isPerTurnMonotonic =
-                prevConfirmed > 0 &&
-                reportedInput < prevConfirmed * 0.8
-              if ((isPerTurnMultiStep || isPerTurnSingleStep || isPerTurnMonotonic) && estimatedInput > reportedInput) {
-                log.debug("usage-fallback", {
-                  reportedInput,
-                  maxReportedInput: ctx.maxReportedInput,
-                  confirmedInput: prevConfirmed,
-                  estimatedInput,
-                  reportedTotal: usage.tokens.total,
-                  trigger: isPerTurnMonotonic ? "monotonic" : isPerTurnMultiStep ? "multi-step" : "single-step",
-                })
-                // estimatedInput represents effective input (cached + uncached).
-                // Zero out cache.read so downstream (confirmedInput update in
-                // prompt.ts: input + cache.read) doesn't double-count the cache.
-                usage.tokens.input = estimatedInput
-                usage.tokens.cache.read = 0
-                usage.tokens.total =
-                  estimatedInput + usage.tokens.output + usage.tokens.cache.write
-              }
+              const estimatedInput = applyPerTurnUsageFallback(usage)
               // Recover from hermes tool call drops: when the model omits
               // </tool_call>, the parser drops the call and reports it via
               // onError(reason: "unfinished").  Create synthetic error tool
@@ -1324,20 +1388,7 @@ const DOOM_LOOP_THRESHOLD = 3
                   messageID: ctx.assistantMessage.parentID,
                 })
                 .pipe(Effect.ignore, Effect.forkIn(scope))
-              if (!ctx.assistantMessage.summary) {
-                // Use max(reported, estimated) for overflow check only.
-                // This catches cases where the provider reports accurate but
-                // delayed usage while the estimate is already close to the limit.
-                // The overflow tokens are ephemeral — usage.tokens is not modified.
-                const reportedTotal = usage.tokens.total
-                  || (usage.tokens.input + usage.tokens.output + usage.tokens.cache.read + usage.tokens.cache.write)
-                const estimatedTotal = estimatedInput + usage.tokens.output
-                const overflowTotal = Math.max(reportedTotal, estimatedTotal)
-                const overflowTokens = { ...usage.tokens, total: overflowTotal }
-                if (isOverflow({ cfg: yield* config.get(), tokens: overflowTokens, model: ctx.model })) {
-                  ctx.needsCompaction = true
-                }
-              }
+              yield* markCompactionIfOverflow(usage, estimatedInput)
               return
             }
 
@@ -1589,7 +1640,59 @@ const DOOM_LOOP_THRESHOLD = 3
           // a persistently stalling gateway still fails loud instead of silently
           // looping; cleanup() (ensuring) settles any still-pending tool parts and
           // stamps time.completed as usual.
-          if (shouldEndStepAfterStall(e, hasExecutedTool, consecutiveStallStepEnds)) {
+          const endsGracefully = shouldEndStepAfterStall(e, hasExecutedTool, consecutiveStallStepEnds)
+          const settlement = settlementForStall({
+            hasUsage: e instanceof LLM.FinishReasonError,
+            hasExecutedTool,
+            endsGracefully,
+          })
+          let stepUsage: ReturnType<typeof Session.getUsage> | undefined
+          if (settlement.bill && e instanceof LLM.FinishReasonError) {
+            stepUsage = Session.getUsage({
+              model: ctx.model,
+              usage: Usage.from(e.rawUsage as any),
+              metadata: e.providerMetadata as any,
+            })
+            // Same correction the finish-step handler applies: skipping it would let a
+            // per-turn gateway overwrite the running totals with one step's numbers.
+            const stalledEstimatedInput = applyPerTurnUsageFallback(stepUsage)
+            ctx.assistantMessage.cost += stepUsage.cost
+            ctx.assistantMessage.tokens = stepUsage.tokens
+            // Same check the finish-step path runs: without it a near-limit turn keeps
+            // going and dies on the next request with a context-length error, where a
+            // normal finish would have compacted quietly.
+            yield* markCompactionIfOverflow(stepUsage, stalledEstimatedInput)
+          }
+          if (settlement.settleV2 || settlement.writeStepFinish) {
+            const stalledSnapshot = yield* snapshot.track()
+            if (settlement.settleV2 && !ctx.assistantMessage.summary && mirrorAssistant) {
+              yield* events.publish(SessionEvent.Step.Ended, {
+                sessionID: ctx.sessionID,
+                assistantMessageID: yield* currentV2AssistantMessage(),
+                finish: "tool-calls",
+                // Zeroes when the stall carried no usage (chunk timeout, connection drop):
+                // the step still ended, the provider just never told us what it cost.
+                cost: stepUsage?.cost ?? 0,
+                tokens: stepUsage?.tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                snapshot: stalledSnapshot,
+                timestamp: DateTime.makeUnsafe(Date.now()),
+              })
+              ctx.v2AssistantMessageID = undefined
+            }
+            if (settlement.writeStepFinish && stepUsage) {
+              yield* session.updatePart({
+                id: PartID.ascending(),
+                reason: "tool-calls",
+                snapshot: stalledSnapshot,
+                messageID: ctx.assistantMessage.id,
+                sessionID: ctx.assistantMessage.sessionID,
+                type: "step-finish",
+                tokens: stepUsage.tokens,
+                cost: stepUsage.cost,
+              })
+            }
+          }
+          if (endsGracefully) {
             consecutiveStallStepEnds++
             log.warn("stream stalled after tool execution — ending step gracefully", {
               ...slogTags,

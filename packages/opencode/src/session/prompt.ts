@@ -319,7 +319,6 @@ const layer = Layer.effect(
           Stream.filter((e): e is Extract<LLM.Event, { type: "text-delta" }> => e.type === "text-delta"),
           Stream.map((e) => e.text),
           Stream.mkString,
-          Effect.orDie,
         )
       const cleaned = text
         .replace(/<think>[\s\S]*?<\/think>\s*/g, "")
@@ -1459,7 +1458,7 @@ const layer = Layer.effect(
 
           if (
             lastAssistant?.finish &&
-            !["tool-calls"].includes(lastAssistant.finish) &&
+            !["tool-calls", "unknown"].includes(lastAssistant.finish) &&
             !hasToolCalls &&
             lastAssistant.parentID === lastUser.id
           ) {
@@ -1536,7 +1535,16 @@ const layer = Layer.effect(
               modelID: lastUser.model.modelID,
               providerID: lastUser.model.providerID,
               history: msgs,
-            }).pipe(Effect.ignore, Effect.forkIn(scope))
+            }).pipe(
+              // Not Effect.ignore: it discards the failure without a word, and this runs
+              // in a forked fiber, so a gateway that keeps ending streams early would stop
+              // titling sessions with nothing anywhere to say why.  Same shape as the other
+              // llm.stream consumer (server/.../handlers/project-copy.ts).
+              Effect.catchCause((cause) =>
+                Effect.logWarning("title generation failed", { sessionID, error: Cause.squash(cause) }),
+              ),
+              Effect.forkIn(scope),
+            )
 
           const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
           lastModel = model

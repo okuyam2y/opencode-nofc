@@ -11,6 +11,7 @@ import { hermesToolMiddleware, morphXmlToolMiddleware, createToolMiddleware, her
 import { mergeDeep, pipe } from "remeda"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
+import { ProviderError } from "@/provider/error"
 import { Config } from "@/config/config"
 import { InstanceRef } from "@/effect/instance-ref"
 import type { Agent } from "@/agent/agent"
@@ -282,6 +283,27 @@ export function _buildParseFailureSpliceWarn(
   export type Event = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
 
   export type DroppedToolCall = { toolName?: string; raw: string }
+
+  /**
+   * Raised when a provider ends a step with finish_reason "network_error".
+   *
+   * Carries the finish-step's raw usage because failing the stream means processor
+   * never sees that event.  Before a tool has run that does not matter -- the attempt
+   * is retried and rolled back -- but after one has, retries are vetoed and the step
+   * is committed as tool-calls, so its tokens would otherwise never be billed.
+   *
+   * Subclass, not a separate error: `name` stays "ProviderResponseStreamError", which
+   * is what shouldEndStepAfterStall matches on (pinned in processor-stall-step-end.test.ts).
+   */
+  export class FinishReasonError extends ProviderError.ResponseStreamError {
+    constructor(
+      message: string,
+      readonly rawUsage: unknown,
+      readonly providerMetadata: unknown,
+    ) {
+      super(message)
+    }
+  }
 
   export interface Interface {
     readonly stream: (input: StreamInput) => Stream.Stream<Event, unknown>
@@ -861,6 +883,39 @@ export function _buildParseFailureSpliceWarn(
 
                 return Stream.fromAsyncIterable(result.fullStream, (e) =>
                   e instanceof Error ? e : new Error(String(e)),
+                ).pipe(
+                  // A provider can end a stream with finish_reason "network_error" instead of
+                  // raising.  Without this the step finishes as an ordinary success, the turn
+                  // ends with an empty assistant message and nothing retries.  Upstream handles
+                  // this in LLMAISDK.toLLMEvents, which this fork does not route through (the
+                  // raw AI SDK fullStream is returned as-is), so the check lives here instead.
+                  // ResponseStreamError is already classified isRetryable by MessageV2, so this
+                  // rejoins the existing retry path -- but only before a tool has run.  Once one
+                  // has, forceNonRetryable vetoes the retry and shouldEndStepAfterStall ends the
+                  // step as tool-calls (it matches on this error's name), so the turn continues
+                  // without retrying and without surfacing an error.  That is deliberate: retrying
+                  // would re-run side effects.  Pinned by processor-stall-step-end.test.ts.
+                  //
+                  // Replacing the finish-step event means processor never adds up its usage, so
+                  // FinishReasonError carries it.  Before a tool runs the retry rolls the attempt
+                  // back and the numbers do not matter; after one has, the step is committed and
+                  // processor bills it from the error.
+                  //
+                  // Exact match on purpose.  Any other unrecognized finish_reason maps to unified
+                  // "other" and stays silent, same as upstream -- and a provider that signals
+                  // failure through finishReason "error" already emits a type:"error" stream part
+                  // alongside it, which processor.ts throws on, so it needs no handling here.
+                  Stream.mapEffect((event) =>
+                    event.type === "finish-step" && event.rawFinishReason === "network_error"
+                      ? Effect.fail(
+                          new FinishReasonError(
+                            "Provider finish_reason: network_error",
+                            event.usage,
+                            event.providerMetadata,
+                          ),
+                        )
+                      : Effect.succeed(event),
+                  ),
                 )
               }),
             ),

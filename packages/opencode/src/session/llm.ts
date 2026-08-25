@@ -752,9 +752,10 @@ export function _buildParseFailureSpliceWarn(
                   }
                 : {
                     "x-session-affinity": input.sessionID,
-                    ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
+                    "X-Session-Id": input.sessionID,
                     "User-Agent": `opencode/${InstallationVersion}`,
                   }),
+              ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
               ...input.model.headers,
               ...headers,
             },

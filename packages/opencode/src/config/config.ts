@@ -34,6 +34,7 @@ import { ConfigParse } from "./parse"
 import { ConfigPaths } from "./paths"
 import { ConfigPlugin } from "./plugin"
 import { ConfigVariable } from "./variable"
+import { ConfigV2Compat } from "./v2-compat"
 import { Npm } from "@opencode-ai/core/npm"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 
@@ -103,9 +104,10 @@ async function substituteWellKnownRemoteConfig(input: {
 }
 
 // Upstream #23491 (c6c56ac2c) renamed compaction.tail_tokens to
-// preserve_recent_tokens. Config is parsed .strict(), so existing user
-// configs with tail_tokens would otherwise fail to load. Map the legacy
-// key on read and emit a warning.
+// preserve_recent_tokens. Unknown keys are ignored rather than rejected
+// (upstream #41312 set onExcessProperty: "ignore"), so a legacy config
+// still loads — but the value would be silently dropped. Map the legacy
+// key on read so the setting is carried over, and emit a warning.
 function migrateCompactionKeys(data: Record<string, unknown>, source: string): Record<string, unknown> {
   const compaction = data.compaction
   if (!isRecord(compaction) || !("tail_tokens" in compaction)) return data
@@ -115,6 +117,15 @@ function migrateCompactionKeys(data: Record<string, unknown>, source: string): R
   if ("preserve_recent_tokens" in nextCompaction) {
     log.warn("compaction.tail_tokens is deprecated and ignored; preserve_recent_tokens already set", {
       path: source,
+    })
+  } else if (typeof legacyValue !== "number" || !Number.isInteger(legacyValue) || legacyValue < 0) {
+    // preserve_recent_tokens is NonNegativeInt. Carrying an out-of-range legacy
+    // value across the rename would promote a key the schema ignores today into
+    // one it validates, so a bad tail_tokens would reject the whole file —
+    // strictly worse than not migrating at all. Drop it like any unknown key.
+    log.warn("compaction.tail_tokens is deprecated and its value is not a non-negative integer; ignoring", {
+      path: source,
+      value: legacyValue,
     })
   } else {
     nextCompaction.preserve_recent_tokens = legacyValue
@@ -209,6 +220,19 @@ const layer = Layer.effect(
 
     const readConfigFile = (filepath: string) => fs.readFileStringSafe(filepath).pipe(Effect.orDie)
 
+    const decodeConfig = Effect.fnUntraced(function* (input: unknown, source: string) {
+      const result = ConfigV2Compat.lower(normalizeLoadedConfig(input, source), source)
+      yield* Effect.forEach(result.diagnostics, (diagnostic) =>
+        Effect.logWarning("configuration compatibility diagnostic", {
+          source,
+          path: diagnostic.path,
+          kind: diagnostic.kind,
+          action: diagnostic.message,
+        }),
+      )
+      return ConfigParse.schema(ConfigV1.Info, result.value, source)
+    })
+
     const fetchRemoteJson = Effect.fnUntraced(function* <S extends Schema.Top>(
       url: string,
       headers: Record<string, string> | undefined,
@@ -249,7 +273,7 @@ const layer = Layer.effect(
         ),
       )
       const parsed = ConfigParse.jsonc(expanded, source)
-      const data = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(parsed, source), source)
+      const data = yield* decodeConfig(parsed, source)
       if (!("path" in options)) return data
 
       yield* Effect.promise(() => resolveLoadedPlugins(data, options.path))
@@ -652,8 +676,13 @@ const layer = Layer.effect(
       const dir = yield* InstanceState.directory
       const file = path.join(dir, "config.json")
       const existing = yield* loadFile(file)
+      const text = yield* readConfigFile(file)
+      const original = text ? ConfigParse.jsonc(text, file) : writable(existing)
       yield* fs
-        .writeFileString(file, JSON.stringify(mergeDeep(writable(existing), writable(config)), null, 2))
+        .writeFileString(
+          file,
+          JSON.stringify(mergeDeep(isRecord(original) ? original : writable(existing), writable(config)), null, 2),
+        )
         .pipe(Effect.orDie)
     })
 
@@ -668,21 +697,23 @@ const layer = Layer.effect(
 
       let next: Info
       let changed: boolean
-      // Normalize the existing file before re-validating: the load path
-      // (line 252) tolerates legacy keys (e.g. compaction.tail_tokens) via
-      // normalizeLoadedConfig, so a user who can start up must also be able to
-      // persist a global config update — otherwise the migration shim's target
-      // population (legacy configs) hits InvalidError on every settings write.
+      // Validate the normalized form, not the raw file: the load path runs legacy
+      // keys (e.g. compaction.tail_tokens) through normalizeLoadedConfig first (see
+      // loadConfig's decodeConfig call), so validating the raw file here would hold
+      // a global config update to a stricter standard than startup does.
+      // The merge below intentionally keeps the file's original shape; the
+      // legacy keys stay on disk and are migrated again on the next load.
       if (!file.endsWith(".jsonc")) {
-        const existing = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(ConfigParse.jsonc(before, file), file), file)
-        const merged = mergeDeep(writable(existing), patch)
+        const existing = ConfigParse.jsonc(before, file)
+        ConfigParse.schema(ConfigV1.Info, ConfigV2Compat.lower(normalizeLoadedConfig(existing, file), file).value, file)
+        const merged = mergeDeep(isRecord(existing) ? existing : {}, patch)
         const serialized = JSON.stringify(merged, null, 2)
+        next = yield* decodeConfig(merged, file)
         changed = serialized !== before
         if (changed) yield* fs.writeFileString(file, serialized).pipe(Effect.orDie)
-        next = merged
       } else {
         const updated = patchJsonc(before, patch)
-        next = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(ConfigParse.jsonc(updated, file), file), file)
+        next = yield* decodeConfig(ConfigParse.jsonc(updated, file), file)
         changed = updated !== before
         if (changed) yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
       }

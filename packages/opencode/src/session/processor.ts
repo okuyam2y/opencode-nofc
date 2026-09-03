@@ -1277,6 +1277,22 @@ const DOOM_LOOP_THRESHOLD = 3
               // A normally finished step proves the stream is healthy again —
               // reset the stall→step-end conversion budget.
               consecutiveStallStepEnds = 0
+              // Anthropic reports thinking blocks it removed before the model saw the
+              // prompt. Prefix mismatches mean opencode changed history behind a signed
+              // block; log them so the churn can be tracked down.
+              // (upstream names this `dropped`; renamed here because the hermes
+              // tool-call drop recovery below already owns that identifier.)
+              const droppedThinkingBlocks = isRecord(value.providerMetadata?.anthropic)
+                ? value.providerMetadata.anthropic.inputTransformations
+                : undefined
+              if (Array.isArray(droppedThinkingBlocks) && droppedThinkingBlocks.length > 0) {
+                yield* Effect.logWarning("thinking blocks dropped by provider", {
+                  sessionID: ctx.sessionID,
+                  messageID: ctx.assistantMessage.id,
+                  model: ctx.model.id,
+                  transformations: JSON.stringify(droppedThinkingBlocks),
+                })
+              }
               const usage = Session.getUsage({
                 model: ctx.model,
                 usage: Usage.from(value.usage as any),

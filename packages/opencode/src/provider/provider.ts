@@ -45,7 +45,10 @@ const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 // retryable — the session re-sends and recovers without user intervention.
 // 5 minutes is far above any healthy inter-chunk gap (longest observed ~19s),
 // and a false positive only costs one retried request. Opt out per provider
-// with `chunkTimeout: false` (or 0); override with any positive number.
+// with `chunkTimeout: false`; override with any positive number. (0 also
+// disables it in resolveChunkTimeout below, but the config schema is
+// `PositiveInt | false` and rejects 0 before it gets here. That is deliberate:
+// the C-009 fix took the false-only union and left Literal(0) out.)
 const SSE_CHUNK_TIMEOUT_DEFAULT = 300_000
 
 /** Resolve the provider `chunkTimeout` option to an effective timeout in ms,
@@ -1845,7 +1848,7 @@ const layer = Layer.effect(
 
         const customFetch = options["fetch"]
         const chunkTimeout = resolveChunkTimeout(options["chunkTimeout"])
-        const headerTimeout = options["headerTimeout"]
+        const headerTimeout = options["headerTimeout"] ?? 300_000
         delete options["chunkTimeout"]
         delete options["headerTimeout"]
 

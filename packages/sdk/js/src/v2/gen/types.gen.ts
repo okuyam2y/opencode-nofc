@@ -1752,15 +1752,16 @@ export type ProviderConfig = {
      */
     timeout?: number | false
     /**
-     * Timeout in milliseconds to wait for response headers. Provider integrations may set defaults. Set to false to disable timeout.
+     * Timeout in milliseconds to wait for response headers (default: 300000). Set to false to disable timeout.
      */
     headerTimeout?: number | false
     /**
-     * Timeout in milliseconds between streamed SSE chunks for this provider. If no chunk arrives within this window, the request is aborted. Set to false to disable (default 300000).
+     * Timeout in milliseconds between streamed SSE chunks for this provider (default: 300000). If no chunk arrives within this window, the request is aborted. Set to false to disable timeout.
      */
     chunkTimeout?: number | false
     toolParser?: "hermes" | "hermes-strict" | "xml"
     promptVariant?: "frontier"
+    dropReasoningEffortWithTools?: boolean
     [key: string]:
       | unknown
       | string
@@ -2808,7 +2809,7 @@ export type ProviderNotFoundError = {
   message: string
 }
 
-export type OutputFormat1 =
+export type OutputFormat2 =
   | {
       type: "text"
     }

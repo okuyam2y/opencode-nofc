@@ -13,6 +13,7 @@ drafts
 .claude/*
 !.claude/skills/
 !.claude/hooks/
+!.claude/scripts/
 !.claude/settings.json
 !.claude/CLAUDE.md
 *~
@@ -66,4 +67,7 @@ dev-tools/
 !.husky/_/
 !.husky/pre-push
 .tmp-claude-build/
+
+# llm-review 計測ラッパ (.claude/scripts/review-run --log) の出力
+.review-runs.tsv
 .npmrc

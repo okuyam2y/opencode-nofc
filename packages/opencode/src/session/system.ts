@@ -11,6 +11,7 @@ import PROMPT_DEFAULT from "./prompt/default.txt"
 import PROMPT_BEAST from "./prompt/beast.txt"
 import PROMPT_GEMINI from "./prompt/gemini.txt"
 import PROMPT_GPT from "./prompt/gpt.txt"
+import PROMPT_ASTRA from "./prompt/gpt-astra.txt"
 import PROMPT_GPT_FRONTIER from "./prompt/gpt-frontier.txt"
 import PROMPT_KIMI from "./prompt/kimi.txt"
 import PROMPT_META from "./prompt/meta.txt"
@@ -38,7 +39,9 @@ export function provider(model: Provider.Model, options?: { toolParser?: string;
   if (model.api.id.includes("gpt-4") || model.api.id.includes("o1") || model.api.id.includes("o3"))
     prompts = [PROMPT_BEAST]
   else if (model.api.id.includes("gpt")) {
-    if (model.api.id.includes("codex")) {
+    if (model.api.id.includes("gpt-6")) {
+      prompts = [PROMPT_ASTRA]
+    } else if (model.api.id.includes("codex")) {
       prompts = [PROMPT_CODEX]
     } else {
       prompts = [frontier ? PROMPT_GPT_FRONTIER : PROMPT_GPT]

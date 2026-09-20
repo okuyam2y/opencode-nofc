@@ -15,7 +15,22 @@ function mimeToModality(mime: string): Modality | undefined {
   return undefined
 }
 
+// Output cap. Raised from upstream's 32,000 (2026-04-08) so long replies are not truncated.
 export const OUTPUT_TOKEN_MAX = 65_536
+
+// Ceiling for reasoning/thinking budgets, kept at upstream's OUTPUT_TOKEN_MAX value.
+//
+// Upstream derives the thinking budget from OUTPUT_TOKEN_MAX, so raising the output cap
+// silently doubled every provider's thinking budget on any model whose own output limit
+// exceeds 32,000 — measured with limit.output 64,000: high 16,000 -> 32,000, max 31,999
+// -> 63,999. Thinking tokens are billed, and the two concerns are unrelated: the output
+// cap exists so replies are not cut off. They are split here so raising one does not move
+// the other. The runtime flag OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX likewise reaches only
+// the output cap, never this.
+//
+// `reasoningVariants` budget tests pin the resulting values, so a rebase that re-couples
+// these two fails loudly rather than silently doubling spend again.
+const REASONING_BUDGET_MAX = 32_000
 
 // OpenAI Responses `include` value that returns the encrypted reasoning state
 // needed for stateless multi-turn reasoning (store: false). Hoisted so every
@@ -1734,7 +1749,7 @@ function effortVariants(model: Provider.Model, values: readonly unknown[]) {
 }
 
 function budgetVariants(model: Provider.Model, min?: number, max?: number) {
-  const maximum = Math.min(max ?? OUTPUT_TOKEN_MAX - 1, model.limit.output - 1, OUTPUT_TOKEN_MAX - 1)
+  const maximum = Math.min(max ?? REASONING_BUDGET_MAX - 1, model.limit.output - 1, REASONING_BUDGET_MAX - 1)
   if (maximum <= 0) return {}
   const high = Math.min(Math.max(min ?? 0, Math.floor((maximum + 1) / 2)), maximum)
   return Object.fromEntries(
